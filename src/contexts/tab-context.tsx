@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, type ReactNode } from "react"
 import { useTranslations } from "next-intl"
 import { useShallow } from "zustand/react/shallow"
 import {
+  followStoredFolderTabsPreference,
   useFolderTabsStore,
   shouldSeedConversation,
 } from "@/stores/folder-tabs-store"
@@ -83,6 +84,13 @@ export function TabProvider({ children }: TabProviderProps) {
     preferenceHydrated.current = true
     useTabStore.getState().syncActiveFolderId()
     useFolderTabsStore.getState().hydratePreference()
+  }, [tabsHydrated, foldersHydrated])
+  // From then on, a switch made in another window applies here too.
+  useEffect(() => {
+    if (!tabsHydrated || !foldersHydrated) return
+    window.addEventListener("storage", followStoredFolderTabsPreference)
+    return () =>
+      window.removeEventListener("storage", followStoredFolderTabsPreference)
   }, [tabsHydrated, foldersHydrated])
 
   // ── Runtime dependency injection ─────────────────────────────────────────────

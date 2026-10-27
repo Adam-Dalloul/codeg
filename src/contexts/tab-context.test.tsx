@@ -2877,6 +2877,19 @@ describe("TabProvider tab groups", () => {
 })
 
 describe("Folder-tabs preference hydration", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    saveOpenedTabsMock.mockResolvedValue({
+      accepted: true,
+      version: 1,
+      tabs: [],
+    })
+    getFolderConversationMock.mockReset()
+    getFolderConversationMock.mockReturnValue(new Promise(() => {}))
+    subscribeMock.mockImplementation(() => Promise.resolve(() => {}))
+    onTransportReconnectMock.mockReturnValue(() => {})
+  })
+
   it("waits for the restored active conversation before choosing the initial scope", async () => {
     seedWorkspaceStore()
     useAppWorkspaceStore.setState({ foldersHydrated: false })
@@ -2915,6 +2928,66 @@ describe("Folder-tabs preference hydration", () => {
     expect(useFolderTabsStore.getState().scope).toBe(2)
     expect(useTabStore.getState().activeTabId).toBe("conv-2-codex-21")
     expect(useAppWorkspaceStore.getState().activeFolderId).toBe(2)
+    resetFolderTabsStore()
+    setActiveFolderIdMock.mockReset()
+  })
+
+  it("follows a switch made in another window, by what is stored when the event arrives", async () => {
+    seedWorkspaceStore()
+    setActiveFolderIdMock.mockImplementation((id: number | null) => {
+      useAppWorkspaceStore.setState({ activeFolderId: id })
+    })
+    listOpenedTabsMock.mockResolvedValue({
+      version: 1,
+      items: [
+        {
+          folder_id: 2,
+          conversation_id: 21,
+          agent_type: "codex",
+          is_pinned: true,
+          is_active: true,
+          position: 0,
+        },
+      ],
+    })
+    renderTabs()
+    await waitFor(() => expect(useTabStore.getState().tabsHydrated).toBe(true))
+    await act(async () => {})
+    expect(useAppWorkspaceStore.getState().activeFolderId).toBe(2)
+    const key = "workspace:tabs-follow-folder:local"
+    const otherWindowWrote = (newValue: string | null, eventKey = key) =>
+      act(() => {
+        window.dispatchEvent(
+          new StorageEvent("storage", { key: eventKey, newValue })
+        )
+      })
+    expect(useFolderTabsStore.getState().enabled).toBe(false)
+
+    localStorage.setItem(key, "true")
+    otherWindowWrote("true")
+    expect(useFolderTabsStore.getState().enabled).toBe(true)
+    // This window keeps its own folder.
+    expect(useFolderTabsStore.getState().scope).toBe(2)
+
+    // A queued event carrying an older value: what is stored now wins.
+    otherWindowWrote("false")
+    expect(useFolderTabsStore.getState().enabled).toBe(true)
+
+    // Someone else's key, and an unreadable store, change nothing.
+    localStorage.setItem(key, "false")
+    otherWindowWrote("x", "workspace:something-else")
+    expect(useFolderTabsStore.getState().enabled).toBe(true)
+    const unreadable = vi
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementation(() => {
+        throw new DOMException("denied", "SecurityError")
+      })
+    otherWindowWrote("false")
+    unreadable.mockRestore()
+    expect(useFolderTabsStore.getState().enabled).toBe(true)
+
+    otherWindowWrote("false")
+    expect(useFolderTabsStore.getState().enabled).toBe(false)
     resetFolderTabsStore()
     setActiveFolderIdMock.mockReset()
   })

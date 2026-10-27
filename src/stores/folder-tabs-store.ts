@@ -156,6 +156,25 @@ export const useFolderTabsStore = create<FolderTabsState>()((set, get) => ({
   },
 }))
 
+/**
+ * `storage` listener: another window switched the mode, so this one follows
+ * (keeping its own folder — `setEnabled` scopes to this window's active one).
+ * The event's `newValue` is what was written then, possibly older than what is
+ * stored by the time a queued event arrives, so the key is read again; an
+ * unreadable store leaves the mode alone. `key === null` is a cleared store.
+ */
+export function followStoredFolderTabsPreference(event: StorageEvent) {
+  const key = preferenceKey()
+  if (event.key !== null && event.key !== key) return
+  let stored: string | null
+  try {
+    stored = localStorage.getItem(key)
+  } catch {
+    return
+  }
+  useFolderTabsStore.getState().setEnabled(stored === "true")
+}
+
 export function resetFolderTabsStore() {
   useFolderTabsStore.setState(initialState())
 }
