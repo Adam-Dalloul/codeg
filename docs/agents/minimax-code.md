@@ -20,7 +20,7 @@ irm https://filecdn.minimax.chat/public/install.ps1 | iex
 
 These are MiniMax's official installation commands. Review their scripts before running them. The installer prepares a compatible Node.js runtime when needed; its one-command Linux installer does not support Alpine/musl. See the [official installation guide](https://github.com/MiniMax-AI/minimax-code/blob/da22f11c55d4748155d7162c1030414228a00565/docs/installation.md) for alternatives and requirements.
 
-Reopen the terminal and restart Codeg if necessary so its backend inherits the updated PATH. Check `mcode --version` and `mcode --help`. Then sign in using the region of your account:
+Reopen the terminal and restart Codeg if necessary so its backend inherits the updated PATH. When `mcode` is not on that PATH, Codeg also looks for the installer's launcher in `~/.minimax-code/bin`, or `%USERPROFILE%\.minimax-code` on Windows. Check `mcode --version` and `mcode --help`. Then sign in using the region of your account:
 
 ```sh
 # Mainland China account
@@ -52,13 +52,15 @@ Manage skills through MiniMax Code itself. Codeg-managed skill installation is n
 
 ## Attachments and current scope
 
-Attachment support follows the installed agent's negotiated ACP capabilities. Published MiniMax Code 0.6.13 advertises image support, but not audio or embedded context. File links remain references for native tools. An advertised capability does not guarantee that the selected provider/model supports that input.
+Attachment support follows the installed agent's negotiated ACP capabilities. Published MiniMax Code 0.6.13 and 0.7.0 advertise image support, but not audio or embedded context. File links remain references for native tools. An advertised capability does not guarantee that the selected provider/model supports that input.
 
 Upstream supports stdio, HTTP and SSE MCP transports; Codeg's supported configuration paths and transports are a separate integration concern. Native extensions, native history import, provider/credential editing, and desktop-app-only features are outside this integration.
 
 ## Validation baseline
 
 An isolated, unauthenticated `initialize` smoke test passed with `@minimax-ai/code@0.6.13`. It confirmed ACP version 1, session loading, HTTP/SSE MCP, image capability, and session list/fork/resume/close declarations. No credentials or model requests were used. This verifies startup and capability negotiation only, not authenticated conversations, session restoration, tool execution, or end-to-end image processing.
+
+An offline end-to-end run with `@minimax-ai/code@0.7.0` on macOS then drove the agent through Codeg's server. A bring-your-own-key provider pointed at a local OpenAI-compatible test endpoint, so no MiniMax account or real model was involved. It covered the sign-in-required error, shell, read, edit and write tool calls, a permission prompt, reopening a session without duplicated history, Codeg-assigned stdio MCP servers and the collaboration companion's questions, Plan mode, and switching models. Real MiniMax accounts, Windows and Linux were not tested.
 
 ## Upstream references
 
