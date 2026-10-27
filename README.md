@@ -285,7 +285,7 @@ Codeg talks to every agent over the [Agent Client Protocol](https://agentclientp
   <a href="https://hermes-agent.nousresearch.com"><kbd><picture><source media="(prefers-color-scheme: dark)" srcset="./docs/images/agents/hermes-agent-dark.svg" /><img src="./docs/images/agents/hermes-agent.svg" alt="" width="16" valign="middle" /></picture> Hermes Agent</kbd></a> &nbsp;
   <a href="https://www.codebuddy.ai"><kbd><picture><source media="(prefers-color-scheme: dark)" srcset="./docs/images/agents/codebuddy-dark.svg" /><img src="./docs/images/agents/codebuddy.svg" alt="" width="16" valign="middle" /></picture> CodeBuddy</kbd></a> &nbsp;
   <a href="https://www.kimi.com/code"><kbd><img src="./docs/images/agents/kimi-code.svg" alt="" width="16" valign="middle" /> Kimi Code</kbd></a> &nbsp;
-  <a href="./docs/agents/minimax-code.md"><kbd>MiniMax Code</kbd></a> &nbsp;
+  <a href="./docs/agents/minimax-code.md"><kbd><img src="./docs/images/agents/minimax-code.svg" alt="" width="16" valign="middle" /> MiniMax Code</kbd></a> &nbsp;
   <a href="https://pi.dev"><kbd><img src="./docs/images/agents/pi.svg" alt="" width="16" valign="middle" /> Pi</kbd></a> &nbsp;
   <a href="https://x.ai/cli"><kbd><picture><source media="(prefers-color-scheme: dark)" srcset="./docs/images/agents/grok-dark.svg" /><img src="./docs/images/agents/grok.svg" alt="" width="16" valign="middle" /></picture> Grok</kbd></a> &nbsp;
   <a href="https://cursor.com/cli"><kbd><picture><source media="(prefers-color-scheme: dark)" srcset="./docs/images/agents/cursor-dark.svg" /><img src="./docs/images/agents/cursor.svg" alt="" width="16" valign="middle" /></picture> Cursor</kbd></a> &nbsp;
