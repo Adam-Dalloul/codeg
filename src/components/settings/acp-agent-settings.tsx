@@ -105,6 +105,7 @@ import {
   acpListCustomAgents,
   acpUninstallAgent,
   acpUpdateAgentConfig,
+  acpUpdateClaudeModelPicker,
   acpUpdateAgentEnv,
   acpUpdateHermesConfig,
   acpRevealHermesHome,
@@ -132,11 +133,20 @@ import type {
 import {
   HERMES_PROVIDERS,
   parseClaudeProviderModel,
+  normalizeModelIds,
   parseCodexModelConfig,
   serializeCodexModelConfig,
   type CodexModelConfig,
 } from "@/lib/types"
 import { CodexModelListEditor } from "@/components/settings/codex-model-list-editor"
+import {
+  CodexSavePreview,
+  type CodexCatalogEndpoint,
+} from "@/components/settings/codex-catalog-source"
+import {
+  describeCodexSaveError,
+  type CodexCatalogTranslator,
+} from "@/lib/codex-catalog-error"
 import {
   OpenCodeConnectDialog,
   OpenCodeCustomProviderDialog,
@@ -150,6 +160,7 @@ import {
   disconnectProvider,
   formatContextWindow,
   modelReferencesProvider,
+  openCodeModelsProtocol,
   setProviderApiKey,
   setProviderEnabled,
   type OpenCodeModelOptionGroup,
@@ -167,6 +178,15 @@ function familyLabelFromIsolator(key: string): string {
 
 import { getInstallErrorHintKey } from "@/lib/agent-install-error"
 import { useAgentInstallStream } from "@/hooks/use-agent-install-stream"
+import { useProviderModels } from "@/hooks/use-provider-models"
+import { ClaudePickerModelsField } from "@/components/settings/claude-model-fields"
+import {
+  ModelIdInputWithFetch,
+  ModelIdListField,
+  ProviderModelsFetchButton,
+  ProviderModelsPicker,
+  ProviderModelsStatus,
+} from "@/components/settings/provider-models"
 import { OpencodePluginsModal } from "./opencode-plugins-modal"
 import {
   ANTIGRAVITY_ENV_KEYS,
@@ -185,6 +205,7 @@ import {
 import { CodeBuddyConfigPanel } from "./codebuddy-config-panel"
 import { CursorConfigPanel } from "./cursor-config-panel"
 import {
+  DEEPSEEK_DEFAULT_BASE_URL,
   DEEPSEEK_PANEL_ENV_KEYS,
   DeepSeekConfigPanel,
 } from "./deepseek-config-panel"
@@ -223,12 +244,12 @@ interface AgentDraft {
   codexAuthMode: CodexAuthMode
   codexModelProvider: string
   codexProviderOptions: string[]
+  /** `[model_providers.<active>].supports_websockets` — see
+   * {@link codexWebsocketSwitchApplies}. */
   codexSupportsWebsockets: boolean
-  codexSkills: boolean
   /** `[features].default_mode_request_user_input` — see
    * {@link CODEX_DEFAULT_MODE_REQUEST_USER_INPUT_KEY}. */
   codexDefaultModeRequestUserInput: boolean
-  codexServiceTierFast: boolean
   /** Sandbox / approval group — the thread defaults codex applies to turns it
    * starts itself (`/goal`, `/review`, `/compact`). Held as plain draft state
    * (not derived from `codexConfigTomlText`) and merged into config.toml
@@ -264,10 +285,22 @@ interface AgentDraft {
   // default on (disabled).
   claudeSendAttributionHeader: boolean
   claudeDisableNonessentialTraffic: boolean
+  /** CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: Claude lists the gateway's
+   *  own Claude models. Any non-empty value turns it on, so off removes it. */
+  claudeGatewayDiscovery: boolean
+  /** The /model picker ids codeg adds while no provider is bound, and as
+   *  loaded: a save stores them only once they moved off it. */
+  claudePickerModels: string[]
+  claudePickerModelsBaseline: string[]
   codexAuthJsonText: string
   codexConfigTomlText: string
-  /** Structured codex custom-model list (mirrors the catalog source sidecar).
-   *  Drives the model editor + `model_catalog_json` generation on save. */
+  /** The config.toml text the draft was loaded from. Sent with a save, so the
+   *  backend can tell a hand edit of a key it manages (`model_catalog_json`,
+   *  root `model` while a catalog is published) from the disk changing. */
+  codexConfigTomlBaseline: string
+  /** Structured codex model list (mirrors the catalog source sidecar). The
+   *  backend publishes the catalog, `model_catalog_json` and root `model` from
+   *  it on save. */
   codexModelList: CodexModelConfig
   grokConfigTomlText: string
   // Grok authentication method (subscription via `grok login` vs XAI_API_KEY).
@@ -286,6 +319,15 @@ interface AgentDraft {
   grokCustomApiKey: string
   grokCustomApiBackend: string
   grokCustomContextWindow: string
+  // [model.<id>].reasoning_efforts levels (see toggleGrokReasoningEffort for
+  // how the chips edit them), and the list as read when the draft was built:
+  // the levels are sent only once the chips moved off it.
+  grokCustomReasoningEfforts: string[]
+  grokCustomReasoningEffortsBaseline: string[]
+  /** The endpoint's other models codeg offers beside the managed one, and the
+   *  list as read: sent only once it moved off it. */
+  grokCustomExtraModels: string[]
+  grokCustomExtraModelsBaseline: string[]
   grokAutoCompactThreshold: string
   openCodeAuthJsonText: string
   openClawGatewayUrl: string
@@ -295,6 +337,10 @@ interface AgentDraft {
   clineApiKey: string
   clineModel: string
   clineBaseUrl: string
+  /** The ids of an OpenAI-compatible provider's `models.json` table: the only
+   *  models a Cline session can pick for it. `null` while the config names no
+   *  table, so a save leaves the one on disk as it is. */
+  clineModels: string[] | null
   // Hermes — `apiKey`/`model`/`apiBaseUrl` are reused for the active provider's
   // key, model.default, and model.base_url. These carry the rest.
   hermesProvider: string
@@ -632,6 +678,13 @@ const CLAUDE_ENV_FLAG_OFF = "0"
 // telemetry / redundant pings" → default ON (disabled).
 const CLAUDE_SEND_ATTRIBUTION_HEADER_DEFAULT = false
 const CLAUDE_DISABLE_NONESSENTIAL_TRAFFIC_DEFAULT = true
+// Claude Code asks `ANTHROPIC_BASE_URL` for `/v1/models` and adds the ids that
+// name Claude or Anthropic to /model. Read as set-or-not: "0" turns it on too.
+const CLAUDE_GATEWAY_DISCOVERY_ENV_KEY =
+  "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
+
+/** Where Gemini CLI goes with an API key and no base URL of its own. */
+const GEMINI_DEFAULT_API_BASE_URL = "https://generativelanguage.googleapis.com"
 
 const GEMINI_AUTH_MODES = [
   "custom",
@@ -699,6 +752,10 @@ const CLINE_SIGNIN_PROVIDERS = [
  * selection reaches `session/new` as an unknown provider with an empty model
  * list. The backend's `normalize_cline_provider_id` maps the legacy value on
  * read so an existing config still lands on the right row here. */
+/** The provider whose model ids live in Cline's `models.json`, mirroring the
+ *  backend's `CLINE_CUSTOM_MODEL_PROVIDER`. */
+const CLINE_CUSTOM_MODEL_PROVIDER = "openai-compatible"
+
 const CLINE_BYO_PROVIDERS = [
   { value: "anthropic", label: "Anthropic" },
   { value: "openai-native", label: "OpenAI" },
@@ -750,6 +807,56 @@ const GROK_UNSET = "__grok_unset__"
  * what Grok's own build models use; a BYO OpenAI-compatible proxy would pick
  * `chat_completions`, an Anthropic-format endpoint `messages`. */
 const GROK_DEFAULT_API_BACKEND = "responses"
+/** Where Grok goes for a custom model with no `base_url`. */
+const GROK_DEFAULT_BASE_URL = "https://api.x.ai/v1"
+
+/**
+ * Reasoning-effort levels offered as chips for a Grok custom model's
+ * `reasoning_efforts`. Each is one of Grok's canonical levels and reaches the
+ * provider exactly as written. Unlike Kimi there is no free-text level: Grok
+ * rejects an unknown one, and drops the model's WHOLE list with it (verified
+ * against 1.0.62). `none` is left out because next to real levels it reads as
+ * "declare none"; a hand-written one still shows as an extra chip.
+ */
+export const GROK_REASONING_EFFORT_LEVELS = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+]
+
+/** The chips to render: the canonical levels plus any other level the draft
+ * holds (hand-written in config.toml), so it stays visible and removable
+ * instead of silently riding along. */
+export function grokReasoningEffortChoices(levels: string[]): string[] {
+  const extra = levels.filter(
+    (level, index) =>
+      !GROK_REASONING_EFFORT_LEVELS.includes(level) &&
+      levels.indexOf(level) === index
+  )
+  return [...GROK_REASONING_EFFORT_LEVELS, ...extra]
+}
+
+/** Whether two level lists are the same, entry for entry. */
+function sameGrokReasoningEfforts(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((level, i) => level === b[i])
+}
+
+/** Toggle one chip. Turning a level off drops every copy of it; turning one on
+ * rebuilds the list in chip order (low→high, extras last), so the written list
+ * reads like Grok's own — and its first level is where a session starts when
+ * no default reasoning effort is set. */
+export function toggleGrokReasoningEffort(
+  levels: string[],
+  level: string
+): string[] {
+  if (levels.includes(level)) return levels.filter((l) => l !== level)
+  return grokReasoningEffortChoices(levels).filter(
+    (l) => l === level || levels.includes(l)
+  )
+}
 
 /** Grok's real credential env var (mirrors the backend `agent_env_keys(Grok)`
  * and `importantEnvKeysByAgent`). */
@@ -853,9 +960,11 @@ export function importantEnvKeysByAgent(
     // ("设置后自动使用 PAT 认证" in the CLI package's own README) and the only
     // way to authenticate a headless/server/Docker install, where the
     // `qoder login` browser flow cannot run. `QODER_MODEL` is the env twin of
-    // `-m/--model`. Qoder talks only to its own service, so there is no
-    // endpoint var at all — an EMPTY list here hides that field rather than
-    // offering a box whose value nothing reads (see `importantFieldsFor`).
+    // `-m/--model`. There is no endpoint var at all: Qoder reaches models
+    // through its own service, and a key the account brings (BYOK, where
+    // Qoder allows it) is set up in Qoder itself — so an EMPTY list here hides
+    // that field rather than offering a box whose value nothing reads (see
+    // `importantFieldsFor`).
     // Generic OPENAI_*/API_KEY aliases are deliberately absent: Qoder reads
     // neither, and listing them would let the panel report "configured" off a
     // key that never reaches it. Mirrors the backend `agent_env_keys(Qoder)`.
@@ -914,8 +1023,8 @@ export function importantEnvKeysByAgent(
  * Which of the three generic env fields this agent actually has a variable for.
  *
  * An empty list in {@link importantEnvKeysByAgent} means "this agent reads no
- * env var for that slot" — Qoder, for instance, talks only to its own service
- * and has no endpoint override. Rendering the input anyway offers a box whose
+ * env var for that slot" — Qoder, for instance, has no endpoint override (a
+ * key the account brings is set up in Qoder, not passed in). Rendering the input anyway offers a box whose
  * value nothing will ever read, and (before `patchEnvByImportantKey` guarded
  * it) wrote the typed value to an env var literally named `undefined`.
  */
@@ -1079,6 +1188,7 @@ function extractImportantConfigValues(
   claudeCustomModelOptionDescription: string
   claudeSendAttributionHeader: boolean
   claudeDisableNonessentialTraffic: boolean
+  claudeGatewayDiscovery: boolean
   configError: string | null
 } {
   const parseResult = parseConfigJsonText(configText)
@@ -1145,6 +1255,10 @@ function extractImportantConfigValues(
         : CLAUDE_DISABLE_NONESSENTIAL_TRAFFIC_DEFAULT
       : false
 
+  const claudeGatewayDiscovery =
+    agentType === "claude_code" &&
+    Boolean(findEnvValue(mergedEnv, [CLAUDE_GATEWAY_DISCOVERY_ENV_KEY]))
+
   return {
     apiBaseUrl: apiBaseUrl ?? "",
     apiKey: apiKey ?? "",
@@ -1168,6 +1282,7 @@ function extractImportantConfigValues(
       agentType === "claude_code" ? claudeCustomModelOptionDescription : "",
     claudeSendAttributionHeader,
     claudeDisableNonessentialTraffic,
+    claudeGatewayDiscovery,
     configError: parseResult.error,
   }
 }
@@ -1263,6 +1378,7 @@ interface ClineImportantValues {
   apiKey: string
   model: string
   baseUrl: string
+  models: string[] | null
 }
 
 /** Mirrors the backend `normalize_cline_provider_id`, so a legacy `"openai"`
@@ -1284,6 +1400,11 @@ function extractClineImportantValues(configText: string): ClineImportantValues {
     apiKey: typeof config.apiKey === "string" ? config.apiKey : "",
     model: typeof config.model === "string" ? config.model : "",
     baseUrl: typeof config.apiBaseUrl === "string" ? config.apiBaseUrl : "",
+    models: Array.isArray(config.models)
+      ? normalizeModelIds(
+          config.models.filter((id): id is string => typeof id === "string")
+        )
+      : null,
   }
 }
 
@@ -1907,10 +2028,7 @@ interface CodexTomlImportantValues {
   providerNames: string[]
   providerBaseUrls: Record<string, string>
   providerSupportsWebsockets: Record<string, boolean>
-  featureResponsesWebsocketsV2: boolean
-  featureSkills: boolean
   featureDefaultModeRequestUserInput: boolean
-  serviceTierFast: boolean
 }
 
 interface CodexImportantValues {
@@ -1920,12 +2038,73 @@ interface CodexImportantValues {
   modelProvider: string
   providerOptions: string[]
   supportsWebsockets: boolean
-  skills: boolean
   defaultModeRequestUserInput: boolean
-  serviceTierFast: boolean
 }
 
 const CODEX_DEFAULT_MODEL_PROVIDER = "codeg"
+
+/** `text` with root `model` as `baseline` has it; untouched when the two
+ *  already agree, so formatting and comments stay. */
+function withRootModelOf(text: string, baseline: string): string {
+  const loaded = extractCodexTomlImportantValues(baseline).model
+  return extractCodexTomlImportantValues(text).model === loaded
+    ? text
+    : updateTomlRootStringKey(text, "model", loaded)
+}
+
+/** Whether codeg publishes a catalog for this list, and so owns
+ *  `model_catalog_json` and root `model` in config.toml. */
+function codexListIsManaged(list: CodexModelConfig): boolean {
+  return (
+    list.customs.length > 0 ||
+    (list.excludedOfficials?.length ?? 0) > 0 ||
+    !!list.catalog
+  )
+}
+
+/**
+ * Provider ids codex builds in (codex 0.160.1, `built_in_model_providers` in
+ * the `model-provider-info` crate); `openai` is the one an Official
+ * Subscription (ChatGPT login) session runs on. A `[model_providers.<id>]`
+ * table for one of them does not change it: `merge_configured_model_providers`
+ * keeps the built-in entry, except that the two Bedrock ids accept a few
+ * fields — and reject the whole config if any other field,
+ * `supports_websockets` included, is set.
+ */
+const CODEX_BUILT_IN_PROVIDER_IDS: ReadonlySet<string> = new Set([
+  "openai",
+  "amazon-bedrock",
+  "amazon-bedrock-runtime",
+  "ollama",
+  "lmstudio",
+])
+
+/**
+ * Whether the panel's WebSocket switch means anything for this auth mode and
+ * active provider.
+ *
+ * Since codex 0.116.0 the Responses-over-WebSocket transport is decided by the
+ * active provider's `supports_websockets` alone (the `responses_websockets*`
+ * feature flags are `Stage::Removed` no-ops). The switch writes that key onto
+ * `[model_providers.<active>]`, which only a configured provider reads.
+ *
+ * Official Subscription runs on the built-in OpenAI provider, which already
+ * declares `supports_websockets: true` and cannot be overridden. Worse, the
+ * write path pins `model_provider` before it writes, so the switch used to
+ * move a subscription onto a `[model_providers.codeg]` with an empty
+ * `base_url` — after which every turn failed with "builder error". A
+ * hand-written `model_provider` naming another built-in provider is the same
+ * dead end (see {@link CODEX_BUILT_IN_PROVIDER_IDS}).
+ */
+export function codexWebsocketSwitchApplies(
+  authMode: CodexAuthMode,
+  activeProvider: string
+): boolean {
+  return (
+    authMode !== "chatgpt_subscription" &&
+    !CODEX_BUILT_IN_PROVIDER_IDS.has(activeProvider.trim())
+  )
+}
 
 /**
  * `[features]` flag that lets codex call its `request_user_input` tool in the
@@ -2300,19 +2479,18 @@ function extractCodexTomlImportantValues(
   const providerNames = new Set<string>()
   let model = ""
   let modelProvider = ""
-  let featureResponsesWebsocketsV2 = false
-  let featureSkills = false
   let featureDefaultModeRequestUserInput = false
-  let serviceTierFast = false
   let currentProviderSection: string | null = null
   let inFeaturesSection = false
   // Still above the first section header, i.e. in the implicit root table —
   // the only place a dotted `features.x` key actually means `[features].x`.
   let inRootTable = true
 
-  for (const rawLine of configTomlText.split(/\r?\n/)) {
+  const lines = configTomlText.split(/\r?\n/)
+  const inString = tomlLinesInsideMultilineString(lines)
+  for (const [index, rawLine] of lines.entries()) {
     const line = rawLine.trim()
-    if (!line || line.startsWith("#")) continue
+    if (!line || line.startsWith("#") || inString[index]) continue
 
     // Section tracking goes through the same header predicate the writer uses,
     // so the two never disagree about where a table begins. A header carrying
@@ -2335,21 +2513,19 @@ function extractCodexTomlImportantValues(
     }
 
     const assignment = parseTomlStringAssignment(rawLine)
-    if (assignment) {
+    // Root table only, which is where the writers put these two. The same keys
+    // inside `[profiles.<name>]` apply to that profile alone, yet a later
+    // profile used to override the root value here. Every patch writes the
+    // model it reads back to the root, and the WebSocket switch and the API
+    // URL field write back the provider, so one edit copied the profile's
+    // values over the user's root keys.
+    if (assignment && inRootTable) {
       if (assignment.key === "model") {
         model = assignment.value
         continue
       }
       if (assignment.key === "model_provider") {
         modelProvider = assignment.value
-        continue
-      }
-      if (
-        !currentProviderSection &&
-        !inFeaturesSection &&
-        assignment.key === "service_tier"
-      ) {
-        serviceTierFast = assignment.value.toLowerCase() === "fast"
         continue
       }
     }
@@ -2363,17 +2539,6 @@ function extractCodexTomlImportantValues(
         providerSupportsWebsockets[currentProviderSection] =
           boolAssignment.value
         providerNames.add(currentProviderSection.trim())
-        continue
-      }
-      if (
-        inFeaturesSection &&
-        boolAssignment.key === "responses_websockets_v2"
-      ) {
-        featureResponsesWebsocketsV2 = boolAssignment.value
-        continue
-      }
-      if (inFeaturesSection && boolAssignment.key === "skills") {
-        featureSkills = boolAssignment.value
         continue
       }
       if (
@@ -2392,29 +2557,18 @@ function extractCodexTomlImportantValues(
         providerSupportsWebsockets[providerName] = boolAssignment.value
         continue
       }
-      // The three dotted `features.*` spellings below are ROOT-scoped on
-      // purpose. Inside `[model_providers.codeg]` the same text means
+      // The dotted `features.*` spelling is ROOT-scoped on purpose. Inside
+      // `[model_providers.codeg]` the same text means
       // `model_providers.codeg.features.…` — a key codex ignores — and the
       // writer only ever touches the root spelling. Reading a nested one would
-      // show a value no save could clear, and (for the websocket flag, which
-      // the writer re-derives on every patch) would promote a provider-local
-      // key into a global `[features]` flag behind the user's back.
-      if (inRootTable) {
-        if (boolAssignment.key === "features.responses_websockets_v2") {
-          featureResponsesWebsocketsV2 = boolAssignment.value
-          continue
-        }
-        if (boolAssignment.key === "features.skills") {
-          featureSkills = boolAssignment.value
-          continue
-        }
-        if (
-          boolAssignment.key ===
+      // show a value no save could clear.
+      if (
+        inRootTable &&
+        boolAssignment.key ===
           `features.${CODEX_DEFAULT_MODE_REQUEST_USER_INPUT_KEY}`
-        ) {
-          featureDefaultModeRequestUserInput = boolAssignment.value
-          continue
-        }
+      ) {
+        featureDefaultModeRequestUserInput = boolAssignment.value
+        continue
       }
     }
 
@@ -2460,10 +2614,7 @@ function extractCodexTomlImportantValues(
     providerNames: Array.from(providerNames),
     providerBaseUrls,
     providerSupportsWebsockets,
-    featureResponsesWebsocketsV2,
-    featureSkills,
     featureDefaultModeRequestUserInput,
-    serviceTierFast,
   }
 }
 
@@ -2550,11 +2701,12 @@ export function extractCodexImportantValues(
     : (toml.providerBaseUrls[CODEX_DEFAULT_MODEL_PROVIDER] ??
       toml.providerBaseUrls.openai ??
       "")
+  // The provider key alone, exactly as codex resolves it (`serde(default)`
+  // false). A leftover `[features].responses_websockets_v2` is NOT a
+  // fallback: that flag has been a no-op since codex 0.116.0, so reading it
+  // here would show the switch on while codex talks HTTPS.
   const providerSupportsWebsockets =
-    toml.providerSupportsWebsockets[activeProvider] ??
-    (activeProvider === CODEX_DEFAULT_MODEL_PROVIDER
-      ? toml.featureResponsesWebsocketsV2
-      : false)
+    toml.providerSupportsWebsockets[activeProvider] ?? false
   return {
     apiBaseUrl: providerBaseUrl,
     apiKey:
@@ -2572,14 +2724,8 @@ export function extractCodexImportantValues(
       toml.providerNames
     ),
     supportsWebsockets: providerSupportsWebsockets,
-    skills: toml.featureSkills,
     defaultModeRequestUserInput: toml.featureDefaultModeRequestUserInput,
-    serviceTierFast: toml.serviceTierFast,
   }
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 /**
@@ -2605,16 +2751,86 @@ function tomlSectionHeaderName(rawLine: string): string | null {
   return match ? match[1].trim() : null
 }
 
+/**
+ * For each line, whether it begins inside a multi-line string — a `"""` or
+ * `'''` value opened on an earlier line — and so is string content rather than
+ * TOML structure. Exported for tests.
+ *
+ * Every line scanner in this file must skip such lines. codex's config.toml
+ * takes multi-line values (`developer_instructions`, `compact_prompt`), and a
+ * line inside one that looks like `[model_providers.x]` or `key = value` is
+ * neither a header nor an assignment. Treating it as one makes a writer edit
+ * the user's text, or delete a closing delimiter and break the document.
+ *
+ * A lexer, not a parser: it tracks basic and literal strings (single- and
+ * multi-line) and comments, which is all it takes to know where a multi-line
+ * string starts and ends.
+ */
+export function tomlLinesInsideMultilineString(lines: string[]): boolean[] {
+  const inside: boolean[] = []
+  let open: '"""' | "'''" | null = null
+  for (const line of lines) {
+    inside.push(open !== null)
+    let i = 0
+    while (i < line.length) {
+      if (open !== null) {
+        // A backslash escapes the next character in a basic string only.
+        if (open === '"""' && line[i] === "\\") {
+          i += 2
+          continue
+        }
+        if (line.startsWith(open, i)) {
+          // Up to two more quotes may sit just inside the closing delimiter.
+          let end = i + 3
+          for (let extra = 0; extra < 2 && line[end] === open[0]; extra += 1) {
+            end += 1
+          }
+          i = end
+          open = null
+          continue
+        }
+        i += 1
+        continue
+      }
+      const ch = line[i]
+      if (ch === "#") break
+      if (line.startsWith('"""', i) || line.startsWith("'''", i)) {
+        open = ch === '"' ? '"""' : "'''"
+        i += 3
+        continue
+      }
+      if (ch === '"') {
+        i += 1
+        while (i < line.length && line[i] !== '"') {
+          i += line[i] === "\\" ? 2 : 1
+        }
+        i += 1
+        continue
+      }
+      if (ch === "'") {
+        const end = line.indexOf("'", i + 1)
+        i = end < 0 ? line.length : end + 1
+        continue
+      }
+      i += 1
+    }
+  }
+  return inside
+}
+
 function findTomlRootEndIndex(lines: string[]): number {
+  const inString = tomlLinesInsideMultilineString(lines)
   for (let i = 0; i < lines.length; i += 1) {
-    if (isTomlSectionHeader(lines[i])) return i
+    if (!inString[i] && isTomlSectionHeader(lines[i])) return i
   }
   return lines.length
 }
 
 function findTomlRootAssignmentIndex(lines: string[], key: string): number {
   const rootEnd = findTomlRootEndIndex(lines)
+  const inString = tomlLinesInsideMultilineString(lines)
   for (let i = 0; i < rootEnd; i += 1) {
+    if (inString[i]) continue
     const assignmentKey = parseTomlAssignmentKey(lines[i])
     if (assignmentKey === key) return i
   }
@@ -2659,29 +2875,15 @@ function updateTomlRootStringKey(
   return lines.join("\n").trim()
 }
 
-function updateTomlRootBooleanKey(
-  configTomlText: string,
-  key: string,
-  value: boolean
-): string {
-  const lineText = `${key} = ${value ? "true" : "false"}`
-  const lines = configTomlText.split(/\r?\n/)
-  const assignmentIndex = findTomlRootAssignmentIndex(lines, key)
-  if (assignmentIndex >= 0) {
-    lines[assignmentIndex] = lineText
-  } else {
-    lines.splice(0, 0, lineText)
-  }
-  return lines.join("\n").trim()
-}
-
 function findTomlSectionRange(
   lines: string[],
   sectionName: string
 ): { start: number; end: number } | null {
+  const inString = tomlLinesInsideMultilineString(lines)
   let sectionStart = -1
   let sectionEnd = lines.length
   for (let i = 0; i < lines.length; i += 1) {
+    if (inString[i]) continue
     if (sectionStart < 0) {
       if (tomlSectionHeaderName(lines[i]) === sectionName) {
         sectionStart = i
@@ -2697,20 +2899,21 @@ function findTomlSectionRange(
   return { start: sectionStart, end: sectionEnd }
 }
 
-function removeTomlSection(
-  configTomlText: string,
-  sectionName: string
-): string {
-  const lines = configTomlText.split(/\r?\n/)
-  const range = findTomlSectionRange(lines, sectionName)
-  if (!range) return configTomlText
-  // Remove blank line before section header if present
-  const removeStart =
-    range.start > 0 && lines[range.start - 1].trim() === ""
-      ? range.start - 1
-      : range.start
-  lines.splice(removeStart, range.end - removeStart)
-  return lines.join("\n").trim()
+/**
+ * Index of the first line in `[start, end)` that assigns `key`, skipping
+ * string content (see {@link tomlLinesInsideMultilineString}); -1 if none.
+ */
+function findTomlKeyInRange(
+  lines: string[],
+  start: number,
+  end: number,
+  key: string
+): number {
+  const inString = tomlLinesInsideMultilineString(lines)
+  for (let i = start; i < end; i += 1) {
+    if (!inString[i] && parseTomlAssignmentKey(lines[i]) === key) return i
+  }
+  return -1
 }
 
 /**
@@ -2735,12 +2938,12 @@ function stripRootDottedKey(
   key: string
 ): void {
   const dotted = `${sectionName}.${key}`
-  for (let i = 0; i < lines.length; i += 1) {
-    if (isTomlSectionHeader(lines[i])) return
-    if (parseTomlAssignmentKey(lines[i]) === dotted) {
-      lines.splice(i, 1)
-      i -= 1
-    }
+  for (
+    let index = findTomlRootAssignmentIndex(lines, dotted);
+    index >= 0;
+    index = findTomlRootAssignmentIndex(lines, dotted)
+  ) {
+    lines.splice(index, 1)
   }
 }
 
@@ -2757,9 +2960,11 @@ function lastRootDottedSiblingIndex(
   sectionName: string
 ): number {
   const prefix = `${sectionName}.`
+  const rootEnd = findTomlRootEndIndex(lines)
+  const inString = tomlLinesInsideMultilineString(lines)
   let last = -1
-  for (let i = 0; i < lines.length; i += 1) {
-    if (isTomlSectionHeader(lines[i])) break
+  for (let i = 0; i < rootEnd; i += 1) {
+    if (inString[i]) continue
     if (parseTomlAssignmentKey(lines[i])?.startsWith(prefix)) last = i
   }
   return last
@@ -2776,14 +2981,12 @@ function upsertTomlSectionBooleanKey(
   const section = findTomlSectionRange(lines, sectionName)
 
   if (section) {
-    let assignmentIndex = -1
-    for (let i = section.start + 1; i < section.end; i += 1) {
-      const assignmentKey = parseTomlAssignmentKey(lines[i])
-      if (assignmentKey === key) {
-        assignmentIndex = i
-        break
-      }
-    }
+    const assignmentIndex = findTomlKeyInRange(
+      lines,
+      section.start + 1,
+      section.end,
+      key
+    )
 
     if (value === null) {
       if (assignmentIndex >= 0) {
@@ -2877,33 +3080,16 @@ function patchCodexProviderBaseUrl(
 
   const nextApiBaseUrl = apiBaseUrl.trim()
   const lines = configTomlText.split(/\r?\n/)
-  const sectionPattern = new RegExp(
-    `^\\[\\s*model_providers\\.${escapeRegExp(trimmedProvider)}\\s*\\]$`
-  )
-  let sectionStart = -1
-  let sectionEnd = lines.length
-  for (let i = 0; i < lines.length; i += 1) {
-    const trimmed = lines[i].trim()
-    if (sectionStart < 0) {
-      if (sectionPattern.test(trimmed)) {
-        sectionStart = i
-      }
-      continue
-    }
-    if (/^\[.*\]$/.test(trimmed)) {
-      sectionEnd = i
-      break
-    }
-  }
+  const section = findCodexProviderSectionRange(lines, trimmedProvider)
 
-  if (sectionStart >= 0) {
-    let baseUrlIndex = -1
-    for (let i = sectionStart + 1; i < sectionEnd; i += 1) {
-      const assignment = parseTomlStringAssignment(lines[i])
-      if (!assignment || assignment.key !== "base_url") continue
-      baseUrlIndex = i
-      break
-    }
+  if (section) {
+    const { start: sectionStart, end: sectionEnd } = section
+    const baseUrlIndex = findTomlKeyInRange(
+      lines,
+      sectionStart + 1,
+      sectionEnd,
+      "base_url"
+    )
     if (!nextApiBaseUrl) {
       if (baseUrlIndex >= 0) {
         lines.splice(baseUrlIndex, 1)
@@ -2928,6 +3114,24 @@ function patchCodexProviderBaseUrl(
   return `${appended}\n\n${sectionText}`.trim()
 }
 
+/**
+ * Line range of `[model_providers.<provider>]`, found with the same header
+ * predicates every other table scan in this file uses — so a header carrying
+ * a trailing comment is still a header, and a header-shaped line inside a
+ * multi-line string is not one. The exact-match regexes the provider writers
+ * used before missed a commented provider header
+ * (`[model_providers.codeg] # gateway`), so the writer appended a second
+ * `[model_providers.codeg]` — a TOML redefinition the backend refuses to save
+ * — and missed a commented NEXT header (`[features] # flags`) as the end, so
+ * the key landed in that other table.
+ */
+function findCodexProviderSectionRange(
+  lines: string[],
+  provider: string
+): { start: number; end: number } | null {
+  return findTomlSectionRange(lines, `model_providers.${provider}`)
+}
+
 function patchCodexProviderField(
   configTomlText: string,
   provider: string,
@@ -2938,33 +3142,16 @@ function patchCodexProviderField(
   if (!trimmedProvider) return configTomlText.trim()
 
   const lines = configTomlText.split(/\r?\n/)
-  const sectionPattern = new RegExp(
-    `^\\[\\s*model_providers\\.${escapeRegExp(trimmedProvider)}\\s*\\]$`
-  )
-  let sectionStart = -1
-  let sectionEnd = lines.length
-  for (let i = 0; i < lines.length; i += 1) {
-    const trimmed = lines[i].trim()
-    if (sectionStart < 0) {
-      if (sectionPattern.test(trimmed)) {
-        sectionStart = i
-      }
-      continue
-    }
-    if (/^\[.*\]$/.test(trimmed)) {
-      sectionEnd = i
-      break
-    }
-  }
+  const section = findCodexProviderSectionRange(lines, trimmedProvider)
 
-  if (sectionStart >= 0) {
-    let fieldIndex = -1
-    for (let i = sectionStart + 1; i < sectionEnd; i += 1) {
-      const assignmentKey = parseTomlAssignmentKey(lines[i])
-      if (assignmentKey !== key) continue
-      fieldIndex = i
-      break
-    }
+  if (section) {
+    const { start: sectionStart, end: sectionEnd } = section
+    const fieldIndex = findTomlKeyInRange(
+      lines,
+      sectionStart + 1,
+      sectionEnd,
+      key
+    )
     if (fieldIndex >= 0) {
       lines[fieldIndex] = lineText
     } else {
@@ -2981,6 +3168,23 @@ function patchCodexProviderField(
   const sectionText = `[model_providers.${trimmedProvider}]\n${lineText}`
   if (!appended) return sectionText
   return `${appended}\n\n${sectionText}`.trim()
+}
+
+/** Drop `key` from `[model_providers.<provider>]`; a no-op when either the
+ * table or the key is absent. */
+function removeCodexProviderField(
+  configTomlText: string,
+  provider: string,
+  key: string
+): string {
+  const trimmedProvider = provider.trim()
+  if (!trimmedProvider) return configTomlText.trim()
+  const lines = configTomlText.split(/\r?\n/)
+  const section = findCodexProviderSectionRange(lines, trimmedProvider)
+  if (!section) return configTomlText.trim()
+  const index = findTomlKeyInRange(lines, section.start + 1, section.end, key)
+  if (index >= 0) lines.splice(index, 1)
+  return lines.join("\n").trim()
 }
 
 /**
@@ -3144,6 +3348,16 @@ function patchCodexAuthJsonText(
   }
 }
 
+/**
+ * Apply the panel's structured Codex controls to a config.toml draft.
+ *
+ * Touches only the keys a patch names (plus the provider defaults
+ * `ensureCodexProviderDefaults` supplies). It deliberately writes nothing on
+ * its own initiative: the panel used to force `disable_response_storage =
+ * true` and re-derive `[features].responses_websockets_v2` on every patch,
+ * and current codex reads neither (the first was removed in 0.30.0, the
+ * second has been a no-op since 0.116.0).
+ */
 export function patchCodexConfigTomlText(
   configTomlText: string,
   patch: {
@@ -3151,9 +3365,7 @@ export function patchCodexConfigTomlText(
     model?: string
     modelProvider?: string
     supportsWebsockets?: boolean
-    skills?: boolean
     defaultModeRequestUserInput?: boolean
-    serviceTierFast?: boolean
   }
 ): string {
   let nextTomlText = configTomlText
@@ -3204,12 +3416,22 @@ export function patchCodexConfigTomlText(
         modelProvider
       )
     }
-    nextTomlText = patchCodexProviderField(
-      nextTomlText,
-      modelProvider,
-      "supports_websockets",
-      `supports_websockets = ${patch.supportsWebsockets ? "true" : "false"}`
-    )
+    // The provider key is the whole switch: codex 0.116.0 retired the
+    // `responses_websockets*` feature flags, and a provider's
+    // `supports_websockets` defaults to false. So "off" removes the key —
+    // the same contract as the other switches — rather than writing `= false`.
+    nextTomlText = patch.supportsWebsockets
+      ? patchCodexProviderField(
+          nextTomlText,
+          modelProvider,
+          "supports_websockets",
+          "supports_websockets = true"
+        )
+      : removeCodexProviderField(
+          nextTomlText,
+          modelProvider,
+          "supports_websockets"
+        )
     nextTomlText = ensureCodexProviderDefaults(nextTomlText, modelProvider)
   }
   const normalizedTomlValues = extractCodexTomlImportantValues(nextTomlText)
@@ -3220,39 +3442,10 @@ export function patchCodexConfigTomlText(
       normalizedTomlValues.model
     )
   }
-  const activeProvider =
-    normalizedTomlValues.modelProvider.trim() || CODEX_DEFAULT_MODEL_PROVIDER
-  // This key is rewritten on EVERY patch, including ones that have nothing to
-  // do with WebSockets, so it must resolve the flag exactly the way
-  // `extractCodexImportantValues` does — including its fallback to the feature
-  // key itself when the provider declares no `supports_websockets`. Reading
-  // only the provider field would treat "declared solely as a feature flag" as
-  // "off" and delete the user's setting the next time any other control moved.
-  // `??` and not `||`: an explicit `false` on the provider must win over the
-  // fallback, which is how the WebSocket switch turns itself off.
-  const shouldEnableFeature =
-    normalizedTomlValues.providerSupportsWebsockets[activeProvider] ??
-    (activeProvider === CODEX_DEFAULT_MODEL_PROVIDER
-      ? normalizedTomlValues.featureResponsesWebsocketsV2
-      : false)
-  nextTomlText = upsertTomlSectionBooleanKey(
-    nextTomlText,
-    "features",
-    "responses_websockets_v2",
-    shouldEnableFeature ? true : null
-  )
-  if (typeof patch.skills === "boolean") {
-    nextTomlText = upsertTomlSectionBooleanKey(
-      nextTomlText,
-      "features",
-      "skills",
-      patch.skills ? true : null
-    )
-  }
   if (typeof patch.defaultModeRequestUserInput === "boolean") {
     // Upstream default is false, so "off" removes the key instead of writing
-    // `= false` — same contract as `skills` above, and it keeps config.toml
-    // free of a flag the user never opted into.
+    // `= false`, which keeps config.toml free of a flag the user never opted
+    // into.
     nextTomlText = upsertTomlSectionBooleanKey(
       nextTomlText,
       "features",
@@ -3260,18 +3453,6 @@ export function patchCodexConfigTomlText(
       patch.defaultModeRequestUserInput ? true : null
     )
   }
-  if (typeof patch.serviceTierFast === "boolean") {
-    nextTomlText = updateTomlRootStringKey(
-      nextTomlText,
-      "service_tier",
-      patch.serviceTierFast ? "fast" : ""
-    )
-  }
-  nextTomlText = updateTomlRootBooleanKey(
-    nextTomlText,
-    "disable_response_storage",
-    true
-  )
   const trimmed = nextTomlText.trim()
   return trimmed ? `${trimmed}\n` : ""
 }
@@ -3292,6 +3473,10 @@ export function buildGrokStructuredConfig(draft: {
   grokCustomApiKey: string
   grokCustomApiBackend: string
   grokCustomContextWindow: string
+  grokCustomReasoningEfforts: string[]
+  grokCustomReasoningEffortsBaseline: string[]
+  grokCustomExtraModels?: string[]
+  grokCustomExtraModelsBaseline?: string[]
   grokAutoCompactThreshold: string
 }): GrokStructuredConfig {
   // The custom-model group applies only in the `custom` auth method; the
@@ -3310,7 +3495,17 @@ export function buildGrokStructuredConfig(draft: {
     const n = Number.parseInt(trimmed, 10)
     return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : null
   }
+  // Likewise only once the list moved; left out, the extras codeg added stay.
+  const extrasMoved =
+    modelId &&
+    !sameModelIds(
+      draft.grokCustomExtraModels ?? [],
+      draft.grokCustomExtraModelsBaseline ?? []
+    )
   return {
+    ...(extrasMoved
+      ? { customExtraModels: draft.grokCustomExtraModels ?? [] }
+      : {}),
     permissionMode: draft.grokPermissionMode || null,
     defaultReasoningEffort: draft.grokReasoningEffort || null,
     customModelId: modelId || null,
@@ -3325,6 +3520,19 @@ export function buildGrokStructuredConfig(draft: {
     customContextWindow: modelId
       ? positiveInt(draft.grokCustomContextWindow)
       : null,
+    // Only once the chips moved off the list they were read as (an empty list
+    // then removes the key). Otherwise null — "leave it as it is" — like the
+    // Codex sandbox patch: the raw editor's text is the merge base and the
+    // structured values land on top, so re-sending what was read would revert
+    // levels the user typed there.
+    customReasoningEfforts:
+      modelId &&
+      !sameGrokReasoningEfforts(
+        draft.grokCustomReasoningEfforts,
+        draft.grokCustomReasoningEffortsBaseline
+      )
+        ? draft.grokCustomReasoningEfforts
+        : null,
     // Compaction is session-global, independent of the custom model.
     autoCompactThresholdPercent: percent(draft.grokAutoCompactThreshold),
   }
@@ -3348,6 +3556,10 @@ export function buildGrokSaveOptions(
     grokCustomApiKey: string
     grokCustomApiBackend: string
     grokCustomContextWindow: string
+    grokCustomReasoningEfforts: string[]
+    grokCustomReasoningEffortsBaseline: string[]
+    grokCustomExtraModels?: string[]
+    grokCustomExtraModelsBaseline?: string[]
     grokAutoCompactThreshold: string
     grokConfigTomlText: string
   },
@@ -3515,10 +3727,16 @@ export function configTextForClaudeSave(
  * written explicitly ("1"/"0") rather than left implicit/absent. Pure — shared
  * by the toggle handler, the save path, and tests.
  */
+/** The same ids in the same order. */
+export function sameModelIds(a: readonly string[], b: readonly string[]) {
+  return a.length === b.length && a.every((id, i) => id === b[i])
+}
+
 export function setClaudeEnvFlagInConfigText(
   configText: string,
   envKey: string,
-  value: string
+  /** `null` removes the key. */
+  value: string | null
 ): { configText: string; recoveredFromInvalid: boolean } {
   const parseResult = parseConfigJsonText(configText)
   const config: Record<string, unknown> = parseResult.error
@@ -3528,8 +3746,16 @@ export function setClaudeEnvFlagInConfigText(
     typeof config.env === "object" && config.env && !Array.isArray(config.env)
       ? { ...(config.env as Record<string, unknown>) }
       : {}
-  env[envKey] = value
-  config.env = env
+  if (value === null) {
+    delete env[envKey]
+  } else {
+    env[envKey] = value
+  }
+  if (Object.keys(env).length === 0) {
+    delete config.env
+  } else {
+    config.env = env
+  }
   return {
     configText: JSON.stringify(config, null, 2),
     recoveredFromInvalid: Boolean(parseResult.error),
@@ -3691,14 +3917,11 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
     agent.agent_type === "hermes" ? parseHermesConfig(configText) : null
   const openCodeAuthJsonText = agent.opencode_auth_json ?? ""
   const codexAuthJsonText = agent.codex_auth_json ?? ""
-  const codexConfigTomlText =
-    agent.agent_type === "codex"
-      ? updateTomlRootBooleanKey(
-          agent.codex_config_toml ?? "",
-          "disable_response_storage",
-          true
-        )
-      : (agent.codex_config_toml ?? "")
+  // Exactly what is on disk. The draft used to force
+  // `disable_response_storage = true` in here, so every save wrote it back.
+  // codex removed that key in 0.30.0 (openai/codex#3212) and sends every
+  // request with `store: false`; current codex reports it as unrecognized.
+  const codexConfigTomlText = agent.codex_config_toml ?? ""
   const codexSandbox = agent.codex_sandbox_settings ?? null
   // Seeded once, then fingerprinted, so a save can tell a real control change
   // from "untouched, still whatever config.toml says".
@@ -3825,10 +4048,8 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
     codexModelProvider: codexImportant.modelProvider,
     codexProviderOptions: codexImportant.providerOptions,
     codexSupportsWebsockets: codexImportant.supportsWebsockets,
-    codexSkills: codexImportant.skills,
     codexDefaultModeRequestUserInput:
       codexImportant.defaultModeRequestUserInput,
-    codexServiceTierFast: codexImportant.serviceTierFast,
     ...codexSandboxFields,
     codexSandboxBaseline: codexSandboxBaselineOf(codexSandboxFields),
     codexSandboxShadowed:
@@ -3848,8 +4069,12 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
     claudeSendAttributionHeader: important.claudeSendAttributionHeader,
     claudeDisableNonessentialTraffic:
       important.claudeDisableNonessentialTraffic,
+    claudeGatewayDiscovery: important.claudeGatewayDiscovery,
+    claudePickerModels: agent.claude_model_picker ?? [],
+    claudePickerModelsBaseline: agent.claude_model_picker ?? [],
     codexAuthJsonText,
     codexConfigTomlText,
+    codexConfigTomlBaseline: codexConfigTomlText,
     codexModelList: parseCodexModelConfig(agent.codex_model_catalog ?? null),
     grokConfigTomlText,
     grokAuthMode,
@@ -3864,6 +4089,13 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
       agent.grok_settings?.custom_context_window != null
         ? String(agent.grok_settings.custom_context_window)
         : "",
+    grokCustomReasoningEfforts:
+      agent.grok_settings?.custom_reasoning_efforts ?? [],
+    grokCustomReasoningEffortsBaseline:
+      agent.grok_settings?.custom_reasoning_efforts ?? [],
+    grokCustomExtraModels: agent.grok_settings?.custom_extra_models ?? [],
+    grokCustomExtraModelsBaseline:
+      agent.grok_settings?.custom_extra_models ?? [],
     grokAutoCompactThreshold:
       agent.grok_settings?.auto_compact_threshold_percent != null
         ? String(agent.grok_settings.auto_compact_threshold_percent)
@@ -3876,6 +4108,7 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
     clineApiKey: clineImportant.apiKey,
     clineModel: clineImportant.model,
     clineBaseUrl: clineImportant.baseUrl,
+    clineModels: clineImportant.models,
     hermesProvider: hermesValues?.provider ?? "openrouter",
     hermesConfigYaml: agent.hermes_config_yaml ?? "",
     hermesHome: hermesValues?.hermesHome ?? "",
@@ -4651,6 +4884,9 @@ export function AcpAgentSettings() {
   const ime = useImeGuard()
   const locale = useLocale()
   const t = useTranslations("AcpAgentSettings")
+  const tCatalogScoped = useTranslations("CodexModelEditor.catalogSource")
+  const tCatalog = tCatalogScoped as unknown as CodexCatalogTranslator
+  const tModels = useTranslations("ProviderModels")
   const rawTranslator = t as unknown as AcpTranslator
   acpTranslator = (key, values) => rawTranslator(key, values)
   const searchParams = useSearchParams()
@@ -5028,8 +5264,13 @@ export function AcpAgentSettings() {
     handledSearchAgentRef.current = requestedAgentType
   }, [requestedAgentType, sortedAgents])
 
+  // Bring the selected agent into view when the selection changes, and again
+  // when a reload returns the list: it is unmounted while agents load and
+  // comes back scrolled to the top. Changes to the list itself must not
+  // scroll it — a drag reorders the agents on every row it passes, and
+  // following the selected agent then pulls the list away from the pointer.
   useEffect(() => {
-    if (!selectedAgentType) return
+    if (loadingAgents || !selectedAgentType) return
     const container = agentListRef.current
     if (!container) return
     const selected = container.querySelector<HTMLElement>(
@@ -5037,7 +5278,7 @@ export function AcpAgentSettings() {
     )
     if (!selected) return
     selected.scrollIntoView({ block: "nearest", behavior: "smooth" })
-  }, [selectedAgentType, sortedAgents])
+  }, [loadingAgents, selectedAgentType])
 
   useEffect(() => {
     if (sortedAgents.length === 0) {
@@ -5188,6 +5429,7 @@ export function AcpAgentSettings() {
         openCodeAuthJsonText?: string
         codexAuthJsonText?: string
         codexConfigTomlText?: string
+        codexConfigTomlBaseline?: string
         codexModelCatalog?: string
         codexSandbox?: CodexSandboxStructuredConfig
         grokConfigTomlText?: string
@@ -5239,6 +5481,10 @@ export function AcpAgentSettings() {
             typeof options?.codexConfigTomlText === "string"
               ? options.codexConfigTomlText
               : null,
+          codex_config_toml_baseline:
+            typeof options?.codexConfigTomlBaseline === "string"
+              ? options.codexConfigTomlBaseline
+              : null,
           codex_model_catalog:
             typeof options?.codexModelCatalog === "string"
               ? options.codexModelCatalog
@@ -5288,6 +5534,13 @@ export function AcpAgentSettings() {
                           options.grokStructured.customApiBackend,
                         custom_context_window:
                           options.grokStructured.customContextWindow,
+                        // null = levels left as they were.
+                        custom_reasoning_efforts: options.grokStructured
+                          .customModelId
+                          ? (options.grokStructured.customReasoningEfforts ??
+                            agent.grok_settings?.custom_reasoning_efforts ??
+                            [])
+                          : [],
                         auto_compact_threshold_percent:
                           options.grokStructured.autoCompactThresholdPercent,
                       }
@@ -5308,21 +5561,31 @@ export function AcpAgentSettings() {
   // drafts (to preserve in-progress edits), so without this the collapsed raw
   // editor and the structured dropdowns could drift out of sync with disk (the
   // structured merge and the raw editor each write keys the other doesn't echo).
-  const reseedAgentDraft = useCallback(async (agentType: AgentType) => {
-    try {
-      const fresh = await acpListAgents()
-      setAgents(fresh)
-      publishAgentDisplay(fresh)
-      const agent = fresh.find((a) => a.agent_type === agentType)
-      if (agent) {
-        setDrafts((prev) => ({ ...prev, [agentType]: buildAgentDraft(agent) }))
+  const reseedAgentDraft = useCallback(
+    async (agentType: AgentType, onlyIfStill?: AgentDraft) => {
+      try {
+        const fresh = await acpListAgents()
+        setAgents(fresh)
+        publishAgentDisplay(fresh)
+        const agent = fresh.find((a) => a.agent_type === agentType)
+        if (agent) {
+          // `onlyIfStill`: the draft a save submitted. An edit made while the
+          // save was in flight replaced it, and is kept — with the draft's own
+          // baseline, which still matches its text.
+          setDrafts((prev) =>
+            onlyIfStill && prev[agentType] && prev[agentType] !== onlyIfStill
+              ? prev
+              : { ...prev, [agentType]: buildAgentDraft(agent) }
+          )
+        }
+      } catch (err) {
+        // Non-fatal: the save already committed, and the agents-updated
+        // subscription will resync shortly — never surface this as a save failure.
+        console.error(`[Settings] reseed ${agentType} draft failed:`, err)
       }
-    } catch (err) {
-      // Non-fatal: the save already committed, and the agents-updated
-      // subscription will resync shortly — never surface this as a save failure.
-      console.error(`[Settings] reseed ${agentType} draft failed:`, err)
-    }
-  }, [])
+    },
+    []
+  )
 
   const reseedGrokDraft = useCallback(
     () => reseedAgentDraft("grok"),
@@ -6075,6 +6338,88 @@ export function AcpAgentSettings() {
     )
   }, [modelProviders, selectedAgent])
 
+  // The models a custom Claude gateway lists, for its model fields and the
+  // extra /model rows — asked the way Claude sends this key: as a Bearer
+  // token (`ANTHROPIC_AUTH_TOKEN`).
+  const claudeProviderModels = useProviderModels(
+    selectedAgent?.agent_type === "claude_code" &&
+      selectedDraft?.claudeAuthMode === "custom"
+      ? {
+          protocol: "anthropic",
+          baseUrl: selectedDraft.apiBaseUrl,
+          apiKey: selectedDraft.apiKey,
+          keyHeader: "bearer",
+        }
+      : null
+  )
+  // An OpenAI-compatible Cline provider's models, for its model field and the
+  // models.json table.
+  const clineProviderModels = useProviderModels(
+    selectedAgent?.agent_type === "cline" &&
+      selectedDraft?.clineProvider === CLINE_CUSTOM_MODEL_PROVIDER
+      ? {
+          protocol: "openai",
+          baseUrl: selectedDraft.clineBaseUrl,
+          apiKey: selectedDraft.clineApiKey,
+        }
+      : null
+  )
+  // A custom Grok endpoint's models, asked the way its backend talks: the
+  // Anthropic Messages list for `messages`, the OpenAI one otherwise; xAI's
+  // own API when the URL is left blank.
+  const grokProviderModels = useProviderModels(
+    selectedAgent?.agent_type === "grok" &&
+      selectedDraft?.grokAuthMode === "custom"
+      ? {
+          protocol:
+            selectedDraft.grokCustomApiBackend === "messages"
+              ? "anthropic"
+              : "openai",
+          baseUrl:
+            selectedDraft.grokCustomBaseUrl.trim() || GROK_DEFAULT_BASE_URL,
+          apiKey: selectedDraft.grokCustomApiKey,
+        }
+      : null
+  )
+  // A custom Hermes endpoint's models (OpenAI-compatible), for its model
+  // field. Hermes lists them in the composer itself, from the named provider
+  // codeg writes the endpoint as.
+  const hermesProviderModels = useProviderModels(
+    selectedAgent?.agent_type === "hermes" &&
+      selectedDraft?.hermesProvider === "custom"
+      ? {
+          protocol: "openai",
+          baseUrl: selectedDraft.apiBaseUrl,
+          apiKey: selectedDraft.apiKey,
+        }
+      : null
+  )
+  // The Gemini API's own models for a key-authenticated Gemini (a custom
+  // endpoint, or Google's when no URL is set): suggestions for its model
+  // field. Gemini CLI itself only ever offers its built-in list.
+  const geminiProviderModels = useProviderModels(
+    selectedAgent?.agent_type === "gemini" &&
+      (selectedDraft?.geminiAuthMode === "custom" ||
+        selectedDraft?.geminiAuthMode === "gemini_api_key")
+      ? {
+          protocol: "gemini",
+          baseUrl:
+            (selectedDraft.geminiAuthMode === "custom"
+              ? selectedDraft.apiBaseUrl.trim()
+              : "") || GEMINI_DEFAULT_API_BASE_URL,
+          apiKey: selectedDraft.geminiApiKey,
+        }
+      : null
+  )
+  /** The extra /model ids in effect: the bound provider's, else the panel's. */
+  const claudeBoundPickerModels = useMemo(() => {
+    if (selectedDraft?.claudeAuthMode !== "model_provider") return null
+    const provider = modelProviders.find(
+      (p) => p.id === selectedDraft.modelProviderId
+    )
+    return parseClaudeProviderModel(provider?.model ?? null).pickerModels ?? []
+  }, [modelProviders, selectedDraft])
+
   // The provider each agent was last bound to, remembered across auth-mode
   // changes. The auth-mode handlers drop `draft.modelProviderId` whenever the
   // mode leaves "model_provider", so that a save in another mode cannot
@@ -6312,6 +6657,10 @@ export function AcpAgentSettings() {
           clineApiKey: cline.apiKey,
           clineModel: cline.model,
           clineBaseUrl: cline.baseUrl,
+          // Text that names no table says nothing about the one loaded: the
+          // list keeps it, so a later pick edits the whole table rather than
+          // replacing it with the pick alone.
+          clineModels: cline.models ?? current.clineModels,
         }))
         return
       }
@@ -6367,6 +6716,7 @@ export function AcpAgentSettings() {
         claudeSendAttributionHeader: important.claudeSendAttributionHeader,
         claudeDisableNonessentialTraffic:
           important.claudeDisableNonessentialTraffic,
+        claudeGatewayDiscovery: important.claudeGatewayDiscovery,
       }))
     },
     [selectedAgent, selectedDraft, updateSelectedDraft]
@@ -6440,6 +6790,40 @@ export function AcpAgentSettings() {
         // re-persist a stale value from the overlay. Mirrors
         // handleImportantConfigChange's dual configText + envText write.
         envText: patchEnvText(current.envText, { [envKey]: value }),
+        configText: next.configText,
+      }))
+    },
+    [selectedAgent, selectedDraft, t, updateSelectedDraft]
+  )
+
+  // Claude reads the gateway discovery switch as set-or-not, so turning it off
+  // removes the key from the native config `env` and the DB env overlay.
+  const handleClaudeGatewayDiscoveryChange = useCallback(
+    (enabled: boolean) => {
+      if (
+        !selectedAgent ||
+        !selectedDraft ||
+        selectedAgent.agent_type !== "claude_code"
+      )
+        return
+      const next = setClaudeEnvFlagInConfigText(
+        selectedDraft.configText,
+        CLAUDE_GATEWAY_DISCOVERY_ENV_KEY,
+        enabled ? CLAUDE_ENV_FLAG_ON : null
+      )
+      if (next.recoveredFromInvalid) {
+        toast.warning(t("warnings.nativeJsonRecoveredStructured"))
+      }
+      setConfigErrors((prev) => ({
+        ...prev,
+        [selectedAgent.agent_type]: null,
+      }))
+      updateSelectedDraft((current) => ({
+        ...current,
+        claudeGatewayDiscovery: enabled,
+        envText: patchEnvText(current.envText, {
+          [CLAUDE_GATEWAY_DISCOVERY_ENV_KEY]: enabled ? CLAUDE_ENV_FLAG_ON : "",
+        }),
         configText: next.configText,
       }))
     },
@@ -6671,31 +7055,22 @@ export function AcpAgentSettings() {
           }
         })
       } else if (agentType === "codex") {
-        // The provider stores a structured model config; root `model` is its
-        // default slug and we reference the catalog the bind path generates.
+        // The provider stores a structured model config. The save publishes
+        // what it makes — the catalog, `model_catalog_json`, root `model` —
+        // from the provider's row; the draft only mirrors the endpoint.
         const codexList = parseCodexModelConfig(provider?.model ?? null)
-        const codexHasConfig =
-          codexList.customs.length > 0 ||
-          (codexList.excludedOfficials?.length ?? 0) > 0
         const codexModel = codexList.default ?? codexList.customs[0]?.slug ?? ""
         const nextAuthPatch = patchCodexAuthJsonText(
           selectedDraft.codexAuthJsonText,
           { apiKey, authMode: null }
         )
         const nextAuthJsonText = nextAuthPatch.authJsonText
-        // Always pass the provider's model (empty string clears it from the toml).
-        let nextConfigTomlText = patchCodexConfigTomlText(
+        const nextConfigTomlText = patchCodexConfigTomlText(
           selectedDraft.codexConfigTomlText,
           {
             modelProvider: CODEX_DEFAULT_MODEL_PROVIDER,
             apiBaseUrl: apiUrl,
-            model: codexModel,
           }
-        )
-        nextConfigTomlText = updateTomlRootStringKey(
-          nextConfigTomlText,
-          "model_catalog_json",
-          codexHasConfig ? "codeg-model-catalog.json" : ""
         )
         const synced = extractCodexImportantValues(
           nextAuthJsonText,
@@ -7110,8 +7485,13 @@ export function AcpAgentSettings() {
 
   const handleClineFieldChange = useCallback(
     (
-      key: "clineProvider" | "clineApiKey" | "clineModel" | "clineBaseUrl",
-      value: string
+      key:
+        | "clineProvider"
+        | "clineApiKey"
+        | "clineModel"
+        | "clineBaseUrl"
+        | "clineModels",
+      value: string | string[]
     ) => {
       if (
         !selectedAgent ||
@@ -7124,14 +7504,17 @@ export function AcpAgentSettings() {
         const next = { ...current, [key]: value }
         // Rebuild config_json from Cline draft fields
         const config: Record<string, unknown> = {}
-        config.apiProvider =
-          key === "clineProvider" ? value : next.clineProvider
-        const apiKey = key === "clineApiKey" ? value : next.clineApiKey
-        if (apiKey.trim()) config.apiKey = apiKey.trim()
-        const model = key === "clineModel" ? value : next.clineModel
-        if (model.trim()) config.model = model.trim()
-        const baseUrl = key === "clineBaseUrl" ? value : next.clineBaseUrl
-        if (baseUrl.trim()) config.apiBaseUrl = baseUrl.trim()
+        config.apiProvider = next.clineProvider
+        if (next.clineApiKey.trim()) config.apiKey = next.clineApiKey.trim()
+        if (next.clineModel.trim()) config.model = next.clineModel.trim()
+        if (next.clineBaseUrl.trim())
+          config.apiBaseUrl = next.clineBaseUrl.trim()
+        // Only an OpenAI-compatible provider's models come from the table.
+        if (
+          next.clineProvider === CLINE_CUSTOM_MODEL_PROVIDER &&
+          next.clineModels !== null
+        )
+          config.models = next.clineModels
         next.configText = JSON.stringify(config, null, 2)
         return next
       })
@@ -7639,6 +8022,35 @@ export function AcpAgentSettings() {
     [handleOpenCodeConfigPatch, openCodeNewModelIds, selectedOpenCodeConfig, t]
   )
 
+  // The provider's models as picked from its own list: a model that stays
+  // keeps its entry, a new one is `{name: id}`, an unpicked one goes.
+  const handleOpenCodeSetModels = useCallback(
+    (providerId: string, ids: string[]) => {
+      const targetProviderId = providerId.trim()
+      if (!targetProviderId) return
+      handleOpenCodeConfigPatch((config) => {
+        const providerRoot = asObjectRecord(config.provider) ?? {}
+        if (!asObjectRecord(config.provider)) {
+          config.provider = providerRoot
+        }
+        const currentProvider =
+          asObjectRecord(providerRoot[targetProviderId]) ?? {}
+        if (!asObjectRecord(providerRoot[targetProviderId])) {
+          providerRoot[targetProviderId] = currentProvider
+        }
+        const previous = asObjectRecord(currentProvider.models) ?? {}
+        const next: Record<string, unknown> = {}
+        for (const id of ids) {
+          next[id] = Object.prototype.hasOwnProperty.call(previous, id)
+            ? previous[id]
+            : { name: id }
+        }
+        currentProvider.models = next
+      })
+    },
+    [handleOpenCodeConfigPatch]
+  )
+
   const handleOpenCodeRemoveModel = useCallback(
     (providerId: string, modelId: string) => {
       const targetProviderId = providerId.trim()
@@ -7799,9 +8211,7 @@ export function AcpAgentSettings() {
         codexModelProvider: important.modelProvider,
         codexProviderOptions: important.providerOptions,
         codexSupportsWebsockets: important.supportsWebsockets,
-        codexSkills: important.skills,
         codexDefaultModeRequestUserInput: important.defaultModeRequestUserInput,
-        codexServiceTierFast: important.serviceTierFast,
       }))
     },
     [selectedAgent, selectedDraft, updateSelectedDraft]
@@ -7823,39 +8233,44 @@ export function AcpAgentSettings() {
           { authMode: "chatgpt" }
         )
         const nextAuthJsonText = nextAuth.authJsonText
-        let nextConfigTomlText = updateTomlRootStringKey(
+        // Only `model_provider` goes. The save removes codeg's provider table
+        // when it holds codeg's keys alone, and keeps one the user wrote into
+        // whole (codex refuses a provider table missing its `name`).
+        const nextConfigTomlText = updateTomlRootStringKey(
           selectedDraft.codexConfigTomlText,
           "model_provider",
           ""
-        )
-        nextConfigTomlText = removeTomlSection(
-          nextConfigTomlText,
-          `model_providers.${CODEX_DEFAULT_MODEL_PROVIDER}`
         )
         const synced = extractCodexImportantValues(
           nextAuthJsonText,
           nextConfigTomlText
         )
-        updateSelectedDraft((current) => ({
-          ...current,
-          codexAuthMode: nextMode,
-          modelProviderId: null,
-          codexAuthJsonText: nextAuthJsonText,
-          codexConfigTomlText: nextConfigTomlText,
-          envText: patchEnvText(current.envText, {
-            OPENAI_API_KEY: "",
-            OPENAI_BASE_URL: "",
-          }),
-          apiBaseUrl: "",
-          apiKey: "",
-          model: synced.model,
-          codexModelProvider: synced.modelProvider,
-          codexProviderOptions: synced.providerOptions,
-          codexSupportsWebsockets: synced.supportsWebsockets,
-          codexSkills: synced.skills,
-          codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
-          codexServiceTierFast: synced.serviceTierFast,
-        }))
+        updateSelectedDraft((current) => {
+          // A subscription runs on codex's own list: the provider source goes
+          // with the provider, persisted by the save.
+          const { catalog: _source, ...codexModelList } = current.codexModelList
+          void _source
+          return {
+            ...current,
+            codexModelList,
+            codexAuthMode: nextMode,
+            modelProviderId: null,
+            codexAuthJsonText: nextAuthJsonText,
+            codexConfigTomlText: nextConfigTomlText,
+            envText: patchEnvText(current.envText, {
+              OPENAI_API_KEY: "",
+              OPENAI_BASE_URL: "",
+            }),
+            apiBaseUrl: "",
+            apiKey: "",
+            model: synced.model,
+            codexModelProvider: synced.modelProvider,
+            codexProviderOptions: synced.providerOptions,
+            codexSupportsWebsockets: synced.supportsWebsockets,
+            codexDefaultModeRequestUserInput:
+              synced.defaultModeRequestUserInput,
+          }
+        })
         return
       }
 
@@ -7886,9 +8301,7 @@ export function AcpAgentSettings() {
         codexModelProvider: CODEX_DEFAULT_MODEL_PROVIDER,
         codexProviderOptions: synced.providerOptions,
         codexSupportsWebsockets: synced.supportsWebsockets,
-        codexSkills: synced.skills,
         codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
-        codexServiceTierFast: synced.serviceTierFast,
       }))
     },
     [selectedAgent, selectedDraft, updateSelectedDraft]
@@ -7900,29 +8313,60 @@ export function AcpAgentSettings() {
       // `next` arrives already pruned of exclusions that no longer name a
       // listable official, so a plain count is the *effective* customization —
       // codeg only takes over codex's model table when something really deviates.
-      const hasCatalog =
-        next.customs.length > 0 || (next.excludedOfficials?.length ?? 0) > 0
-      updateSelectedDraft((current) => {
-        let toml = updateTomlRootStringKey(
-          current.codexConfigTomlText,
-          "model",
-          defaultSlug
-        )
-        toml = updateTomlRootStringKey(
-          toml,
-          "model_catalog_json",
-          hasCatalog ? "codeg-model-catalog.json" : ""
-        )
-        return {
-          ...current,
-          codexModelList: next,
-          model: defaultSlug,
-          codexConfigTomlText: toml,
-        }
-      })
+      const managed =
+        next.customs.length > 0 ||
+        (next.excludedOfficials?.length ?? 0) > 0 ||
+        !!next.catalog
+      updateSelectedDraft((current) => ({
+        ...current,
+        codexModelList: next,
+        model: defaultSlug,
+        // While codeg publishes a catalog, `model_catalog_json` and root
+        // `model` are the backend's, written from this list on save, so the
+        // text carries root `model` as it was loaded — a star placed before
+        // the list became customized must not read as a hand edit. Otherwise
+        // the star is root `model`.
+        codexConfigTomlText: managed
+          ? withRootModelOf(
+              current.codexConfigTomlText,
+              current.codexConfigTomlBaseline
+            )
+          : updateTomlRootStringKey(
+              current.codexConfigTomlText,
+              "model",
+              defaultSlug
+            ),
+      }))
     },
     [updateSelectedDraft]
   )
+
+  // Where the Codex model editor takes a provider's own list from: the bound
+  // provider (its key, read-only), or the panel's API URL and key.
+  const codexCatalogEndpoint = useMemo<CodexCatalogEndpoint | null>(() => {
+    if (!selectedDraft || selectedAgent?.agent_type !== "codex") return null
+    if (selectedDraft.codexAuthMode === "model_provider") {
+      const provider = modelProviders.find(
+        (p) => p.id === selectedDraft.modelProviderId
+      )
+      if (!provider) return null
+      return {
+        baseUrl: provider.api_url,
+        keySource: { kind: "provider", providerId: provider.id },
+        showStatus: true,
+        managedBy: provider.name,
+      }
+    }
+    if (selectedDraft.codexAuthMode === "api_key") {
+      const apiKey = selectedDraft.apiKey.trim()
+      return {
+        baseUrl: selectedDraft.apiBaseUrl,
+        keySource: apiKey ? { kind: "inline", apiKey } : null,
+        showStatus: true,
+      }
+    }
+    return null
+  }, [selectedAgent?.agent_type, selectedDraft, modelProviders])
 
   const handleCodexImportantConfigChange = useCallback(
     (key: "apiBaseUrl" | "apiKey" | "model", value: string) => {
@@ -7967,9 +8411,7 @@ export function AcpAgentSettings() {
         codexModelProvider: synced.modelProvider,
         codexProviderOptions: synced.providerOptions,
         codexSupportsWebsockets: synced.supportsWebsockets,
-        codexSkills: synced.skills,
         codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
-        codexServiceTierFast: synced.serviceTierFast,
         codexAuthJsonText: nextAuth.authJsonText,
         codexConfigTomlText: nextToml,
       }))
@@ -7982,7 +8424,13 @@ export function AcpAgentSettings() {
       if (
         !selectedAgent ||
         !selectedDraft ||
-        selectedAgent.agent_type !== "codex"
+        selectedAgent.agent_type !== "codex" ||
+        // The switch is not rendered then; the guard keeps any other caller
+        // from pinning a subscription onto an empty codeg provider.
+        !codexWebsocketSwitchApplies(
+          selectedDraft.codexAuthMode,
+          selectedDraft.codexModelProvider
+        )
       )
         return
       const nextToml = patchCodexConfigTomlText(
@@ -8004,42 +8452,7 @@ export function AcpAgentSettings() {
         codexModelProvider: synced.modelProvider,
         codexProviderOptions: synced.providerOptions,
         codexSupportsWebsockets: synced.supportsWebsockets,
-        codexSkills: synced.skills,
         codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
-        codexServiceTierFast: synced.serviceTierFast,
-        codexConfigTomlText: nextToml,
-      }))
-    },
-    [selectedAgent, selectedDraft, updateSelectedDraft]
-  )
-
-  const handleCodexSkillsChange = useCallback(
-    (enabled: boolean) => {
-      if (
-        !selectedAgent ||
-        !selectedDraft ||
-        selectedAgent.agent_type !== "codex"
-      )
-        return
-      const nextToml = patchCodexConfigTomlText(
-        selectedDraft.codexConfigTomlText,
-        { skills: enabled }
-      )
-      const synced = extractCodexImportantValues(
-        selectedDraft.codexAuthJsonText,
-        nextToml
-      )
-      updateSelectedDraft((current) => ({
-        ...current,
-        apiBaseUrl: synced.apiBaseUrl,
-        apiKey: synced.apiKey ?? current.apiKey,
-        model: synced.model,
-        codexModelProvider: synced.modelProvider,
-        codexProviderOptions: synced.providerOptions,
-        codexSupportsWebsockets: synced.supportsWebsockets,
-        codexSkills: synced.skills,
-        codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
-        codexServiceTierFast: synced.serviceTierFast,
         codexConfigTomlText: nextToml,
       }))
     },
@@ -8070,42 +8483,7 @@ export function AcpAgentSettings() {
         codexModelProvider: synced.modelProvider,
         codexProviderOptions: synced.providerOptions,
         codexSupportsWebsockets: synced.supportsWebsockets,
-        codexSkills: synced.skills,
         codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
-        codexServiceTierFast: synced.serviceTierFast,
-        codexConfigTomlText: nextToml,
-      }))
-    },
-    [selectedAgent, selectedDraft, updateSelectedDraft]
-  )
-
-  const handleCodexServiceTierFastChange = useCallback(
-    (enabled: boolean) => {
-      if (
-        !selectedAgent ||
-        !selectedDraft ||
-        selectedAgent.agent_type !== "codex"
-      )
-        return
-      const nextToml = patchCodexConfigTomlText(
-        selectedDraft.codexConfigTomlText,
-        { serviceTierFast: enabled }
-      )
-      const synced = extractCodexImportantValues(
-        selectedDraft.codexAuthJsonText,
-        nextToml
-      )
-      updateSelectedDraft((current) => ({
-        ...current,
-        apiBaseUrl: synced.apiBaseUrl,
-        apiKey: synced.apiKey ?? current.apiKey,
-        model: synced.model,
-        codexModelProvider: synced.modelProvider,
-        codexProviderOptions: synced.providerOptions,
-        codexSupportsWebsockets: synced.supportsWebsockets,
-        codexSkills: synced.skills,
-        codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
-        codexServiceTierFast: synced.serviceTierFast,
         codexConfigTomlText: nextToml,
       }))
     },
@@ -8205,14 +8583,14 @@ export function AcpAgentSettings() {
               await persistConfig("codex", draft.configText, {
                 codexAuthJsonText: authJson,
                 codexConfigTomlText: draft.codexConfigTomlText,
+                codexConfigTomlBaseline: draft.codexConfigTomlBaseline,
                 codexModelCatalog:
                   serializeCodexModelConfig(draft.codexModelList) ?? "",
                 codexSandbox: codexSandboxSaveConfig(draft),
               })
             } catch (err) {
-              const msg = toErrorMessage(err)
               toast.error(t("codex.loginSaveFailed"), {
-                description: msg,
+                description: describeCodexSaveError(err, tCatalog),
               })
             }
           }
@@ -8244,6 +8622,7 @@ export function AcpAgentSettings() {
     persistEnv,
     updateSelectedDraft,
     t,
+    tCatalog,
   ])
 
   useEffect(() => {
@@ -8901,7 +9280,7 @@ export function AcpAgentSettings() {
                       selectedDraft.codexAuthMode === "model_provider") && (
                       <div className="space-y-1.5">
                         <label className="text-2xs text-muted-foreground">
-                          API URL
+                          {t("codex.apiUrlLabel")}
                         </label>
                         <Input
                           value={selectedDraft.apiBaseUrl}
@@ -8923,7 +9302,7 @@ export function AcpAgentSettings() {
                       selectedDraft.codexAuthMode === "model_provider") && (
                       <div className="space-y-1.5">
                         <label className="text-2xs text-muted-foreground">
-                          API Key
+                          {t("codex.apiKeyLabel")}
                         </label>
                         <div className="flex items-center gap-2">
                           <Input
@@ -8980,35 +9359,49 @@ export function AcpAgentSettings() {
                           readOnly={
                             selectedDraft.codexAuthMode === "model_provider"
                           }
+                          endpoint={codexCatalogEndpoint}
                         />
+                        {selectedDraft.codexAuthMode === "api_key" && (
+                          <CodexSavePreview
+                            configToml={selectedDraft.codexConfigTomlText}
+                            authJson={selectedDraft.codexAuthJsonText}
+                            modelList={
+                              serializeCodexModelConfig(
+                                selectedDraft.codexModelList
+                              ) ?? ""
+                            }
+                          />
+                        )}
                       </div>
                     )}
 
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between rounded-md border px-3 py-2">
-                        <label className="text-2xs text-muted-foreground">
-                          {t("codex.enableWebsocket")}
-                        </label>
-                        <Switch
-                          checked={selectedDraft.codexSupportsWebsockets}
-                          onCheckedChange={handleCodexSupportsWebsocketsChange}
-                          aria-label={t("codex.enableWebsocketAria")}
-                        />
+                    {/* `supports_websockets` on the configured provider — the
+                        only WebSocket knob since codex 0.116.0. Official
+                        Subscription runs on the built-in OpenAI provider,
+                        which already uses WebSockets and cannot be
+                        reconfigured; see codexWebsocketSwitchApplies. */}
+                    {codexWebsocketSwitchApplies(
+                      selectedDraft.codexAuthMode,
+                      selectedDraft.codexModelProvider
+                    ) ? (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between rounded-md border px-3 py-2">
+                          <label className="text-2xs text-muted-foreground">
+                            {t("codex.enableWebsocket")}
+                          </label>
+                          <Switch
+                            checked={selectedDraft.codexSupportsWebsockets}
+                            onCheckedChange={
+                              handleCodexSupportsWebsocketsChange
+                            }
+                            aria-label={t("codex.enableWebsocketAria")}
+                          />
+                        </div>
+                        <p className="text-3xs text-muted-foreground">
+                          {t("codex.enableWebsocketHint")}
+                        </p>
                       </div>
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between rounded-md border px-3 py-2">
-                        <label className="text-2xs text-muted-foreground">
-                          {t("codex.enableSkills")}
-                        </label>
-                        <Switch
-                          checked={selectedDraft.codexSkills}
-                          onCheckedChange={handleCodexSkillsChange}
-                          aria-label={t("codex.enableSkillsAria")}
-                        />
-                      </div>
-                    </div>
+                    ) : null}
 
                     {/* `[features].default_mode_request_user_input` — without
                         it codex refuses its own `request_user_input` tool
@@ -9034,19 +9427,6 @@ export function AcpAgentSettings() {
                       <p className="text-3xs text-muted-foreground">
                         {t("codex.enableDefaultModeRequestUserInputHint")}
                       </p>
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <div className="flex items-center justify-between rounded-md border px-3 py-2">
-                        <label className="text-2xs text-muted-foreground">
-                          {t("codex.enableFast")}
-                        </label>
-                        <Switch
-                          checked={selectedDraft.codexServiceTierFast}
-                          onCheckedChange={handleCodexServiceTierFastChange}
-                          aria-label={t("codex.enableFastAria")}
-                        />
-                      </div>
                     </div>
 
                     {/* ---- Sandbox & approvals (config.toml thread defaults) ----
@@ -9306,19 +9686,20 @@ export function AcpAgentSettings() {
                         onChange={(event) => {
                           handleCodexConfigTomlTextChange(event.target.value)
                         }}
-                        placeholder={`disable_response_storage = true
-model = "gpt-6-astra"
+                        placeholder={`model = "gpt-6-astra"
 model_reasoning_effort = "high"
 model_provider = "codeg"
 
-[features]
-responses_websockets_v2 = true
-
 [model_providers.codeg]
-base_url = "https://api.openai.com/v1"
-supports_websockets = true`}
+base_url = "https://api.openai.com/v1"`}
                         className="min-h-40 max-h-80 font-mono text-xs"
                       />
+                      {selectedDraft.codexAuthMode !== "chatgpt_subscription" &&
+                        codexListIsManaged(selectedDraft.codexModelList) && (
+                          <p className="text-2xs text-muted-foreground">
+                            {t("codex.managedKeysHint")}
+                          </p>
+                        )}
                     </div>
 
                     <div className="flex justify-end">
@@ -9362,6 +9743,8 @@ supports_websockets = true`}
                                     selectedDraft.codexAuthJsonText,
                                   codexConfigTomlText:
                                     selectedDraft.codexConfigTomlText,
+                                  codexConfigTomlBaseline:
+                                    selectedDraft.codexConfigTomlBaseline,
                                   codexModelCatalog:
                                     serializeCodexModelConfig(
                                       selectedDraft.codexModelList
@@ -9370,6 +9753,12 @@ supports_websockets = true`}
                                     codexSandboxSaveConfig(selectedDraft),
                                 }
                               )
+                            )
+                            // The backend wrote the keys it manages (catalog,
+                            // `model_catalog_json`, root `model`); start the
+                            // next edit from what is on disk.
+                            .then(() =>
+                              reseedAgentDraft("codex", selectedDraft)
                             )
                             .then(() => {
                               toast.success(t("toasts.codexSaved"), {
@@ -9381,9 +9770,11 @@ supports_websockets = true`}
                                 "[Settings] save codex native config failed:",
                                 err
                               )
-                              const message = toErrorMessage(err)
                               toast.error(t("toasts.saveCodexNativeFailed"), {
-                                description: message,
+                                description: describeCodexSaveError(
+                                  err,
+                                  tCatalog
+                                ),
                               })
                             })
                         }}
@@ -9485,19 +9876,33 @@ supports_websockets = true`}
                     )}
 
                     <div className="space-y-1.5">
-                      <label className="text-2xs text-muted-foreground">
-                        Model
-                      </label>
-                      <Input
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-2xs text-muted-foreground">
+                          Model
+                        </label>
+                        {(selectedDraft.geminiAuthMode === "custom" ||
+                          selectedDraft.geminiAuthMode ===
+                            "gemini_api_key") && (
+                          <ProviderModelsFetchButton
+                            state={geminiProviderModels}
+                          />
+                        )}
+                      </div>
+                      <ModelIdInputWithFetch
                         value={selectedDraft.model}
                         readOnly={
                           selectedDraft.geminiAuthMode === "model_provider"
                         }
-                        onChange={(event) => {
-                          handleGeminiFieldChange("model", event.target.value)
+                        onChange={(value) => {
+                          handleGeminiFieldChange("model", value)
                         }}
+                        models={geminiProviderModels.models}
                         placeholder="gemini-3-pro-preview"
                       />
+                      {(selectedDraft.geminiAuthMode === "custom" ||
+                        selectedDraft.geminiAuthMode === "gemini_api_key") && (
+                        <ProviderModelsStatus state={geminiProviderModels} />
+                      )}
                       <p className="text-2xs text-muted-foreground">
                         {t("modelHintDefault")}
                       </p>
@@ -10275,6 +10680,27 @@ supports_websockets = true`}
                                             >
                                               {t("openCode.addModel")}
                                             </Button>
+                                            {openCodeModelsProtocol(
+                                              provider.npm
+                                            ) && (
+                                              <ProviderModelsPicker
+                                                input={{
+                                                  protocol:
+                                                    openCodeModelsProtocol(
+                                                      provider.npm
+                                                    ) ?? "openai",
+                                                  baseUrl: provider.baseUrl,
+                                                  apiKey: provider.apiKey,
+                                                }}
+                                                configured={provider.modelIds}
+                                                onConfirm={(ids) =>
+                                                  handleOpenCodeSetModels(
+                                                    providerId,
+                                                    ids
+                                                  )
+                                                }
+                                              />
+                                            )}
                                           </div>
 
                                           {provider.modelIds.length === 0 ? (
@@ -10718,19 +11144,29 @@ supports_websockets = true`}
                     )}
 
                     <div className="space-y-1.5">
-                      <label className="text-2xs text-muted-foreground">
-                        Model
-                      </label>
-                      <Input
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-2xs text-muted-foreground">
+                          Model
+                        </label>
+                        {selectedDraft.clineProvider ===
+                          CLINE_CUSTOM_MODEL_PROVIDER && (
+                          <ProviderModelsFetchButton
+                            state={clineProviderModels}
+                          />
+                        )}
+                      </div>
+                      <ModelIdInputWithFetch
                         value={selectedDraft.clineModel}
-                        onChange={(event) => {
-                          handleClineFieldChange(
-                            "clineModel",
-                            event.target.value
-                          )
+                        onChange={(value) => {
+                          handleClineFieldChange("clineModel", value)
                         }}
+                        models={clineProviderModels.models}
                         placeholder="claude-sonnet-5-5"
                       />
+                      {selectedDraft.clineProvider ===
+                        CLINE_CUSTOM_MODEL_PROVIDER && (
+                        <ProviderModelsStatus state={clineProviderModels} />
+                      )}
                     </div>
 
                     {/* Endpoint, like the key, is cline's own for a sign-in
@@ -10756,6 +11192,19 @@ supports_websockets = true`}
                           placeholder="https://api.openai.com/v1"
                         />
                       </div>
+                    )}
+
+                    {selectedDraft.clineProvider ===
+                      CLINE_CUSTOM_MODEL_PROVIDER && (
+                      <ModelIdListField
+                        ids={selectedDraft.clineModels ?? []}
+                        onChange={(ids) =>
+                          handleClineFieldChange("clineModels", ids)
+                        }
+                        state={clineProviderModels}
+                        title={tModels("clineList.title")}
+                        hint={tModels("clineList.hint")}
+                      />
                     )}
 
                     <div className="space-y-1.5">
@@ -11108,17 +11557,29 @@ supports_websockets = true`}
                     )}
 
                     <div className="space-y-1.5">
-                      <label className="text-2xs text-muted-foreground">
-                        {t("hermes.modelName")}
-                      </label>
-                      <Input
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-2xs text-muted-foreground">
+                          {t("hermes.modelName")}
+                        </label>
+                        {selectedDraft.hermesProvider === "custom" && (
+                          <ProviderModelsFetchButton
+                            state={hermesProviderModels}
+                            disabled={selectedIsSavingConfig}
+                          />
+                        )}
+                      </div>
+                      <ModelIdInputWithFetch
                         value={selectedDraft.model}
-                        onChange={(event) =>
-                          handleHermesFieldChange("model", event.target.value)
+                        onChange={(value) =>
+                          handleHermesFieldChange("model", value)
                         }
+                        models={hermesProviderModels.models}
                         placeholder="moonshotai/kimi-k2"
                         disabled={selectedIsSavingConfig}
                       />
+                      {selectedDraft.hermesProvider === "custom" && (
+                        <ProviderModelsStatus state={hermesProviderModels} />
+                      )}
                     </div>
 
                     {selectedHermesProviderOption?.kind === "oauth" && (
@@ -11419,6 +11880,12 @@ supports_websockets = true`}
                       from. */}
                     <DeepSeekModelListEditor
                       launchModel={selectedAgent.env.DEEPSEEK_ACP_MODEL}
+                      endpoint={{
+                        baseUrl:
+                          selectedAgent.env.DEEPSEEK_BASE_URL?.trim() ||
+                          DEEPSEEK_DEFAULT_BASE_URL,
+                        apiKey: selectedAgent.env.DEEPSEEK_API_KEY ?? "",
+                      }}
                     />
                   </>
                 ) : selectedAgent.agent_type === "qoder" ? (
@@ -11724,23 +12191,29 @@ supports_websockets = true`}
                         </div>
 
                         <div className="space-y-1.5">
-                          <label className="text-2xs text-muted-foreground">
-                            {t("grok.customModelIdLabel")}
-                          </label>
-                          <Input
+                          <div className="flex items-center justify-between gap-2">
+                            <label className="text-2xs text-muted-foreground">
+                              {t("grok.customModelIdLabel")}
+                            </label>
+                            <ProviderModelsFetchButton
+                              state={grokProviderModels}
+                              disabled={grokSaving}
+                            />
+                          </div>
+                          <ModelIdInputWithFetch
                             value={selectedDraft.grokCustomModelId}
-                            onChange={(event) =>
+                            onChange={(value) =>
                               updateSelectedDraft((current) => ({
                                 ...current,
-                                grokCustomModelId: event.target.value,
+                                grokCustomModelId: value,
                               }))
                             }
+                            models={grokProviderModels.models}
                             placeholder={t("grok.customModelIdPlaceholder")}
                             aria-label={t("grok.customModelIdLabel")}
-                            autoComplete="off"
-                            spellCheck={false}
                             disabled={grokSaving}
                           />
+                          <ProviderModelsStatus state={grokProviderModels} />
                           <p className="text-2xs text-muted-foreground">
                             {t("grok.customModelIdHint")}
                           </p>
@@ -11878,6 +12351,80 @@ supports_websockets = true`}
                             {t("grok.customContextWindowHint")}
                           </p>
                         </div>
+
+                        <ModelIdListField
+                          ids={selectedDraft.grokCustomExtraModels}
+                          onChange={(ids) =>
+                            updateSelectedDraft((current) => ({
+                              ...current,
+                              grokCustomExtraModels: ids,
+                            }))
+                          }
+                          state={grokProviderModels}
+                          readOnly={grokSaving}
+                          title={tModels("grokList.title")}
+                          hint={tModels("grokList.hint")}
+                        />
+
+                        {/* [model.<id>].reasoning_efforts — without levels from
+                            here or from Grok's own model catalog (it never asks
+                            the custom base_url), Grok reports no effort support
+                            and the composer has no effort selector for this
+                            model. */}
+                        <div className="space-y-1.5">
+                          <label
+                            id="grok-custom-reasoning-efforts-label"
+                            className="text-2xs text-muted-foreground"
+                          >
+                            {t("grok.customReasoningEffortsLabel")}
+                          </label>
+                          <div
+                            role="group"
+                            aria-labelledby="grok-custom-reasoning-efforts-label"
+                            className="flex flex-wrap gap-1.5"
+                          >
+                            {grokReasoningEffortChoices(
+                              selectedDraft.grokCustomReasoningEfforts
+                            ).map((level) => {
+                              const active =
+                                selectedDraft.grokCustomReasoningEfforts.includes(
+                                  level
+                                )
+                              return (
+                                <button
+                                  key={level}
+                                  type="button"
+                                  disabled={grokSaving}
+                                  onClick={() =>
+                                    updateSelectedDraft((current) => ({
+                                      ...current,
+                                      grokCustomReasoningEfforts:
+                                        toggleGrokReasoningEffort(
+                                          current.grokCustomReasoningEfforts,
+                                          level
+                                        ),
+                                    }))
+                                  }
+                                  aria-pressed={active}
+                                  className={cn(
+                                    "rounded-full border px-2 py-0.5 font-mono text-2xs transition-colors",
+                                    active
+                                      ? "border-primary/40 bg-primary/10 text-foreground"
+                                      : "border-border text-muted-foreground hover:bg-muted"
+                                  )}
+                                >
+                                  {level}
+                                </button>
+                              )
+                            })}
+                          </div>
+                          <p className="text-2xs text-muted-foreground">
+                            {selectedDraft.grokCustomReasoningEfforts.length ===
+                            0
+                              ? t("grok.customReasoningEffortsEmptyHint")
+                              : t("grok.customReasoningEffortsHint")}
+                          </p>
+                        </div>
                       </div>
                     ) : null}
 
@@ -11970,14 +12517,36 @@ supports_websockets = true`}
                             // the API key is touched. buildGrokSaveOptions sends
                             // the raw text only when the user actually edited it
                             // (else the merge runs against fresh on-disk config).
+                            const grokSave = buildGrokSaveOptions(
+                              selectedDraft,
+                              selectedAgent.grok_config_toml
+                            )
                             await persistConfig(
                               selectedAgent.agent_type,
                               selectedDraft.configText,
-                              buildGrokSaveOptions(
-                                selectedDraft,
-                                selectedAgent.grok_config_toml
-                              )
+                              grokSave
                             )
+                            // The levels just written are what the chips now
+                            // start from, even if the re-read below fails:
+                            // moving them back to the old baseline would
+                            // otherwise send null and leave this list on disk.
+                            const writtenLevels =
+                              grokSave.grokStructured.customReasoningEfforts
+                            if (writtenLevels) {
+                              updateSelectedDraft((current) => ({
+                                ...current,
+                                grokCustomReasoningEffortsBaseline:
+                                  writtenLevels,
+                              }))
+                            }
+                            const writtenExtras =
+                              grokSave.grokStructured.customExtraModels
+                            if (writtenExtras) {
+                              updateSelectedDraft((current) => ({
+                                ...current,
+                                grokCustomExtraModelsBaseline: writtenExtras,
+                              }))
+                            }
                             // Independent second write (the API key lives in env).
                             // If it fails after config committed, report that
                             // partial outcome honestly rather than a blanket fail.
@@ -12300,23 +12869,35 @@ supports_websockets = true`}
 
                     {selectedAgent.agent_type === "claude_code" ? (
                       <div className="space-y-2">
+                        {selectedDraft.claudeAuthMode === "custom" && (
+                          <div className="flex items-center justify-between gap-2">
+                            <ProviderModelsStatus
+                              state={claudeProviderModels}
+                            />
+                            <ProviderModelsFetchButton
+                              state={claudeProviderModels}
+                              className="ml-auto"
+                            />
+                          </div>
+                        )}
                         <div className="grid gap-3 md:grid-cols-2">
                           <div className="space-y-1.5">
                             <label className="text-2xs text-muted-foreground">
                               {t("claude.mainModel")}
                             </label>
-                            <Input
+                            <ModelIdInputWithFetch
                               value={selectedDraft.claudeMainModel}
                               readOnly={
                                 selectedDraft.claudeAuthMode ===
                                 "model_provider"
                               }
-                              onChange={(event) => {
+                              onChange={(value) => {
                                 handleImportantConfigChange(
                                   "claudeMainModel",
-                                  event.target.value
+                                  value
                                 )
                               }}
+                              models={claudeProviderModels.models}
                               placeholder="claude-sonnet-5-5"
                             />
                           </div>
@@ -12324,18 +12905,19 @@ supports_websockets = true`}
                             <label className="text-2xs text-muted-foreground">
                               {t("claude.reasoningModel")}
                             </label>
-                            <Input
+                            <ModelIdInputWithFetch
                               value={selectedDraft.claudeReasoningModel}
                               readOnly={
                                 selectedDraft.claudeAuthMode ===
                                 "model_provider"
                               }
-                              onChange={(event) => {
+                              onChange={(value) => {
                                 handleImportantConfigChange(
                                   "claudeReasoningModel",
-                                  event.target.value
+                                  value
                                 )
                               }}
+                              models={claudeProviderModels.models}
                               placeholder="claude-opus-5-5"
                             />
                           </div>
@@ -12343,18 +12925,19 @@ supports_websockets = true`}
                             <label className="text-2xs text-muted-foreground">
                               {t("claude.haikuDefaultModel")}
                             </label>
-                            <Input
+                            <ModelIdInputWithFetch
                               value={selectedDraft.claudeDefaultHaikuModel}
                               readOnly={
                                 selectedDraft.claudeAuthMode ===
                                 "model_provider"
                               }
-                              onChange={(event) => {
+                              onChange={(value) => {
                                 handleImportantConfigChange(
                                   "claudeDefaultHaikuModel",
-                                  event.target.value
+                                  value
                                 )
                               }}
+                              models={claudeProviderModels.models}
                               placeholder="claude-haiku-5-5"
                             />
                           </div>
@@ -12362,18 +12945,19 @@ supports_websockets = true`}
                             <label className="text-2xs text-muted-foreground">
                               {t("claude.sonnetDefaultModel")}
                             </label>
-                            <Input
+                            <ModelIdInputWithFetch
                               value={selectedDraft.claudeDefaultSonnetModel}
                               readOnly={
                                 selectedDraft.claudeAuthMode ===
                                 "model_provider"
                               }
-                              onChange={(event) => {
+                              onChange={(value) => {
                                 handleImportantConfigChange(
                                   "claudeDefaultSonnetModel",
-                                  event.target.value
+                                  value
                                 )
                               }}
+                              models={claudeProviderModels.models}
                               placeholder="claude-sonnet-5-5"
                             />
                           </div>
@@ -12381,18 +12965,19 @@ supports_websockets = true`}
                             <label className="text-2xs text-muted-foreground">
                               {t("claude.opusDefaultModel")}
                             </label>
-                            <Input
+                            <ModelIdInputWithFetch
                               value={selectedDraft.claudeDefaultOpusModel}
                               readOnly={
                                 selectedDraft.claudeAuthMode ===
                                 "model_provider"
                               }
-                              onChange={(event) => {
+                              onChange={(value) => {
                                 handleImportantConfigChange(
                                   "claudeDefaultOpusModel",
-                                  event.target.value
+                                  value
                                 )
                               }}
+                              models={claudeProviderModels.models}
                               placeholder="claude-opus-5-5"
                             />
                           </div>
@@ -12400,18 +12985,19 @@ supports_websockets = true`}
                             <label className="text-2xs text-muted-foreground">
                               {t("claude.fableDefaultModel")}
                             </label>
-                            <Input
+                            <ModelIdInputWithFetch
                               value={selectedDraft.claudeDefaultFableModel}
                               readOnly={
                                 selectedDraft.claudeAuthMode ===
                                 "model_provider"
                               }
-                              onChange={(event) => {
+                              onChange={(value) => {
                                 handleImportantConfigChange(
                                   "claudeDefaultFableModel",
-                                  event.target.value
+                                  value
                                 )
                               }}
+                              models={claudeProviderModels.models}
                               placeholder="claude-fable-5-1"
                             />
                           </div>
@@ -12425,18 +13011,19 @@ supports_websockets = true`}
                               <label className="text-2xs text-muted-foreground">
                                 {t("claude.customModelOption")}
                               </label>
-                              <Input
+                              <ModelIdInputWithFetch
                                 value={selectedDraft.claudeCustomModelOption}
                                 readOnly={
                                   selectedDraft.claudeAuthMode ===
                                   "model_provider"
                                 }
-                                onChange={(event) => {
+                                onChange={(value) => {
                                   handleImportantConfigChange(
                                     "claudeCustomModelOption",
-                                    event.target.value
+                                    value
                                   )
                                 }}
+                                models={claudeProviderModels.models}
                                 placeholder="my-gateway/claude-opus-5-5"
                               />
                             </div>
@@ -12487,6 +13074,46 @@ supports_websockets = true`}
                             {t("claude.customModelOptionHint")}
                           </p>
                         </div>
+                        {selectedDraft.claudeAuthMode !==
+                          "official_subscription" && (
+                          <div className="space-y-2 border-t border-border/60 pt-3">
+                            <ClaudePickerModelsField
+                              ids={
+                                claudeBoundPickerModels ??
+                                selectedDraft.claudePickerModels
+                              }
+                              onChange={(ids) =>
+                                updateSelectedDraft((current) => ({
+                                  ...current,
+                                  claudePickerModels: ids,
+                                }))
+                              }
+                              state={
+                                selectedDraft.claudeAuthMode === "custom"
+                                  ? claudeProviderModels
+                                  : null
+                              }
+                              readOnly={claudeBoundPickerModels != null}
+                            />
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between rounded-md border px-3 py-2">
+                                <label className="text-2xs text-muted-foreground">
+                                  {t("claude.gatewayDiscovery")}
+                                </label>
+                                <Switch
+                                  checked={selectedDraft.claudeGatewayDiscovery}
+                                  onCheckedChange={
+                                    handleClaudeGatewayDiscoveryChange
+                                  }
+                                  aria-label={t("claude.gatewayDiscoveryAria")}
+                                />
+                              </div>
+                              <p className="text-2xs text-muted-foreground">
+                                {t("claude.gatewayDiscoveryHint")}
+                              </p>
+                            </div>
+                          </div>
+                        )}
                         <div className="space-y-1.5">
                           <div className="flex items-center justify-between rounded-md border px-3 py-2">
                             <label className="text-2xs text-muted-foreground">
@@ -12625,6 +13252,18 @@ supports_websockets = true`}
                             configToSave = materialized.configText
                             envToSave = materialized.envText
                           }
+                          // The extra /model rows of an unbound Claude are
+                          // kept by codeg, not in a config file (a bound
+                          // provider keeps its own): stored once they moved.
+                          const pickerToSave =
+                            selectedAgent.agent_type === "claude_code" &&
+                            selectedDraft.modelProviderId == null &&
+                            !sameModelIds(
+                              selectedDraft.claudePickerModels,
+                              selectedDraft.claudePickerModelsBaseline
+                            )
+                              ? selectedDraft.claudePickerModels
+                              : null
                           persistEnv(
                             selectedAgent.agent_type,
                             selectedDraft.enabled,
@@ -12637,6 +13276,14 @@ supports_websockets = true`}
                                 configToSave
                               )
                             )
+                            .then(async () => {
+                              if (!pickerToSave) return
+                              await acpUpdateClaudeModelPicker(pickerToSave)
+                              updateSelectedDraft((current) => ({
+                                ...current,
+                                claudePickerModelsBaseline: pickerToSave,
+                              }))
+                            })
                             .then(() => {
                               // Reflect the provider-authoritative rewrite AND the
                               // materialized hardening flags in the editors so the

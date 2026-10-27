@@ -194,7 +194,8 @@ pub struct AsyncTaskRecord {
     pub name: String,
     /// Already FRIENDLY, not the SDK's raw type: claude maps
     /// `local_bash`→`"shell"`, `local_workflow`→`"workflow"`,
-    /// `local_monitor`/`mcp`→`"monitor"`, and anything else to `"task"`; codex
+    /// `local_monitor`/`mcp`→`"monitor"`, and anything else to `"task"`, and
+    /// from 0.97.0 names a turn Claude Code started on its own `"turn"`; codex
     /// publishes `"shell"` for every background terminal. Kept a plain string so
     /// an unmapped future type renders as itself instead of failing to
     /// deserialize.
@@ -454,7 +455,29 @@ pub enum AcpEvent {
     /// keeping the pet pinned on `Waiting` through whatever work the agent
     /// does after the approval (which, for ExitPlanMode, is the entire
     /// implementation phase).
-    PermissionResolved { request_id: String },
+    PermissionResolved {
+        request_id: String,
+        /// The option that took effect, when the request was ANSWERED. `None`
+        /// when the agent withdrew it or the connection drained it — then no
+        /// option took effect. Omitted from the wire when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        option_id: Option<String>,
+        /// Who gave that answer. The first answer wins (a later one to the same
+        /// request is a no-op), so this is the only place that can say whose
+        /// answer it was: comparing options cannot tell a person's pick from a
+        /// policy that submitted the same one a moment later. `None` exactly
+        /// when `option_id` is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<PermissionAnswerOrigin>,
+    },
+    /// What an answered permission request decided about its tool call.
+    /// Follows the `PermissionResolved` that retired the card, and only for an
+    /// answer that took effect on a card naming a tool call and an option it
+    /// offered — never for a withdrawal or a drain. The lifecycle worker keeps
+    /// it in `tool_approval` (agent transcripts record no approvals), and the
+    /// snapshot carries the connection's recent ones for a client that attaches
+    /// later; both end up as a chip on the call's row in the transcript.
+    ToolApproval { approval: ToolApprovalInfo },
     /// Turn completed
     TurnComplete {
         session_id: String,
@@ -1366,6 +1389,73 @@ pub struct PermissionOptionInfo {
     pub meta: Option<serde_json::Value>,
 }
 
+impl PermissionOptionInfo {
+    /// The option that lets this one call through: the `allow_once` one.
+    /// For answers given away from the card — a chat channel's `/approve` and
+    /// its auto-approve — where nobody sees which option gets picked.
+    ///
+    /// Found by the kind `connection.rs` normalized, never by position: an
+    /// adapter orders its options as it sees fit, and claude-agent-acp 0.91.0
+    /// leads with the rejection for a call the Claude CLI marks `defaultToNo`.
+    /// Never an `allow_always` either: it writes a standing rule into the
+    /// user's own agent settings (as `codeg_ask_auto_allow_option` declines
+    /// to). `None` when the request offers no such option — leave it to the
+    /// card.
+    pub fn allow_once_in(options: &[Self]) -> Option<&Self> {
+        options.iter().find(|o| o.kind == "allow_once")
+    }
+
+    /// The option that turns this one call away: the `reject_once` one — not
+    /// a `reject_always`, which writes a standing rule just the same. As
+    /// [`Self::allow_once_in`].
+    pub fn reject_once_in(options: &[Self]) -> Option<&Self> {
+        options.iter().find(|o| o.kind == "reject_once")
+    }
+}
+
+/// Who answered a permission request. It travels WITH the answer to the
+/// connection, which reports it on [`AcpEvent::PermissionResolved`] for the
+/// answer that took effect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PermissionAnswerOrigin {
+    /// A person, on the permission card in a Codeg window (desktop or web).
+    User,
+    /// A chat channel: its `/approve` / `/deny` commands or its auto-approve.
+    ChatChannel,
+    /// The permission policy of a headless `codeg-cli` run.
+    CliPolicy { run_id: String },
+}
+
+impl PermissionAnswerOrigin {
+    /// The origin's `kind` tag, which is what an approval record keeps: the
+    /// run id of a CLI policy says nothing about the decision.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::ChatChannel => "chat_channel",
+            Self::CliPolicy { .. } => "cli_policy",
+        }
+    }
+}
+
+/// One answered permission request, as a record about its tool call: what was
+/// chosen, by whom, and when. See [`AcpEvent::ToolApproval`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolApprovalInfo {
+    pub tool_call_id: String,
+    /// The chosen option's ACP kind: `allow_once`, `allow_always`,
+    /// `reject_once` or `reject_always` (passed through verbatim, so a kind a
+    /// newer agent invents survives to the reader).
+    pub option_kind: String,
+    /// The chosen option's label, in the agent's own words — the only place
+    /// that says what an "always" covers for that agent.
+    pub option_name: String,
+    /// [`PermissionAnswerOrigin::kind`] of whoever answered.
+    pub origin: String,
+    pub decided_at: chrono::DateTime<chrono::Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionModeInfo {
     pub id: String,
@@ -1666,6 +1756,10 @@ pub struct AcpAgentInfo {
     /// permission mode is a launch flag, not a config key). Only populated
     /// for `AgentType::Cursor`. Derived from `cursor_cli_config_json`.
     pub cursor_settings: Option<CursorSettings>,
+    /// The `/model` picker ids codeg adds for codeg's Claude sessions when no
+    /// model provider is bound (`acp::claude_model_picker`). Only populated
+    /// for `AgentType::ClaudeCode`.
+    pub claude_model_picker: Option<Vec<String>>,
     pub model_provider_id: Option<i32>,
     /// Display icon for a custom ACP agent — normally an inlined
     /// `data:image/…;base64,…` URL (see
@@ -1851,6 +1945,21 @@ pub struct GrokSettings {
     pub custom_api_backend: Option<String>,
     /// `[model.<id>].context_window` — context size in tokens.
     pub custom_context_window: Option<i64>,
+    /// `[model.<id>].reasoning_efforts` — the reasoning-effort levels the custom
+    /// model declares, each as the `value` Grok sends to the provider (a bare
+    /// string entry is its own value), lowercased since Grok matches them
+    /// case-insensitively, in file order. Empty when the key is absent: Grok
+    /// then inherits levels only from its model catalog's row for the same id
+    /// (xAI's list, or `[endpoints].models_base_url`'s) — never from the model's
+    /// own `base_url` — and a model with neither advertises no effort support,
+    /// so the composer offers no effort selector for it.
+    #[serde(default)]
+    pub custom_reasoning_efforts: Vec<String>,
+    /// The endpoint's other models codeg added beside the managed one, in file
+    /// order: the `[model.<id>]` tables naming `model_provider = "codeg"`,
+    /// whose `[model_providers.codeg]` carries the managed endpoint and key.
+    #[serde(default)]
+    pub custom_extra_models: Vec<String>,
     /// `[session].auto_compact_threshold_percent` — auto-compact trigger, 0–100
     /// (Grok's default is 85).
     pub auto_compact_threshold_percent: Option<i64>,
@@ -1877,6 +1986,20 @@ pub struct GrokStructuredConfig {
     pub custom_api_key: Option<String>,
     pub custom_api_backend: Option<String>,
     pub custom_context_window: Option<i64>,
+    /// The custom model's `reasoning_efforts` levels. Unlike every other field
+    /// here, `None` leaves the key as it is, following the model through a
+    /// rename: the panel sends levels only once its chips moved, because the
+    /// list may be hand-written — in the panel's own raw config.toml editor, or
+    /// before the panel managed the key — and neither an untouched control nor a
+    /// client that predates the field may undo that. `Some(empty)` removes the
+    /// key; a non-empty list writes it.
+    pub custom_reasoning_efforts: Option<Vec<String>>,
+    /// The endpoint's other models to offer beside the managed one, each a
+    /// `[model.<id>]` on codeg's `[model_providers.codeg]`. `None` keeps the
+    /// ones codeg added (following the endpoint's URL, key and backend); a list
+    /// makes them exactly those. Ignored without `custom_model_id`.
+    #[serde(default)]
+    pub custom_extra_models: Option<Vec<String>>,
     pub auto_compact_threshold_percent: Option<i64>,
 }
 
@@ -2533,5 +2656,62 @@ mod envelope_tests {
             "resource": {"blob": "QUJD", "mimeType": "image/png"}
         }))
         .is_some());
+    }
+}
+
+#[cfg(test)]
+mod permission_option_tests {
+    use super::*;
+
+    fn option(option_id: &str, kind: &str) -> PermissionOptionInfo {
+        PermissionOptionInfo {
+            option_id: option_id.into(),
+            name: option_id.into(),
+            kind: kind.into(),
+            meta: None,
+        }
+    }
+
+    fn id(option: Option<&PermissionOptionInfo>) -> Option<&str> {
+        option.map(|o| o.option_id.as_str())
+    }
+
+    #[test]
+    fn one_time_options_are_found_by_kind_whatever_the_order() {
+        // claude-agent-acp 0.91.0's two orders: approvals first, and the
+        // rejection first for a call the Claude CLI marks `defaultToNo`.
+        let approvals_first = [
+            option("allow-once", "allow_once"),
+            option("allow-with-updates", "allow_always"),
+            option("reject", "reject_once"),
+        ];
+        let rejection_first = [
+            option("reject", "reject_once"),
+            option("allow-once", "allow_once"),
+            option("allow-with-updates", "allow_always"),
+        ];
+        for options in [&approvals_first[..], &rejection_first[..]] {
+            assert_eq!(
+                id(PermissionOptionInfo::allow_once_in(options)),
+                Some("allow-once")
+            );
+            assert_eq!(
+                id(PermissionOptionInfo::reject_once_in(options)),
+                Some("reject")
+            );
+        }
+    }
+
+    #[test]
+    fn a_standing_option_never_stands_in_for_a_one_time_one() {
+        let standing = [
+            option("always", "allow_always"),
+            option("never", "reject_always"),
+            option("other", "unknown"),
+        ];
+        assert_eq!(id(PermissionOptionInfo::allow_once_in(&standing)), None);
+        assert_eq!(id(PermissionOptionInfo::reject_once_in(&standing)), None);
+        assert_eq!(id(PermissionOptionInfo::allow_once_in(&[])), None);
+        assert_eq!(id(PermissionOptionInfo::reject_once_in(&[])), None);
     }
 }

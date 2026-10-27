@@ -65,6 +65,54 @@ describe("aliasToolInputKeys", () => {
   })
 })
 
+describe("inferLiveToolName on OpenCode's code-mode execute frames", () => {
+  // A `session/load` replay opens a call with its input already present, so
+  // the frame carries no stamped OpenCode name — only its `execute` title.
+  const replay = (code: string) =>
+    inferLiveToolName({
+      title: "execute",
+      kind: "other",
+      rawInput: JSON.stringify({ code }),
+      meta: null,
+    })
+
+  it("keeps the execute identity when the script quotes a patch", () => {
+    // The delegated task is text; the patch marker in it is no patch call.
+    expect(
+      replay(
+        "await tools['codeg-mcp'].delegate_to_agent({agent_type:'codex',task:`Apply this patch:\n*** Begin Patch\n*** Add File: hello.txt\n+hello\n*** End Patch`})"
+      )
+    ).toBe("bash")
+    expect(replay("return 1 + 1")).toBe("bash")
+  })
+
+  it("leaves other tools to the input heuristics", () => {
+    expect(
+      inferLiveToolName({
+        title: "apply_patch",
+        rawInput: JSON.stringify({ input: "*** Begin Patch\n*** End Patch" }),
+        meta: null,
+      })
+    ).toBe("apply_patch")
+    // A script under another title is not OpenCode's code-mode tool.
+    expect(
+      inferLiveToolName({
+        title: "browser_run_code",
+        rawInput: JSON.stringify({ code: "*** Begin Patch" }),
+        meta: null,
+      })
+    ).toBe("apply_patch")
+    // Nor is an `execute` whose `code` is no script.
+    expect(
+      inferLiveToolName({
+        title: "execute",
+        rawInput: JSON.stringify({ code: 42, input: "*** Begin Patch" }),
+        meta: null,
+      })
+    ).toBe("apply_patch")
+  })
+})
+
 describe("inferLiveToolName meta.claudeCode.toolName override", () => {
   it("returns memory_recall for synthesized recall events without rawInput", () => {
     // Mirrors what claude-agent-acp >=0.37 emits for memory recall:
@@ -915,8 +963,8 @@ describe("inferLiveToolName Grok plan-mode via x.ai/tool.kind", () => {
     // Grok's live tool_call title drifts `enter_plan_mode` → "Plan: Enter" →
     // "Plan mode entered" while `_meta["x.ai/tool"].kind` stays `enter_plan`.
     // The completed frame (worst case) must still resolve to the canonical name
-    // — which normalizes to "enterplanmode" so it hits <PlanModeCard> + the
-    // tool-group run-break, matching the historical path.
+    // — which normalizes to "enterplanmode" so it draws as the plan-mode row,
+    // matching the historical path.
     const name = inferLiveToolName({
       title: "Plan mode entered",
       kind: "other",
@@ -1059,7 +1107,7 @@ describe("normalizeToolName codex command-action titles", () => {
   it("resolves search command actions to grep", () => {
     // codex-acp announces a search-classified shell command with NO rawInput and
     // no tool name — only the title. Without this the whole title became the
-    // "tool name": no search icon, an "other" tool-group tally, and a body that
+    // "tool name": no search icon, an "other" tool tally, and a body that
     // dumped the raw {formatted_output, exit_code} envelope.
     for (const title of [
       "Search for 'Tests run:' in com.forwayaudio.app",

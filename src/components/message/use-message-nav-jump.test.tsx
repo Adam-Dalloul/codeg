@@ -18,6 +18,7 @@ function entry(
     additions: 0,
     deletions: 0,
     files: [],
+    subAgents: [],
     hasChanges: false,
   }
 }
@@ -45,7 +46,7 @@ function setup(
 ) {
   const scrollToIndex = vi.fn()
   const scrollApiRef = {
-    current: { scrollToIndex },
+    current: { scrollToIndex, revealFromAbove: vi.fn() },
   } as RefObject<MessageScrollContextValue | null>
   const hook = renderHook(
     (props: Props) =>

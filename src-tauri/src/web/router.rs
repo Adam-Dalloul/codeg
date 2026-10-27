@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::{DefaultBodyLimit, Extension},
-    http::{StatusCode, Uri},
+    http::{header, HeaderValue, StatusCode, Uri},
     middleware::{self, Next},
     response::IntoResponse,
     routing::{any, get, post},
@@ -18,9 +18,23 @@ use super::{auth, handlers, ws};
 use crate::app_state::AppState;
 use tracing::Instrument;
 
+/// Token-only authentication: the desktop app's web service and the tests.
 pub fn build_router(
     state: Arc<AppState>,
     token: String,
+    static_dir: std::path::PathBuf,
+    shutdown_signal: Arc<ShutdownSignal>,
+) -> Router {
+    build_router_with_proxy_auth(state, token, None, static_dir, shutdown_signal)
+}
+
+/// `proxy_auth` turns on the opt-in proxy-JWT authentication beside the
+/// token (`CODEG_AUTH=proxy-jwt`, standalone `codeg-server` only); `None` is
+/// the same as `build_router`.
+pub fn build_router_with_proxy_auth(
+    state: Arc<AppState>,
+    token: String,
+    proxy_auth: Option<Arc<super::proxy_auth::ProxyJwtAuth>>,
     static_dir: std::path::PathBuf,
     shutdown_signal: Arc<ShutdownSignal>,
 ) -> Router {
@@ -29,7 +43,12 @@ pub fn build_router(
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let token_for_ws = token.clone();
+    let web_auth = auth::WebAuth {
+        token: token.clone(),
+        proxy: proxy_auth,
+    };
+    let web_auth_for_ws = web_auth.clone();
+    let token_for_cli_hello = token.clone();
 
     let api = Router::new()
         .route("/health", post(health_check))
@@ -638,6 +657,26 @@ pub fn build_router(
             post(handlers::git::git_update_branch),
         )
         .route("/git_commit", post(handlers::git::git_commit))
+        .route(
+            "/git_generate_commit_message",
+            post(handlers::commit_message::git_generate_commit_message),
+        )
+        .route(
+            "/git_generate_commit_message_cancel",
+            post(handlers::commit_message::git_generate_commit_message_cancel),
+        )
+        .route(
+            "/get_commit_message_settings",
+            post(handlers::commit_message::get_commit_message_settings),
+        )
+        .route(
+            "/set_commit_message_settings",
+            post(handlers::commit_message::set_commit_message_settings),
+        )
+        .route(
+            "/delete_commit_message_settings",
+            post(handlers::commit_message::delete_commit_message_settings),
+        )
         .route("/git_fetch_remote", post(handlers::git::git_fetch_remote))
         .route("/git_delete_branch", post(handlers::git::git_delete_branch))
         .route(
@@ -1067,12 +1106,12 @@ pub fn build_router(
             post(handlers::acp::acp_qoder_auth_status),
         )
         .route(
-            "/acp_update_kimi_code_config",
-            post(handlers::acp::acp_update_kimi_code_config),
+            "/acp_update_claude_model_picker",
+            post(handlers::acp::acp_update_claude_model_picker),
         )
         .route(
-            "/acp_fetch_kimi_models",
-            post(handlers::acp::acp_fetch_kimi_models),
+            "/acp_update_kimi_code_config",
+            post(handlers::acp::acp_update_kimi_code_config),
         )
         .route(
             "/acp_update_pi_config",
@@ -1229,6 +1268,30 @@ pub fn build_router(
         .route(
             "/codex_bundled_catalog",
             post(handlers::acp::codex_bundled_catalog),
+        )
+        .route(
+            "/codex_fetch_endpoint_catalog",
+            post(handlers::acp::codex_fetch_endpoint_catalog),
+        )
+        .route(
+            "/codex_catalog_plan_preview",
+            post(handlers::acp::codex_catalog_plan_preview),
+        )
+        .route(
+            "/codex_endpoint_catalog_published",
+            post(handlers::acp::codex_endpoint_catalog_published),
+        )
+        .route(
+            "/codex_endpoint_catalog_cached",
+            post(handlers::acp::codex_endpoint_catalog_cached),
+        )
+        .route(
+            "/codex_endpoint_catalog_status",
+            post(handlers::acp::codex_endpoint_catalog_status),
+        )
+        .route(
+            "/codex_refresh_endpoint_catalog",
+            post(handlers::acp::codex_refresh_endpoint_catalog),
         )
         .route(
             "/opencode_install_plugins",
@@ -1605,6 +1668,10 @@ pub fn build_router(
             "/delete_model_provider",
             post(handlers::model_provider::delete_model_provider),
         )
+        .route(
+            "/list_provider_models",
+            post(handlers::model_provider::list_provider_models),
+        )
         // ─── Quick Messages ───
         .route(
             "/quick_messages_list",
@@ -1972,10 +2039,21 @@ pub fn build_router(
         )
         .route("/terminal_kill", post(handlers::terminal::terminal_kill))
         .route("/terminal_list", post(handlers::terminal::terminal_list))
+        .route(
+            "/cli_access_status",
+            post(handlers::cli_access::cli_access_status),
+        )
+        .route(
+            "/cli_access_set_enabled",
+            post(handlers::cli_access::cli_access_set_enabled),
+        )
+        // `codeg-cli` against this runtime with the main token (how CI reaches
+        // a remote server); the loopback listener serves the same handlers.
+        .merge(crate::cli_run::http::routes(state.cli_runs.clone()))
         // Catch-all
         .fallback(api_not_found)
         .layer(middleware::from_fn(move |req, next| {
-            auth::require_token(req, next, token.clone())
+            auth::require_auth(req, next, web_auth.clone())
         }));
 
     // Public endpoints — no token required.
@@ -1986,6 +2064,15 @@ pub fn build_router(
             "/get_system_language_settings",
             post(handlers::system_settings::get_system_language_settings),
         )
+        // The CLI's challenge, answered before any token is sent; signed with
+        // the main token here (no port: a proxy may hide it).
+        .merge(crate::cli_run::http::public_routes(
+            state.cli_runs.clone(),
+            crate::cli_run::http::HelloKey {
+                token: token_for_cli_hello,
+                port: None,
+            },
+        ))
         // Forge webhooks for the repository panel's auto-processing. No forge
         // can send codeg's bearer token, so the delivery authenticates itself:
         // its HMAC signature (GitHub / Gitea) or secret token (GitLab) is
@@ -2028,7 +2115,7 @@ pub fn build_router(
     // the viewer. `.instrument()` the downstream future; never `.enter()` across
     // an await, which corrupts the span stack.
     //
-    // Layer order: the protected router's `auth::require_token` layer was added
+    // Layer order: the protected router's `auth::require_auth` layer was added
     // (above) BEFORE this `.layer()`, and this layer is applied to the MERGED
     // router, so it is the OUTERMOST layer. The instrumented `next.run(req)`
     // future therefore wraps routing + auth + handler — auth-reject logs land
@@ -2051,7 +2138,7 @@ pub fn build_router(
             get(crate::web::browser_tunnel::ws_handler),
         )
         .layer(middleware::from_fn(move |req, next| {
-            auth::require_token(req, next, token_for_ws.clone())
+            auth::require_auth(req, next, web_auth_for_ws.clone())
         }));
 
     // Static file serving.
@@ -2059,6 +2146,9 @@ pub fn build_router(
     // We use a middleware to rewrite "/folder" → "/folder.html" before ServeDir.
     let fallback =
         ServeDir::new(&static_dir).fallback(ServeFile::new(static_dir.join("index.html")));
+    let static_files: Router = Router::new()
+        .fallback_service(fallback)
+        .layer(middleware::from_fn(static_cache_control));
 
     let static_dir_for_mw = static_dir.clone();
     let html_rewrite = middleware::from_fn(move |req: axum::extract::Request, next: Next| {
@@ -2095,7 +2185,7 @@ pub fn build_router(
     Router::new()
         .nest("/api", api)
         .merge(ws_route)
-        .fallback_service(fallback)
+        .fallback_service(static_files)
         .layer(html_rewrite)
         .layer(cors)
         .layer(Extension(state))
@@ -2114,6 +2204,34 @@ pub fn build_router(
         .layer(middleware::from_fn(
             crate::web::browser_bridge::route_by_host,
         ))
+}
+
+/// Only `/_next/static/` is fingerprinted: a new build puts its scripts and
+/// styles there under new names. Everything else keeps its name from one
+/// release to the next, the HTML documents above all, and ServeDir sends no
+/// freshness of its own, so a browser would apply heuristic freshness (a tenth
+/// of the file's age) and could open the previous release for hours after the
+/// server was upgraded. `no-cache` still lets it keep its copy, revalidated on
+/// every use.
+async fn static_cache_control(
+    req: axum::extract::Request,
+    next: Next,
+) -> axum::response::Response {
+    let fingerprinted = req.uri().path().starts_with("/_next/static/");
+    let mut response = next.run(req).await;
+    // An asset that is not there is answered with index.html, which must not
+    // be kept under the asset's name either.
+    let html = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/html"));
+    if !fingerprinted || html {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    }
+    response
 }
 
 async fn health_check() -> impl IntoResponse {

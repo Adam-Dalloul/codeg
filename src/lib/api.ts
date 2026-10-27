@@ -6,7 +6,11 @@ import {
   isRemoteDesktopMode,
   notifyRemoteDesktopUnauthorized,
 } from "./transport"
-import { getCodegToken } from "./transport/web-auth"
+import {
+  codegAuthHeaders,
+  getCodegToken,
+  unauthorizedSource,
+} from "./transport/web-auth"
 import { notifyWebUnauthorized } from "./transport/web-connection-store"
 import { getCurrentEffectiveAppLocale } from "./i18n"
 import {
@@ -21,6 +25,8 @@ import type {
   LeakedTempReclaim,
   LeakedTempScan,
   AgentType,
+  CliAccessStatus,
+  CliToolStatus,
   AgentDelegationDefaults,
   AgentOptionsSnapshot,
   AssistantDraft,
@@ -84,6 +90,13 @@ import type {
   CursorModelsResult,
   QoderAuthStatus,
   CodexModelInfo,
+  CodexCatalogLookup,
+  CodexCatalogRequest,
+  CodexPlanPreview,
+  ProviderModelList,
+  ProviderModelsRequest,
+  CodexCatalogStatus,
+  CodexEndpointCatalogView,
   AgentSkillScope,
   AgentSkillLayout,
   AgentSkillItem,
@@ -137,6 +150,8 @@ import type {
   GitResetMode,
   GitConflictFileVersions,
   GitCommitResult,
+  CommitMessageSettings,
+  GeneratedCommitMessage,
   GitRemote,
   GitStashEntry,
   PreflightResult,
@@ -667,9 +682,13 @@ export async function acpUpdateAgentConfig(
     opencode_auth_json?: string | null
     codex_auth_json?: string | null
     codex_config_toml?: string | null
-    /** Compact structured codex model list; backend regenerates the
-     * `model_catalog_json` catalog files from it (config.toml keys are patched
-     * into `codex_config_toml` text by the caller). */
+    /** The config.toml text the draft was loaded from: a key codeg manages
+     * (`model_catalog_json`, root `model` while a catalog is published) that
+     * differs from it was edited by hand, and the save is refused. */
+    codex_config_toml_baseline?: string | null
+    /** Compact structured codex model list. The backend publishes what it
+     * makes (catalog file, `model_catalog_json`, root `model`) through one
+     * commit; callers send config.toml without patching those keys. */
     codex_model_catalog?: string | null
     /** Codex sandbox / approval controls; merged onto the on-disk config.toml
      * server-side. Governs the turns codex starts itself (/goal, /review,
@@ -692,6 +711,7 @@ export async function acpUpdateAgentConfig(
     opencodeAuthJson: params.opencode_auth_json ?? null,
     codexAuthJson: params.codex_auth_json ?? null,
     codexConfigToml: params.codex_config_toml ?? null,
+    codexConfigTomlBaseline: params.codex_config_toml_baseline ?? null,
     codexModelCatalog: params.codex_model_catalog ?? null,
     codexSandbox: params.codex_sandbox ?? null,
     grokConfigToml: params.grok_config_toml ?? null,
@@ -801,21 +821,6 @@ export async function acpUpdateKimiCodeConfig(params: {
 }
 
 /**
- * List the models an API key + endpoint can access (GET `<baseUrl>/models`).
- * Validates the key and powers the Kimi settings model picker; throws with the
- * provider's error message on failure.
- */
-export async function acpFetchKimiModels(params: {
-  baseUrl: string
-  apiKey: string
-}): Promise<string[]> {
-  return getTransport().call("acp_fetch_kimi_models", {
-    baseUrl: params.baseUrl,
-    apiKey: params.apiKey,
-  })
-}
-
-/**
  * Apply a structured Pi config update. Merge-writes pi's native
  * `~/.pi/agent/settings.json` (`defaultProvider` / `defaultModel` /
  * `defaultThinkingLevel`) and, when an API key is supplied,
@@ -838,6 +843,9 @@ export async function acpUpdatePiConfig(params: {
     reasoning: boolean
     thinkingLevelMap: Record<string, string | null>
   }
+  /** The custom provider's whole model list (the chosen model always kept);
+   * omit to add the model to whatever the list holds. */
+  customModels?: string[]
 }): Promise<void> {
   return getTransport().call("acp_update_pi_config", {
     provider: params.provider,
@@ -847,6 +855,7 @@ export async function acpUpdatePiConfig(params: {
     customBaseUrl: params.customBaseUrl ?? null,
     customApi: params.customApi ?? null,
     modelReasoning: params.modelReasoning ?? null,
+    customModels: params.customModels ?? null,
   })
 }
 
@@ -1499,6 +1508,50 @@ export async function codexBundledCatalog(
   return getTransport().call("codex_bundled_catalog", {
     forceRefresh: forceRefresh ?? null,
   })
+}
+
+/** Fetch a provider's model list for the settings page, without publishing
+ *  it (the next save does). A native catalog is checked by the codex that
+ *  would run; the answer is cached for that save. */
+export async function codexFetchEndpointCatalog(
+  params: CodexCatalogRequest
+): Promise<CodexEndpointCatalogView> {
+  return getTransport().call("codex_fetch_endpoint_catalog", { params })
+}
+
+/** What saving this Codex draft would make of the keys codeg manages. Never
+ *  fetches, checks or writes. */
+export async function codexCatalogPlanPreview(params: {
+  configToml: string
+  authJson?: string | null
+  modelList?: string | null
+}): Promise<CodexPlanPreview> {
+  return getTransport().call("codex_catalog_plan_preview", { params })
+}
+
+/** The published provider list, when it answers this request. */
+export async function codexEndpointCatalogPublished(
+  params: CodexCatalogRequest
+): Promise<CodexCatalogLookup> {
+  return getTransport().call("codex_endpoint_catalog_published", { params })
+}
+
+/** The cached answer to exactly this request. Never fetches. */
+export async function codexEndpointCatalogCached(
+  params: CodexCatalogRequest
+): Promise<CodexCatalogLookup> {
+  return getTransport().call("codex_endpoint_catalog_cached", { params })
+}
+
+/** What is published under codeg's CODEX_HOME, and how refreshing it goes. */
+export async function codexEndpointCatalogStatus(): Promise<CodexCatalogStatus> {
+  return getTransport().call("codex_endpoint_catalog_status", {})
+}
+
+/** "Refresh now": fetch the provider list whatever its age and publish what
+ *  the current settings make of it. */
+export async function codexRefreshEndpointCatalog(): Promise<CodexCatalogStatus> {
+  return getTransport().call("codex_refresh_endpoint_catalog", {})
 }
 
 export async function opencodeInstallPlugins(
@@ -3114,6 +3167,71 @@ export async function gitCommit(
   })
 }
 
+/**
+ * Have an agent write a message for the commit `gitCommit(path, …, files)`
+ * would make. Runs as long as the agent takes — there is no deadline on the
+ * backend — so the call waits well past the transport defaults (60 s on web,
+ * 30 s through the remote-desktop proxy); stop it with
+ * `gitGenerateCommitMessageCancel(requestId)`.
+ */
+export async function gitGenerateCommitMessage(params: {
+  requestId: string
+  path: string
+  folderId: number | null
+  files: string[]
+  draft: string | null
+  fallbackAgent: AgentType | null
+}): Promise<GeneratedCommitMessage> {
+  return getTransport().call(
+    "git_generate_commit_message",
+    {
+      requestId: params.requestId,
+      path: params.path,
+      folderId: params.folderId,
+      files: params.files,
+      draft: params.draft,
+      fallbackAgent: params.fallbackAgent,
+    },
+    { timeoutMs: 30 * 60_000 }
+  )
+}
+
+/** Stop the generation started under `requestId` (a no-op once it ended). */
+export async function gitGenerateCommitMessageCancel(
+  requestId: string
+): Promise<void> {
+  return getTransport().call("git_generate_commit_message_cancel", {
+    requestId,
+  })
+}
+
+/** A project folder's own settings — `null` while it follows the global ones
+ *  — or with `folderId` null the global settings. */
+export async function getCommitMessageSettings(
+  folderId: number | null
+): Promise<CommitMessageSettings | null> {
+  return getTransport().call("get_commit_message_settings", { folderId })
+}
+
+/** Save a project folder's own settings, or with `folderId` null the global
+ *  ones. */
+export async function setCommitMessageSettings(
+  folderId: number | null,
+  settings: CommitMessageSettings
+): Promise<CommitMessageSettings> {
+  return getTransport().call("set_commit_message_settings", {
+    folderId,
+    settings,
+  })
+}
+
+/** Drop a project folder's own settings: it follows the global ones again. */
+export async function deleteCommitMessageSettings(
+  folderId: number
+): Promise<void> {
+  return getTransport().call("delete_commit_message_settings", { folderId })
+}
+
 export async function gitRollbackFile(
   path: string,
   file: string
@@ -3402,6 +3520,30 @@ export async function openFolder(path: string): Promise<FolderDetail> {
 /** Open a file or directory in Visual Studio Code on the workspace host. */
 export async function openInCode(path: string): Promise<void> {
   return getTransport().call("open_in_code", { path })
+}
+
+/**
+ * Run a shell command detached on THIS desktop machine, even from a
+ * remote-desktop window — hence the shell transport. `folderPath` (the folder's
+ * path on its own host) and `remoteHost` reach the command as
+ * `$CODEG_FOLDER_PATH` / `$CODEG_REMOTE_HOST`. `remoteHost` is non-null exactly
+ * in a remote-desktop window (empty when its host's name can't be read): the
+ * backend then treats `folderPath` as the remote server's, not this machine's.
+ * It runs in `workingDir` when that is a directory on this machine, else in
+ * the home directory. Desktop only.
+ */
+export async function runLocalCommand(
+  command: string,
+  folderPath: string,
+  remoteHost: string | null,
+  workingDir: string | null
+): Promise<void> {
+  return getShellTransport().call("run_local_command", {
+    command,
+    folderPath,
+    remoteHost,
+    workingDir,
+  })
 }
 
 /**
@@ -3699,18 +3841,25 @@ export async function deleteConversation(
 export async function listFolderCommands(
   folderId: number
 ): Promise<FolderCommand[]> {
-  return getTransport().call("list_folder_commands", { folderId })
+  // `includeLocal` tells the host this client knows `run_local`; it withholds
+  // such commands from older clients, which would run them in its terminal.
+  return getTransport().call("list_folder_commands", {
+    folderId,
+    includeLocal: true,
+  })
 }
 
 export async function createFolderCommand(
   folderId: number,
   name: string,
-  command: string
+  command: string,
+  runLocal: boolean
 ): Promise<FolderCommand> {
   return getTransport().call("create_folder_command", {
     folderId,
     name,
     command,
+    runLocal,
   })
 }
 
@@ -3718,13 +3867,16 @@ export async function updateFolderCommand(
   id: number,
   name?: string,
   command?: string,
-  sortOrder?: number
+  sortOrder?: number,
+  runLocal?: boolean
 ): Promise<FolderCommand> {
   return getTransport().call("update_folder_command", {
     id,
     name: name ?? null,
     command: command ?? null,
     sortOrder: sortOrder ?? null,
+    runLocal: runLocal ?? null,
+    includeLocal: true,
   })
 }
 
@@ -3746,6 +3898,7 @@ export async function bootstrapFolderCommandsFromPackageJson(
   return getTransport().call("bootstrap_folder_commands_from_package_json", {
     folderId,
     folderPath,
+    includeLocal: true,
   })
 }
 
@@ -4060,30 +4213,37 @@ export async function workTaskMerge(
   })
 }
 
-/** Accept a reviewed forge-sourced task by pushing it back: an issue's task
- *  publishes its branch and opens (or adopts) a pull request, a pull request's
- *  task pushes onto that pull request's own branch (where `title`/`draft` are
- *  ignored — nothing is created). Resolves with the pull request URL.
+/** Accept a reviewed task by delivering it to a forge: an issue's task — or a
+ *  task with no forge provenance, on its project's `origin` — publishes its
+ *  branch and opens (or adopts) a pull request; a pull request's task pushes
+ *  onto that pull request's own branch, and so does a task whose earlier
+ *  delivery opened one it stayed in review after (`title`/`draft` are ignored
+ *  there — nothing is created). Resolves with the pull request URL.
  *
  *  Unlike the merge dispatch this awaits the WHOLE operation — no agent runs,
  *  just a push and two REST calls — so a rejection is the real reason and the
  *  task is already back in review by the time it surfaces.
  *
- *  `deleteWorktree` takes the checkout along once the delivery lands — the
- *  same offer the merge and complete acceptances make. It rides on the
- *  delivery: a removal that fails leaves a retryable cleanup mark on the card
- *  and this call still resolves with the URL. */
+ *  `markDone` finishes the task; `false` keeps it in review with the pull
+ *  request recorded, for another round on the same branch.
+ *
+ *  `deleteWorktree` takes the checkout along once a delivery that finishes
+ *  the task lands — the same offer the merge and complete acceptances make.
+ *  It rides on the delivery: a removal that fails leaves a retryable cleanup
+ *  mark on the card and this call still resolves with the URL. */
 export async function workTaskDeliverPr(
   id: number,
   prTitle: string | null,
   draft: boolean,
-  deleteWorktree: boolean
+  deleteWorktree: boolean,
+  markDone: boolean
 ): Promise<string> {
   return getTransport().call("work_task_deliver_pr", {
     id,
     prTitle,
     draft,
     deleteWorktree,
+    markDone,
   })
 }
 
@@ -4336,11 +4496,13 @@ export async function uploadAttachment(
 
   const res = await fetch(`${window.location.origin}/api/upload_attachment`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
+    headers: codegAuthHeaders(token),
     body: form,
   })
   if (res.status === 401) {
-    notifyWebUnauthorized()
+    notifyWebUnauthorized(
+      unauthorizedSource(res.headers.get("www-authenticate"))
+    )
     throw new Error("Unauthorized")
   }
   if (!res.ok) {
@@ -4430,9 +4592,7 @@ async function workspaceFileFetch(
   isMultipart: boolean
 ): Promise<Response> {
   const token = getCodegToken()
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
-  }
+  const headers = codegAuthHeaders(token)
   if (!isMultipart) {
     headers["Content-Type"] = "application/json"
   }
@@ -4442,7 +4602,9 @@ async function workspaceFileFetch(
     body,
   })
   if (res.status === 401) {
-    notifyWebUnauthorized()
+    notifyWebUnauthorized(
+      unauthorizedSource(res.headers.get("www-authenticate"))
+    )
     throw new Error("Unauthorized")
   }
   if (!res.ok) {
@@ -4500,7 +4662,9 @@ export async function uploadWorkspaceFile(
     const token = getCodegToken()
     const xhr = new XMLHttpRequest()
     xhr.open("POST", `${window.location.origin}/api/upload_workspace_file`)
-    xhr.setRequestHeader("Authorization", `Bearer ${token}`)
+    for (const [name, value] of Object.entries(codegAuthHeaders(token))) {
+      xhr.setRequestHeader(name, value)
+    }
 
     if (args.onProgress) {
       const onProgress = args.onProgress
@@ -4513,7 +4677,9 @@ export async function uploadWorkspaceFile(
 
     xhr.onload = () => {
       if (xhr.status === 401) {
-        notifyWebUnauthorized()
+        notifyWebUnauthorized(
+          unauthorizedSource(xhr.getResponseHeader("www-authenticate"))
+        )
         reject(new Error("Unauthorized"))
         return
       }
@@ -5123,6 +5289,30 @@ export async function getWebServiceConfig(): Promise<WebServiceConfig> {
   return getTransport().call("get_web_service_config")
 }
 
+/** Whether `codeg-cli` on this machine can reach this runtime. */
+export async function getCliAccessStatus(): Promise<CliAccessStatus> {
+  return getTransport().call("cli_access_status")
+}
+
+/** Turn command-line access on or off; applied at once. */
+export async function setCliAccessEnabled(
+  enabled: boolean
+): Promise<CliAccessStatus> {
+  return getTransport().call("cli_access_set_enabled", { enabled })
+}
+
+/** Desktop only: whether this app's `codeg-cli` is on the user's PATH. Asked
+ *  of this window's own app, even one bound to a remote server. */
+export async function getCliToolStatus(): Promise<CliToolStatus> {
+  return getShellTransport().call("cli_tool_status")
+}
+
+/** Desktop only: put this app's `codeg-cli` on the user's PATH. On macOS
+ *  this may ask for an administrator's password. */
+export async function installCliTool(): Promise<CliToolStatus> {
+  return getShellTransport().call("cli_tool_install")
+}
+
 export async function updateWebServiceConfig(
   config: WebServiceConfig
 ): Promise<WebServiceConfig> {
@@ -5335,6 +5525,22 @@ export async function updateModelProvider(params: {
 
 export async function deleteModelProvider(id: number): Promise<void> {
   return getTransport().call("delete_model_provider", { id })
+}
+
+/** Keep the /model picker ids codeg adds for an unbound Claude agent; returns
+ *  how many running sessions now need a restart. */
+export async function acpUpdateClaudeModelPicker(
+  models: string[]
+): Promise<number> {
+  return getTransport().call("acp_update_claude_model_picker", { models })
+}
+
+/** The models a provider lists, asked the way the agent itself would ask.
+ *  Fails with a `providerModels.<code>` i18n key. */
+export async function listProviderModels(
+  params: ProviderModelsRequest
+): Promise<ProviderModelList> {
+  return getTransport().call("list_provider_models", { params })
 }
 
 // ─── Delegation settings ───────────────────────────────────────────────
@@ -5815,7 +6021,9 @@ export async function uploadBackupWeb(
     const token = getCodegToken()
     const xhr = new XMLHttpRequest()
     xhr.open("POST", `${window.location.origin}/api/backup_upload`)
-    xhr.setRequestHeader("Authorization", `Bearer ${token}`)
+    for (const [name, value] of Object.entries(codegAuthHeaders(token))) {
+      xhr.setRequestHeader(name, value)
+    }
     if (onProgress) {
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable) onProgress(event.loaded, event.total)
@@ -5823,7 +6031,9 @@ export async function uploadBackupWeb(
     }
     xhr.onload = () => {
       if (xhr.status === 401) {
-        notifyWebUnauthorized()
+        notifyWebUnauthorized(
+          unauthorizedSource(xhr.getResponseHeader("www-authenticate"))
+        )
         reject(new Error("Unauthorized"))
         return
       }

@@ -29,7 +29,8 @@ const ALL_PARSER_AGENTS: [AgentType; 19] = [
     AgentType::Kiro,
     // Codeg-owned ACP history only; no scan of ZCode's native SQLite store.
     AgentType::ZCode,
-    // Codeg-owned ACP history only; TRAE CLI's own rollouts are not read.
+    // Codeg-owned ACP message history, enriched with usage from TRAE's native
+    // token_usage_record rows.
     AgentType::Trae,
     // Codeg-owned ACP history only; Command Code's own session trees are not
     // read.
@@ -54,6 +55,9 @@ fn build_parser(agent_type: AgentType, env: &AgentEnv) -> Box<dyn AgentParser> {
 /// captured live by the delegation flow with their parent linkage, and
 /// `import_one` inserts new rows with `parent_id: None` — importing one from a
 /// parser listing would surface a sub-session as a root conversation.
+/// So are the sessions codeg ran itself to generate text
+/// ([`crate::acp::one_shot`]): they were never conversations, and are told
+/// apart by the directory they ran in.
 /// Duplicates are dropped by `(agent_type, id)`, matching
 /// `list_conversations_sync`.
 pub(crate) async fn collect_local_summaries<F>(
@@ -87,6 +91,7 @@ where
 
     let mut all: Vec<(AgentType, ConversationSummary)> = Vec::new();
     let mut seen: std::collections::HashSet<(AgentType, String)> = std::collections::HashSet::new();
+    let generated = crate::acp::one_shot::GenerationPaths::current();
     let mut done = 0u32;
 
     // Awaiting in parser order only affects callback ordering — all twelve
@@ -97,6 +102,12 @@ where
             Ok(convs) => {
                 for c in convs {
                     if c.parent_id.is_some() {
+                        continue;
+                    }
+                    if c.folder_path
+                        .as_deref()
+                        .is_some_and(|p| generated.contains(p))
+                    {
                         continue;
                     }
                     if seen.insert((at, c.id.clone())) {
@@ -515,6 +526,7 @@ async fn import_one(
         origin_cwd: Set(None),
         assistant_id: Set(None),
         assistant_snapshot: Set(None),
+        source: Set(None),
     };
     conv.insert(conn).await?;
     Ok(ImportOutcome::Imported)
@@ -964,6 +976,7 @@ mod tests {
             origin_cwd: Set(None),
             assistant_id: Set(None),
             assistant_snapshot: Set(None),
+            source: Set(None),
         }
         .insert(&db.conn)
         .await
@@ -1253,6 +1266,7 @@ mod tests {
             origin_cwd: Set(None),
             assistant_id: Set(None),
             assistant_snapshot: Set(None),
+            source: Set(None),
         }
         .insert(&db.conn)
         .await
