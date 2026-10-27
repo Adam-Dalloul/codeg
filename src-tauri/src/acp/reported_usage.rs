@@ -139,6 +139,55 @@ mod tests {
         }
     }
 
+    /// What the manual add form saves: the package spec alone, so the launch
+    /// command is derived from it and the version label falls back to
+    /// `custom`. That definition must still select the adapter's contract.
+    #[test]
+    fn a_manually_added_official_adapter_is_recognized_from_its_saved_definition() {
+        use crate::acp::custom_registry::{
+            build_meta, CustomAgentDef, CustomAgentSpec, CustomDistributionKind, NpxSpec,
+        };
+        let mode = |package: &str| {
+            let meta = build_meta(&CustomAgentDef {
+                registry_id: "work-claude".into(),
+                name: "Work Claude".into(),
+                description: String::new(),
+                version: String::new(),
+                distribution_kind: CustomDistributionKind::Npx,
+                spec: CustomAgentSpec {
+                    npx: Some(NpxSpec {
+                        package: package.into(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+                icon_url: None,
+                skills_shared_store: false,
+                skills_dir: None,
+                source: Default::default(),
+                version_probe: None,
+                supports_mcp: true,
+            })
+            .unwrap();
+            PromptUsageMode::for_distribution(meta.agent_type, &meta.distribution)
+        };
+        for package in [
+            "@agentclientprotocol/claude-agent-acp",
+            "@agentclientprotocol/claude-agent-acp@0.97.0",
+            "@agentclientprotocol/claude-agent-acp@latest",
+        ] {
+            assert_eq!(
+                mode(package),
+                PromptUsageMode::PerPromptCacheExclusive,
+                "{package}"
+            );
+        }
+        assert_eq!(
+            mode("@zed-industries/claude-code-acp@0.16.0"),
+            PromptUsageMode::Unsupported
+        );
+    }
+
     #[test]
     fn counters_are_not_guessed_for_unknown_or_cumulative_adapters() {
         let usage: agent_client_protocol::schema::v1::Usage = serde_json::from_value(serde_json::json!({
