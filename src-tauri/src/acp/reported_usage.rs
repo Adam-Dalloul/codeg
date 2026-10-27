@@ -60,6 +60,41 @@ impl PromptUsageMode {
             Self::Unsupported => None,
         }
     }
+
+    /// The one model a response's counters were spent on, when the adapter
+    /// names it. Without it a turn records the model selector's value, which
+    /// for this adapter is an alias (`opus`, `default`) that neither a price
+    /// list nor the by-model breakdown can resolve.
+    ///
+    /// Since 0.71.0 the response's `_meta.quota.model_usage` splits the
+    /// prompt's own tally by model id: the prompt's sub-agents are included,
+    /// work the agent started on its own is not, and a model with nothing to
+    /// report is left out. A single model there is the one every recorded
+    /// counter was spent on. Several cannot say which one the main loop used.
+    pub(crate) fn reported_model(
+        self,
+        meta: Option<&agent_client_protocol::schema::v1::Meta>,
+    ) -> Option<String> {
+        if self != Self::PerPromptCacheExclusive {
+            return None;
+        }
+        let mut spent = meta?
+            .get("quota")?
+            .get("model_usage")?
+            .as_array()?
+            .iter()
+            .filter(|row| {
+                row.pointer("/token_count/totalTokens")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some_and(|total| total > 0)
+            })
+            .map(|row| row.get("model").and_then(serde_json::Value::as_str));
+        let model = spent.next()??.trim();
+        if model.is_empty() || !spent.all(|other| other.map(str::trim) == Some(model)) {
+            return None;
+        }
+        Some(model.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -185,6 +220,44 @@ mod tests {
         assert_eq!(
             mode("@zed-industries/claude-code-acp@0.16.0"),
             PromptUsageMode::Unsupported
+        );
+    }
+
+    #[test]
+    fn a_response_names_its_model_only_when_one_model_did_the_work() {
+        let meta = |rows: serde_json::Value| -> agent_client_protocol::schema::v1::Meta {
+            serde_json::from_value(serde_json::json!({"quota": {"model_usage": rows}})).unwrap()
+        };
+        let row = |model: &str, total: u64| serde_json::json!({"model": model, "token_count": {"totalTokens": total}});
+        let mode = PromptUsageMode::PerPromptCacheExclusive;
+        let one = meta(serde_json::json!([row("claude-opus-5-5", 4010)]));
+        assert_eq!(
+            mode.reported_model(Some(&one)).as_deref(),
+            Some("claude-opus-5-5")
+        );
+        // A model with nothing to report does not make the answer ambiguous.
+        let idle = meta(serde_json::json!([
+            row("claude-opus-5-5", 4010),
+            row("claude-haiku-5-5", 0)
+        ]));
+        assert_eq!(
+            mode.reported_model(Some(&idle)).as_deref(),
+            Some("claude-opus-5-5")
+        );
+        // A sub-agent on another model: which one the main loop used is unknown.
+        let two = meta(serde_json::json!([
+            row("claude-opus-5-5", 4010),
+            row("claude-haiku-5-5", 2005)
+        ]));
+        assert_eq!(mode.reported_model(Some(&two)), None);
+        assert_eq!(
+            mode.reported_model(Some(&meta(serde_json::json!([])))),
+            None
+        );
+        assert_eq!(mode.reported_model(None), None);
+        assert_eq!(
+            PromptUsageMode::Unsupported.reported_model(Some(&one)),
+            None
         );
     }
 

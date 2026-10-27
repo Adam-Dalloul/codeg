@@ -14370,12 +14370,16 @@ async fn run_conversation_loop(
                             // conversation reopened right after a turn must not
                             // miss its tail.
                             let prompt_usage_mode = state.read().await.prompt_usage_mode;
+                            let model = match prompt_usage_mode.reported_model(response.meta.as_ref()) {
+                                Some(model) => Some(model),
+                                None => current_session_model_id(state).await,
+                            };
                             record_turn_end(
                                 agent_type,
                                 &sid.0,
                                 reason_str,
                                 turn_started_at_ms,
-                                current_session_model_id(state).await,
+                                model,
                                 prompt_usage_mode.select(response.usage.as_ref()),
                                 zcode_turn.metrics(),
                             )
@@ -42008,9 +42012,29 @@ mod tests {
             turns: Vec<Vec<GrokFrame>>,
             usages: Vec<Option<agent_client_protocol::schema::v1::Usage>>,
         ) -> Self {
+            let responses = usages
+                .into_iter()
+                .map(|usage| {
+                    let mut response = agent_client_protocol::schema::v1::PromptResponse::new(
+                        StopReason::EndTurn,
+                    );
+                    response.usage = usage;
+                    response
+                })
+                .collect();
+            Self::start_with_responses(agent_type, turns, responses).await
+        }
+
+        /// Each prompt is answered with the next of `responses`, or with a bare
+        /// `end_turn` once they run out.
+        async fn start_with_responses(
+            agent_type: AgentType,
+            turns: Vec<Vec<GrokFrame>>,
+            responses: Vec<agent_client_protocol::schema::v1::PromptResponse>,
+        ) -> Self {
             use agent_client_protocol::schema::v1::PromptResponse;
             let turns = Arc::new(std::sync::Mutex::new(VecDeque::from(turns)));
-            let usages = Arc::new(std::sync::Mutex::new(VecDeque::from(usages)));
+            let responses = Arc::new(std::sync::Mutex::new(VecDeque::from(responses)));
             let respond = Arc::new(tokio::sync::Notify::new());
             let agent_respond = Arc::clone(&respond);
             let steer_outcomes = Arc::new(std::sync::Mutex::new(VecDeque::new()));
@@ -42035,15 +42059,17 @@ mod tests {
                                     responder: Responder<PromptResponse>,
                                     cx: ConnectionTo<Client>| {
                             let frames = turns.lock().unwrap().pop_front().unwrap_or_default();
-                            let usage = usages.lock().unwrap().pop_front().flatten();
+                            let response = responses
+                                .lock()
+                                .unwrap()
+                                .pop_front()
+                                .unwrap_or_else(|| PromptResponse::new(StopReason::EndTurn));
                             send_grok_frames(&cx, &frames)?;
                             let respond = Arc::clone(&agent_respond);
                             // Off the handler, so a held response doesn't hold
                             // up the agent's other incoming messages.
                             tokio::spawn(async move {
                                 respond.notified().await;
-                                let mut response = PromptResponse::new(StopReason::EndTurn);
-                                response.usage = usage;
                                 responder.respond(response)
                             });
                             Ok(())
@@ -42264,6 +42290,83 @@ mod tests {
             assert_eq!(second.session_stats.unwrap().total_tokens, Some(136));
             lp.shutdown().await;
         }).await;
+    }
+
+    /// claude-agent-acp's model selector values are aliases (`opus`). A turn
+    /// whose response attributes all of its counters to one model id is named
+    /// by that id; when the response lists several, the selector value stands.
+    #[tokio::test]
+    async fn a_recorded_turn_is_named_by_the_one_model_its_response_reports() {
+        use crate::parsers::AgentParser as _;
+        let home = tempfile::tempdir().unwrap();
+        let home_str = home.path().to_string_lossy().into_owned();
+        temp_env::async_with_vars([("CODEG_HOME", Some(home_str.as_str()))], async {
+            let agent_type = AgentType::custom("model-fixture").unwrap();
+            let response = |models: &[&str]| {
+                let mut response =
+                    agent_client_protocol::schema::v1::PromptResponse::new(StopReason::EndTurn);
+                response.usage = Some(
+                    serde_json::from_value(serde_json::json!({
+                        "inputTokens": 40, "outputTokens": 10, "totalTokens": 50
+                    }))
+                    .unwrap(),
+                );
+                let rows: Vec<_> = models
+                    .iter()
+                    .map(|model| {
+                        serde_json::json!({"model": model, "token_count": {"totalTokens": 50}})
+                    })
+                    .collect();
+                response.meta = Some(
+                    serde_json::from_value(serde_json::json!({"quota": {"model_usage": rows}}))
+                        .unwrap(),
+                );
+                response
+            };
+            let mut lp = CustomLoop::start_with_responses(
+                agent_type,
+                vec![vec![custom_text("first")], vec![custom_text("second")]],
+                vec![
+                    response(&["claude-opus-5-5"]),
+                    response(&["claude-opus-5-5", "claude-haiku-5-5"]),
+                ],
+            )
+            .await;
+            {
+                let mut st = lp.state.write().await;
+                st.prompt_usage_mode =
+                    crate::acp::reported_usage::PromptUsageMode::PerPromptCacheExclusive;
+                st.config_options = Some(vec![SessionConfigOptionInfo {
+                    id: "model".to_string(),
+                    name: "Model".to_string(),
+                    description: None,
+                    category: Some("model".to_string()),
+                    kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
+                        current_value: "opus".to_string(),
+                        options: vec![SessionConfigSelectOptionInfo {
+                            value: "opus".to_string(),
+                            name: "Opus".to_string(),
+                            description: None,
+                        }],
+                        groups: Vec::new(),
+                    }),
+                    recommended_value: None,
+                }]);
+            }
+            lp.run_turn("one", "first").await;
+            lp.run_turn("two", "second").await;
+            let detail = crate::parsers::acp_native::AcpNativeParser::new_in(
+                agent_type,
+                crate::paths::codeg_acp_transcripts_root(),
+            )
+            .get_conversation("s1")
+            .unwrap();
+            assert_eq!(detail.turns[1].model.as_deref(), Some("claude-opus-5-5"));
+            assert_eq!(detail.turns[1].usage.as_ref().map(|u| u.input_tokens), Some(40));
+            assert_eq!(detail.turns[3].model.as_deref(), Some("opus"));
+            lp.shutdown().await;
+        })
+        .await;
     }
 
     #[tokio::test]
