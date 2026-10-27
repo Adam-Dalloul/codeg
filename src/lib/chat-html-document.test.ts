@@ -39,4 +39,16 @@ describe("聊天 HTML 文档隔离", () => {
       template.content.querySelector("script")?.getAttribute("nonce")
     ).toBe("test-nonce")
   })
+
+  it("剥离 SVG 的 xlink:href 和用动画写入的链接，保留指向文档自身的引用", async () => {
+    const doc = await buildChatHtmlDocument(
+      '<svg xmlns:xlink="http://www.w3.org/1999/xlink"><defs><linearGradient id="g"/><path id="p" d="M0 0"/></defs><a xlink:href="https://attack.example/x"><text>A</text></a><a><set attributeName="href" to="https://attack.example/y"/><animate attributeName="xlink:href" values="https://attack.example/z"/><text>B</text></a><use href="#p"/><use xlink:href="#p"/><rect fill="url(#g)"/></svg><a href="#top">Top</a>',
+      options
+    )
+    expect(doc).not.toContain("attack.example")
+    expect(doc).not.toMatch(/<set|<animate/)
+    expect(doc).toContain('<use href="#p">')
+    expect(doc).toContain('<use xlink:href="#p">')
+    expect(doc).toContain('<a href="#top">')
+  })
 })

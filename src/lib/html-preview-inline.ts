@@ -595,15 +595,23 @@ export async function inlineHtmlResources(
     return t
   }
 
+  // A link target under any name — `href`, SVG's `xlink:href` — counts: a
+  // click on it would navigate the frame itself to another page, which CSP
+  // does not govern. One into the document itself (`#id`: an SVG `<use>`, a
+  // gradient, an in-page anchor) stays; the frame's `about:srcdoc` base keeps
+  // it there.
+  const isLinkTarget = (name: string) => /(?:^|:)href$/i.test(name)
+  const isOwnFragment = (url: string) => url.trimStart().startsWith("#")
   const stripActiveAttributes = (el: Element) => {
     for (const attr of Array.from(el.attributes)) {
       if (
         /^on/i.test(attr.name) ||
-        ["href", "action", "formaction", "nonce", "srcdoc"].includes(
+        (isLinkTarget(attr.name) && !isOwnFragment(attr.value)) ||
+        ["action", "formaction", "nonce", "srcdoc"].includes(
           attr.name.toLowerCase()
         )
       ) {
-        el.removeAttribute(attr.name)
+        el.removeAttributeNode(attr)
       }
     }
   }
@@ -617,6 +625,10 @@ export async function inlineHtmlResources(
       root
         .querySelectorAll("script, iframe, object, embed, link, template")
         .forEach((el) => el.remove())
+      // SVG animation can set a link target the attribute pass never sees.
+      root.querySelectorAll("set, animate").forEach((el) => {
+        if (isLinkTarget(el.getAttribute("attributeName") ?? "")) el.remove()
+      })
       root.querySelectorAll("*").forEach(stripActiveAttributes)
     }
 
