@@ -9721,6 +9721,23 @@ async fn try_bridge_pi_select_ask(
 }
 
 /// 将 Antigravity 原生 interaction_* 问答接入共享卡片，回传选中的原始 optionId。
+///
+/// antigravity-acp asks each question of the model's `ask_question` (and its
+/// workspace-trust prompt) as one `session/request_permission` whose tool call
+/// is `{toolCallId: "interaction_<hex>", title: <question>, rawInput: {}}` and
+/// whose options are the choices (see
+/// [`crate::acp::question::parse_antigravity_ask`]). The bridge mirrors
+/// [`try_bridge_pi_select_ask`]: the card replaces the approval card, the pick
+/// goes back as the chosen `optionId`, and the answered card is recorded under
+/// the interaction's id, on the placeholder row Antigravity opened for it (see
+/// [`record_antigravity_answer_card`]); Antigravity's closing "Response
+/// received" update for that id is then dropped so it cannot overwrite the
+/// answer.
+///
+/// `Err(responder)` hands the request back for the ordinary permission path:
+/// every other request, an interaction the card cannot show faithfully, the
+/// ask feature switched off, or an ask already pending on the connection.
+// Same `Err` hand-back as `try_auto_allow_codeg_ask`; see its allow note.
 #[allow(clippy::result_large_err)]
 async fn try_bridge_antigravity_ask(
     access: &Option<(
@@ -9734,72 +9751,36 @@ async fn try_bridge_antigravity_ask(
     req: &RequestPermissionRequest,
     responder: Responder<RequestPermissionResponse>,
 ) -> Result<(), Responder<RequestPermissionResponse>> {
-    if state.read().await.agent_type != AgentType::Antigravity {
+    let tool_call_id = req.tool_call.tool_call_id.to_string();
+    if !crate::acp::question::is_antigravity_interaction_id(&tool_call_id)
+        || state.read().await.agent_type != AgentType::Antigravity
+    {
+        return Err(responder);
+    }
+    let Some((questions, ask_cfg)) = access else {
+        return Err(responder);
+    };
+    // Same kill switch as the codeg-mcp ask tool and every other native ask
+    // bridge (grok, cursor, codex elicitation, pi): when the feature is off,
+    // the approval card stays the way to answer.
+    if !ask_cfg.is_enabled().await {
         return Err(responder);
     }
 
-    let tool_call_id = req.tool_call.tool_call_id.to_string();
     let tool_call = serde_json::to_value(&req.tool_call).unwrap_or_default();
     let options: Vec<_> = req
         .options
         .iter()
         .map(|opt| (opt.option_id.to_string(), opt.name.clone()))
         .collect();
-    let Some((questions, _ask_cfg)) = access else {
-        if tool_call_id.starts_with("interaction_") {
-            tracing::warn!(
-                "[ACP] Antigravity interaction bridge has no question access conn={} tool_call_id={}",
-                connection_id,
-                tool_call_id
-            );
-        }
-        return Err(responder);
-    };
-
     let Some(ask) = crate::acp::question::parse_antigravity_ask(&tool_call, &options) else {
-        let id_matches = tool_call
-            .get("toolCallId")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|id| id.starts_with("interaction_") && id.len() > 12);
-        if id_matches {
-            let title_present = tool_call
-                .get("title")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|title| !title.trim().is_empty());
-            let kind = tool_call
-                .get("kind")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("missing");
-            let status = tool_call
-                .get("status")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("missing");
-            let raw_input_empty_object = tool_call
-                .get("rawInput")
-                .and_then(serde_json::Value::as_object)
-                .is_some_and(serde_json::Map::is_empty);
-            let mut seen_ids = std::collections::HashSet::new();
-            let mut seen_names = std::collections::HashSet::new();
-            let options_valid = options.iter().all(|(id, name)| {
-                !id.trim().is_empty()
-                    && !name.trim().is_empty()
-                    && name.chars().count() <= crate::acp::question::MAX_QUESTION_TEXT_CHARS
-                    && seen_ids.insert(id)
-                    && seen_names.insert(name.trim())
-            });
-            tracing::warn!(
-                "[ACP] Antigravity interaction bridge rejected request conn={} tool_call_id={} id_matches={} title_present={} kind={} status={} raw_input_empty_object={} option_count={} options_valid={}",
-                connection_id,
-                tool_call_id,
-                id_matches,
-                title_present,
-                kind,
-                status,
-                raw_input_empty_object,
-                options.len(),
-                options_valid
-            );
-        }
+        tracing::warn!(
+            "[ACP] Antigravity interaction kept on the approval card; the question card \
+             cannot show it faithfully conn={} tool_call_id={} option_count={}",
+            connection_id,
+            tool_call_id,
+            options.len()
+        );
         return Err(responder);
     };
 
@@ -9848,30 +9829,10 @@ async fn try_bridge_antigravity_ask(
                         declined: true,
                     }
                 };
-                emit_with_state(
-                    &state,
-                    &emitter,
-                    AcpEvent::ToolCall {
-                        tool_call_id,
-                        title: "ask_user_question".to_string(),
-                        kind: "other".to_string(),
-                        status: "completed".to_string(),
-                        content: None,
-                        raw_input: Some(
-                            crate::acp::question::grok_result_card_input(std::slice::from_ref(
-                                &ask.spec,
-                            ))
-                            .to_string(),
-                        ),
-                        raw_output: Some(
-                            crate::acp::question::grok_result_card_output(&recorded).to_string(),
-                        ),
-                        locations: None,
-                        meta: None,
-                        images: None,
-                    },
-                )
-                .await;
+                // Before answering: Antigravity's closing frame for this id
+                // follows the answer and must find the card recorded.
+                record_antigravity_answer_card(&state, &emitter, tool_call_id, &ask.spec, &recorded)
+                    .await;
 
                 let response_outcome = match option_id {
                     Some(id) => {
@@ -18179,6 +18140,78 @@ fn grok_meta_marks_ask_user(
             == Some("ask_user")
 }
 
+/// Whether this `tool_call_update` is Antigravity closing a question whose
+/// answered card the bridge recorded, and so must be dropped. Consumes the
+/// record.
+///
+/// Measured against antigravity-acp 1.4.1: each question opens a `tool_call`
+/// (`interaction_<hex>`, titled with the question, `rawInput: {}`, `pending`),
+/// is asked through `session/request_permission` under the same id, and is
+/// closed by a `tool_call_update` carrying only `status` and a fixed `rawOutput`
+/// ("Response received" / "Interaction cancelled"). The server emits no frame
+/// for the model's `ask_question` call itself.
+///
+/// The opening frame is kept: it is the row the answered card lands on, and the
+/// row an approval card's answer settles. The closing frame is dropped only
+/// after [`record_antigravity_answer_card`], like grok's redundant ask frames
+/// (see [`grok_meta_marks_ask_user`]): both reducers replace a call's output
+/// with any update that carries one, so it would turn the recorded answer into
+/// "no selection" (and a declined card into a failed one). Without a recorded
+/// card (the bridge left the question on the approval card, or a drain
+/// abandoned it) the frame settles the placeholder as usual.
+async fn take_antigravity_answered_close(
+    agent_type: AgentType,
+    state: &Arc<RwLock<SessionState>>,
+    tool_call_id: &str,
+) -> bool {
+    agent_type == AgentType::Antigravity
+        && crate::acp::question::is_antigravity_interaction_id(tool_call_id)
+        && state
+            .write()
+            .await
+            .antigravity_answered_interactions
+            .remove(tool_call_id)
+}
+
+/// Record the answered card for one Antigravity question under the
+/// interaction's own id (the placeholder row Antigravity opened for it), and
+/// mark the id so the closing frame Antigravity sends next cannot overwrite it
+/// (see [`take_antigravity_answered_close`]). Must run before the permission
+/// request is answered: Antigravity sends that frame only afterwards.
+async fn record_antigravity_answer_card(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    tool_call_id: String,
+    spec: &crate::acp::question::QuestionSpec,
+    recorded: &crate::acp::question::QuestionOutcome,
+) {
+    state
+        .write()
+        .await
+        .antigravity_answered_interactions
+        .insert(tool_call_id.clone());
+    emit_with_state(
+        state,
+        emitter,
+        AcpEvent::ToolCall {
+            tool_call_id,
+            title: "ask_user_question".to_string(),
+            kind: "other".to_string(),
+            status: "completed".to_string(),
+            content: None,
+            raw_input: Some(
+                crate::acp::question::grok_result_card_input(std::slice::from_ref(spec))
+                    .to_string(),
+            ),
+            raw_output: Some(crate::acp::question::grok_result_card_output(recorded).to_string()),
+            locations: None,
+            meta: None,
+            images: None,
+        },
+    )
+    .await;
+}
+
 /// The questions of the Qoder `AskUserQuestion` call this opening `tool_call`
 /// announces, or `None` when it announces anything else. Qoder states the
 /// tool's name only here (`_meta.qoder.toolName`); the questions may be empty
@@ -21667,6 +21700,12 @@ async fn emit_conversation_update(
         }
         SessionUpdate::ToolCallUpdate(mut tcu) => {
             let tool_call_id = tcu.tool_call_id.to_string();
+            // The closing "Response received" frame of an Antigravity question
+            // would overwrite the answered card the bridge recorded (see
+            // `take_antigravity_answered_close`).
+            if take_antigravity_answered_close(agent_type, state, &tool_call_id).await {
+                return;
+            }
             // A fork's copy of its own launch result: dropped before the `_meta`
             // ledger reads it, and the real result is taken off the raw SDK
             // stream instead (see `claude_fork_inherited_result`).
@@ -41839,7 +41878,9 @@ mod tests {
         for (agent_type, enabled, decline, bridged) in [
             (AgentType::Antigravity, true, false, true),
             (AgentType::Antigravity, true, true, true),
-            (AgentType::Antigravity, false, false, true),
+            // The ask feature's kill switch keeps the approval card, as it does
+            // for every other native ask bridge.
+            (AgentType::Antigravity, false, false, false),
             (AgentType::Codex, true, false, false),
         ] {
             let (client_end, agent_end) = Channel::duplex();
@@ -41948,6 +41989,177 @@ mod tests {
             for card in cards {
                 let output: serde_json::Value = serde_json::from_str(card).unwrap();
                 assert_eq!(output["declined"], decline);
+            }
+        }
+    }
+
+    /// The frames antigravity-acp 1.4.1 sends around one question, recorded on a
+    /// live run, with what the bridge does in between. When the bridge recorded
+    /// an answered (or declined) card, the closing "Response received" update is
+    /// dropped and the card survives (it used to replace the answer and leave the
+    /// card reading "no selection"). Without a recorded card (the question went
+    /// to the approval card, or was abandoned) the closing frame settles the
+    /// placeholder row as before. Another agent's look-alike id is left alone.
+    #[tokio::test]
+    async fn antigravity_interaction_frames_do_not_overwrite_the_bridged_card() {
+        use crate::acp::session_state::{ToolCallOutput, ToolCallStatus};
+        let id = "interaction_6fc001b5";
+        let opening = || -> SessionUpdate {
+            serde_json::from_value(serde_json::json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": id,
+                "title": "Which area first?",
+                "status": "pending",
+                "rawInput": {},
+            }))
+            .expect("1.4.1 opening frame")
+        };
+        let closing = |status: &str, raw_output: &str| -> SessionUpdate {
+            serde_json::from_value(serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": id,
+                "status": status,
+                "rawOutput": raw_output,
+            }))
+            .expect("1.4.1 closing frame")
+        };
+        let spec = crate::acp::question::QuestionSpec {
+            id: "q1".into(),
+            question: "Which area first?".into(),
+            header: "Which area".into(),
+            multi_select: false,
+            options: ["(Recommended) Backend API", "Frontend UI"]
+                .into_iter()
+                .map(|label| crate::acp::question::QuestionOption {
+                    label: label.into(),
+                    description: String::new(),
+                })
+                .collect(),
+            is_secret: false,
+        };
+        let answered = crate::acp::question::QuestionOutcome {
+            answers: vec![crate::acp::question::QuestionAnsweredItem {
+                question: spec.question.clone(),
+                header: spec.header.clone(),
+                multi_select: false,
+                selected: vec!["Frontend UI".into()],
+            }],
+            declined: false,
+        };
+        let declined = crate::acp::question::QuestionOutcome {
+            answers: Vec::new(),
+            declined: true,
+        };
+        // (agent, the card the bridge recorded, closing frame, frames for the id
+        // that reach the reducers)
+        for (agent_type, card, (closing_status, closing_output), frames_expected) in [
+            (
+                AgentType::Antigravity,
+                Some(&answered),
+                ("completed", "Response received"),
+                2,
+            ),
+            (
+                AgentType::Antigravity,
+                Some(&declined),
+                ("failed", "Interaction cancelled"),
+                2,
+            ),
+            (
+                AgentType::Antigravity,
+                None,
+                ("failed", "Interaction cancelled"),
+                2,
+            ),
+            (
+                AgentType::Codex,
+                Some(&answered),
+                ("completed", "Response received"),
+                3,
+            ),
+        ] {
+            let state = Arc::new(RwLock::new(SessionState::new(
+                "conn-agy-frames".into(),
+                agent_type,
+                None,
+                "win".into(),
+                None,
+            )));
+            let mut cache = ToolCallOutputCache::default();
+            let mut cb = CodeBuddyLiveState::default();
+            emit_conversation_update(
+                &state,
+                &EventEmitter::Noop,
+                agent_type,
+                opening(),
+                None,
+                &mut cache,
+                &mut cb,
+            )
+            .await;
+            if let Some(outcome) = card {
+                record_antigravity_answer_card(
+                    &state,
+                    &EventEmitter::Noop,
+                    id.into(),
+                    &spec,
+                    outcome,
+                )
+                .await;
+            }
+            emit_conversation_update(
+                &state,
+                &EventEmitter::Noop,
+                agent_type,
+                closing(closing_status, closing_output),
+                None,
+                &mut cache,
+                &mut cb,
+            )
+            .await;
+
+            let guard = state.read().await;
+            let frames = guard
+                .recent_events_after(0)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|event| {
+                    matches!(
+                        &event.payload,
+                        AcpEvent::ToolCall { tool_call_id, .. }
+                            | AcpEvent::ToolCallUpdate { tool_call_id, .. }
+                            if tool_call_id == id
+                    )
+                })
+                .count();
+            let case = format!("{agent_type:?} card={}", card.is_some());
+            assert_eq!(frames, frames_expected, "{case}");
+            let call = guard
+                .active_tool_calls
+                .get(id)
+                .expect("the row is tracked");
+            let output = match call.output.as_ref() {
+                Some(ToolCallOutput::Json { value }) => value.to_string(),
+                Some(ToolCallOutput::Text { content }) => content.clone(),
+                other => panic!("unexpected output {other:?} ({case})"),
+            };
+            match (agent_type, card) {
+                (AgentType::Antigravity, Some(outcome)) => {
+                    let expected = crate::acp::question::grok_result_card_output(outcome);
+                    assert_eq!(output, expected.to_string(), "{case}");
+                    assert_eq!(call.label, "ask_user_question", "{case}");
+                    assert!(matches!(call.status, ToolCallStatus::Completed), "{case}");
+                }
+                (AgentType::Antigravity, None) => {
+                    assert_eq!(call.label, "Which area first?", "{case}");
+                    assert!(matches!(call.status, ToolCallStatus::Failed), "{case}");
+                    assert!(output.contains("Interaction cancelled"), "{output}");
+                }
+                _ => assert!(output.contains("Response received"), "{output}"),
+            }
+            // Each record is consumed by the frame it was waiting for.
+            if agent_type == AgentType::Antigravity {
+                assert!(guard.antigravity_answered_interactions.is_empty(), "{case}");
             }
         }
     }

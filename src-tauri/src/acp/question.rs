@@ -701,6 +701,22 @@ pub fn is_codeg_ask_tool_name(name: &str) -> bool {
     crate::acp::delegation::is_codeg_mcp_tool(name, "ask_user_question")
 }
 
+/// The id prefix antigravity-acp gives the synthetic tool call of one of its
+/// own questions: `server.py::_ask_user_handler` mints
+/// `interaction_<8 hex>` for each question it asks (the model's `ask_question`,
+/// asked one question at a time, and the workspace-trust prompt alike). It is
+/// the only producer of that prefix in 1.4.1.
+pub const ANTIGRAVITY_INTERACTION_ID_PREFIX: &str = "interaction_";
+
+/// True when `id` has the shape of an antigravity-acp question's tool call id
+/// (see [`ANTIGRAVITY_INTERACTION_ID_PREFIX`]). The prefix alone says nothing
+/// about the agent, so callers must also check that the connection is
+/// Antigravity's.
+pub fn is_antigravity_interaction_id(id: &str) -> bool {
+    id.strip_prefix(ANTIGRAVITY_INTERACTION_ID_PREFIX)
+        .is_some_and(|rest| !rest.is_empty())
+}
+
 /// Antigravity 原生交互通过权限选项承载答案，保留文字到 optionId 的映射。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AntigravityAsk {
@@ -716,9 +732,7 @@ pub fn parse_antigravity_ask(
     options: &[(String, String)],
 ) -> Option<AntigravityAsk> {
     let id = tool_call.get("toolCallId")?.as_str()?;
-    if id.strip_prefix("interaction_")?.is_empty()
-        || !(MIN_OPTIONS..=MAX_OPTIONS).contains(&options.len())
-    {
+    if !is_antigravity_interaction_id(id) || !(MIN_OPTIONS..=MAX_OPTIONS).contains(&options.len()) {
         return None;
     }
     if let Some(kind) = tool_call.get("kind").and_then(Value::as_str) {
