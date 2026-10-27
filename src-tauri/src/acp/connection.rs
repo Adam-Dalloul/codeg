@@ -18646,6 +18646,34 @@ fn is_claude_api_retry_message(message: &serde_json::Value) -> bool {
 /// so `is_known_ext_method` and the mapper can't drift apart.
 const CLAUDE_SDK_EXT_METHOD: &str = "_claude/sdkMessage";
 
+/// Read only the identity-bearing head of an SDK frame. Content and tool
+/// results are ignored by deserialization rather than cloned or retained.
+fn claude_native_session_identity(params: &serde_json::Value) -> Option<(String, String)> {
+    #[derive(serde::Deserialize)]
+    struct Envelope {
+        #[serde(rename = "sessionId")]
+        public: String,
+        message: Head,
+    }
+    #[derive(serde::Deserialize)]
+    struct Head {
+        #[serde(rename = "type")]
+        kind: String,
+        subtype: Option<String>,
+        session_id: Option<String>,
+        parent_tool_use_id: Option<String>,
+    }
+    let frame: Envelope = serde::Deserialize::deserialize(params).ok()?;
+    if frame.message.parent_tool_use_id.as_deref().is_some_and(|id| !id.is_empty())
+        || !(frame.message.kind == "result"
+            || (frame.message.kind == "system" && frame.message.subtype.as_deref() == Some("init")))
+    {
+        return None;
+    }
+    let native = frame.message.session_id.filter(|id| !id.is_empty())?;
+    (!frame.public.is_empty()).then_some((frame.public, native))
+}
+
 fn map_claude_sdk_ext_notification(notification: &UntypedMessage) -> Option<AcpEvent> {
     if notification.method() != CLAUDE_SDK_EXT_METHOD {
         return None;
@@ -21356,6 +21384,9 @@ async fn maybe_emit_ext_notification(
     // already flipped back is still classified as out-of-turn.
     let turn_active = state.read().await.status == ConnectionStatus::Prompting;
     if agent_type == AgentType::ClaudeCode && notification.method() == CLAUDE_SDK_EXT_METHOD {
+        if let Some((public, native)) = claude_native_session_identity(notification.params()) {
+            state.write().await.observe_claude_native_session(&public, &native);
+        }
         stash_claude_viewed_results(notification.params(), cb_state);
         // Gated like `settle_codex_subagent_launch`: once the turn is over the
         // card is not live, and an update would materialize it from nothing.
@@ -42270,6 +42301,38 @@ mod tests {
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), self.client).await;
             self.agent.abort();
         }
+    }
+
+    #[test]
+    fn native_identity_uses_only_main_init_and_result_frames() {
+        let read = |message| {
+            let params = serde_json::json!({"sessionId":"public", "message":message});
+            claude_native_session_identity(&params)
+        };
+        for message in [
+            serde_json::json!({"type":"system","subtype":"init","session_id":"private"}),
+            serde_json::json!({"type":"result","subtype":"success","session_id":"private"}),
+        ] {
+            assert_eq!(read(message), Some(("public".into(), "private".into())));
+        }
+        assert!(read(serde_json::json!({"type":"assistant","session_id":"private"})).is_none());
+        assert!(read(serde_json::json!({"type":"result","session_id":"child","parent_tool_use_id":"tool-child"})).is_none());
+        assert!(read(serde_json::json!({"type":"system","subtype":"init"})).is_none());
+    }
+
+    #[tokio::test]
+    async fn native_reset_identity_is_visible_before_turn_complete() {
+        let mut lp = CustomLoop::start_for(AgentType::ClaudeCode, vec![vec![
+            ("_claude/sdkMessage", serde_json::json!({"sessionId":"s1","message":{"type":"system","subtype":"init","session_id":"private-reset"}})),
+            custom_text("after reset"),
+        ]]).await;
+        // This fixture attaches below the startup handshake. The real driver
+        // records SessionStarted before entering this loop.
+        lp.state.write().await.external_id = Some("s1".into());
+        lp.run_turn("continue", "after reset").await;
+        assert!(lp.state.read().await.claude_native_context_changed());
+        assert!(lp.state.read().await.names_native_session("private-reset"));
+        lp.shutdown().await;
     }
 
     #[tokio::test]

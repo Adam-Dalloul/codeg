@@ -381,6 +381,8 @@ pub(crate) struct DrainingChild {
     pid: Arc<std::sync::atomic::AtomicU32>,
     parked_at: std::time::Instant,
     session_identity: Option<(AgentType, PathBuf, String)>,
+    session_aliases: std::collections::BTreeSet<String>,
+    conversation_id: Option<i32>,
     spawn_pending: bool,
     /// Parked after its connection's task finished, so no pid can be
     /// published any more: zero means reaped (or never started), not
@@ -409,6 +411,8 @@ impl DrainingChild {
             pid: conn.child_pid.clone(),
             parked_at: std::time::Instant::now(),
             session_identity,
+            session_aliases: state.native_session_aliases(),
+            conversation_id: state.conversation_id,
             spawn_pending,
             settled: false,
         }
@@ -421,7 +425,7 @@ impl DrainingChild {
             return false;
         };
         *family == AgentType::ClaudeCode
-            && session == sid
+            && (session == sid || self.session_aliases.contains(sid) || matches!(self.agent, AgentType::Custom(_)))
             && same_storage_root(child_root, root)
             && (self.pid.load(std::sync::atomic::Ordering::SeqCst) != 0 || self.spawn_pending)
     }
@@ -2967,6 +2971,7 @@ impl ConnectionManager {
         source: &std::path::Path,
         target: &std::path::Path,
         sid: &str,
+        conversation_id: i32,
     ) -> Result<Vec<tokio::sync::OwnedMutexGuard<()>>, AcpError> {
         {
             let mut draining = self.draining.lock().await;
@@ -2977,7 +2982,9 @@ impl ConnectionManager {
                     crate::parsers::path_eq_for_matching(&root.to_string_lossy(), &path.to_string_lossy())
                         || matches!((root.canonicalize(), path.canonicalize()), (Ok(a), Ok(b)) if a == b)
                 };
-                *family == AgentType::ClaudeCode && session == sid && (same(source) || same(target))
+                *family == AgentType::ClaudeCode
+                    && (session == sid || child.session_aliases.contains(sid) || child.conversation_id == Some(conversation_id) || matches!(child.agent, AgentType::Custom(_)))
+                    && (same(source) || same(target))
                     && (child.pid.load(std::sync::atomic::Ordering::SeqCst) != 0 || child.spawn_pending)
             }) {
                 return Err(AcpError::protocol("An agent is still stopping. Wait before switching accounts."));
@@ -2988,14 +2995,6 @@ impl ConnectionManager {
             let connections = self.connections.lock().await;
             for (id, connection) in connections.iter() {
                 let state = connection.state.read().await;
-                if state
-                    .external_id
-                    .as_deref()
-                    .or(state.requested_session_id.as_deref())
-                    != Some(sid)
-                {
-                    continue;
-                }
                 let Some((family, root)) = &state.storage_identity else {
                     continue;
                 };
@@ -3008,6 +3007,18 @@ impl ConnectionManager {
                         &other.to_string_lossy(),
                     ) || matches!((root.canonicalize(), other.canonicalize()), (Ok(a), Ok(b)) if a == b)
                 };
+                // A legacy custom adapter has no verified private/native id
+                // channel. Its public id cannot exclude a writer after reset.
+                if matches!(state.agent_type, AgentType::Custom(_)) && (same(source) || same(target)) {
+                    return Err(AcpError::protocol(
+                        "Close custom-agent sessions using these accounts before switching.",
+                    ));
+                }
+                if !state.names_native_session(sid)
+                    && state.conversation_id != Some(conversation_id)
+                {
+                    continue;
+                }
                 if same(target) {
                     return Err(AcpError::protocol(
                         "Close the target account's copy of this session before switching.",
@@ -3031,6 +3042,13 @@ impl ConnectionManager {
                 if state.cli_run.is_some() {
                     return Err(AcpError::protocol(
                         "Wait for the CLI run to finish before switching accounts.",
+                    ));
+                }
+                if state.claude_native_context_changed()
+                    || state.external_id.as_deref().is_some_and(|current| current != sid)
+                {
+                    return Err(AcpError::protocol(
+                        "This live Claude session changed context. Start a new chat with the selected account.",
                     ));
                 }
                 if state.turn_in_flight
@@ -3124,8 +3142,7 @@ impl ConnectionManager {
         let connections = self.connections.lock().await;
         for connection in connections.values() {
             let state = connection.state.read().await;
-            if state.external_id.as_deref().or(state.requested_session_id.as_deref())
-                != Some(sid)
+            if !state.names_native_session(sid) && !matches!(state.agent_type, AgentType::Custom(_))
             {
                 continue;
             }
@@ -8966,21 +8983,21 @@ mod tests {
             state.turn_in_flight = true;
         }
         let barrier = mgr.lock_out_new_connections().await;
-        assert!(matches!(mgr.quiesce_account_session(&barrier, a.path(), b.path(), "sid").await, Err(AcpError::TurnInProgress)));
+        assert!(matches!(mgr.quiesce_account_session(&barrier, a.path(), b.path(), "sid", 1).await, Err(AcpError::TurnInProgress)));
         assert!(mgr.get_state("switch-source").await.is_some());
         {
             let mut state = state.write().await;
             state.turn_in_flight = false;
             state.goal_active = true;
         }
-        assert!(matches!(mgr.quiesce_account_session(&barrier, a.path(), b.path(), "sid").await, Err(AcpError::TurnInProgress)));
+        assert!(matches!(mgr.quiesce_account_session(&barrier, a.path(), b.path(), "sid", 1).await, Err(AcpError::TurnInProgress)));
         state.write().await.goal_active = false;
         state.write().await.cli_run = Some(cli_tag("account-switch-run"));
-        let error = mgr.quiesce_account_session(&barrier, a.path(), b.path(), "sid").await.unwrap_err();
+        let error = mgr.quiesce_account_session(&barrier, a.path(), b.path(), "sid", 1).await.unwrap_err();
         assert!(error.to_string().contains("Wait for the CLI run"));
         assert!(mgr.get_state("switch-source").await.is_some());
         state.write().await.cli_run = None;
-        let error = mgr.quiesce_account_session(&barrier, b.path(), a.path(), "sid").await.unwrap_err();
+        let error = mgr.quiesce_account_session(&barrier, b.path(), a.path(), "sid", 1).await.unwrap_err();
         assert!(error.to_string().contains("target account"));
         assert!(mgr.get_state("switch-source").await.is_some());
     }
@@ -9004,7 +9021,7 @@ mod tests {
         }
         let barrier = mgr.lock_out_new_connections().await;
         let error = mgr
-            .quiesce_account_session(&barrier, source.path(), target.path(), "remote-session")
+            .quiesce_account_session(&barrier, source.path(), target.path(), "remote-session", 1)
             .await
             .unwrap_err();
         assert!(matches!(&error, AcpError::Protocol(_)));
@@ -9022,11 +9039,59 @@ mod tests {
                 state.write().await.status = ConnectionStatus::Disconnected;
             }
         });
-        mgr.quiesce_account_session(&barrier, source.path(), target.path(), "remote-session")
+        mgr.quiesce_account_session(&barrier, source.path(), target.path(), "remote-session", 1)
             .await
             .unwrap();
         stopped.await.unwrap();
         assert!(mgr.get_state("remote-switch").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn account_switch_refuses_reset_sessions_by_public_private_or_conversation_identity() {
+        let mgr = ConnectionManager::new();
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let mut commands = mgr.insert_test_connection_live("reset-switch", AgentType::ClaudeCode, None, EventEmitter::Noop).await;
+        let state = mgr.get_state("reset-switch").await.unwrap();
+        {
+            let mut state = state.write().await;
+            state.storage_identity = Some((AgentType::ClaudeCode, source.path().into()));
+            state.external_id = Some("public".into());
+            state.conversation_id = Some(42);
+            state.observe_claude_native_session("public", "private");
+        }
+        let barrier = mgr.lock_out_new_connections().await;
+        for sid in ["public", "private", "late-database-repoint"] {
+            let error = mgr.quiesce_account_session(&barrier, source.path(), target.path(), sid, 42).await.unwrap_err();
+            assert!(error.to_string().contains("changed context"));
+            assert!(mgr.get_state("reset-switch").await.is_some());
+            assert!(matches!(commands.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+        }
+        // With no identity-bearing frames yet, the conversation binding still
+        // prevents a rollover re-point from hiding the live public session.
+        state.write().await.claude_native_sessions.clear();
+        assert!(mgr.quiesce_account_session(&barrier, source.path(), target.path(), "private", 42).await.is_err());
+        assert!(matches!(commands.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+    }
+
+    #[tokio::test]
+    async fn account_switch_does_not_assume_a_legacy_custom_writer_kept_its_public_id() {
+        let mgr = ConnectionManager::new();
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let mut commands = mgr.insert_test_connection_live("legacy-writer", AgentType::Custom("claude-code-2"), None, EventEmitter::Noop).await;
+        let state = mgr.get_state("legacy-writer").await.unwrap();
+        {
+            let mut state = state.write().await;
+            state.storage_identity = Some((AgentType::ClaudeCode, source.path().into()));
+            state.external_id = Some("other-public-id".into());
+        }
+        let barrier = mgr.lock_out_new_connections().await;
+        let error = mgr.quiesce_account_session(&barrier, source.path(), target.path(), "native-file-id", 1).await.unwrap_err();
+        assert!(error.to_string().contains("custom-agent sessions"));
+        assert!(matches!(commands.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+        assert!(mgr.account_session_has_writer(source.path(), "native-file-id").await);
+        assert!(!mgr.account_session_has_writer(target.path(), "native-file-id").await);
     }
 
     /// A connection whose task ends on its own (the agent failed to load, or
@@ -9046,6 +9111,7 @@ mod tests {
             let mut state = state.write().await;
             state.storage_identity = Some((AgentType::ClaudeCode, root.path().into()));
             state.external_id = Some("sid".into());
+            state.observe_claude_native_session("sid", "private-sid");
         }
         let pid = mgr.connections.lock().await.get("ended").unwrap().child_pid.clone();
         pid.store(4242, SeqCst);
@@ -9059,6 +9125,7 @@ mod tests {
         assert!(mgr.list_connections().await.is_empty());
         assert_eq!(mgr.live_or_draining_agent_names().await, vec!["Claude Code".to_string()]);
         assert!(mgr.account_session_has_writer(root.path(), "sid").await);
+        assert!(mgr.account_session_has_writer(root.path(), "private-sid").await);
         assert!(!mgr.account_session_has_writer(other.path(), "sid").await);
         assert!(!mgr.account_session_has_writer(root.path(), "another").await);
 
@@ -9069,7 +9136,7 @@ mod tests {
                 pid.store(0, SeqCst);
             }
         });
-        mgr.wait_for_account_session_writers(root.path(), "sid").await.unwrap();
+        mgr.wait_for_account_session_writers(root.path(), "private-sid").await.unwrap();
         reaper.await.unwrap();
         // Its spawn was over, so a zero pid is a reap, not a spawn in flight:
         // it leaves at once instead of after the grace an explicit teardown gets.

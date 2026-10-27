@@ -52,6 +52,10 @@ its own saved choices. Turn off Claude Remote Control before switching accounts.
 An unavailable requested model cancels the switch. The selected account's own
 settings, permissions and project memory apply.
 
+A live Claude session whose context was reset cannot switch accounts in place.
+Start a new chat with the desired account. Close custom-agent sessions using
+the same account folders before a native account switch.
+
 Session task lists and legacy todos move with a native Claude session, including
 updates and deletions. Replaced task files remain in the target account's
 `.codeg-account-switch/` recovery folder. A custom task-list id can be shared
