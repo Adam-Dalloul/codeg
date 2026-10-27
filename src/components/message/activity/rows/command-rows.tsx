@@ -20,7 +20,7 @@ import type { StepStatus } from "@/lib/activity/types"
 import { describeStdinChars } from "@/lib/shell-session-tool"
 import { cn } from "@/lib/utils"
 import { useActivityRender } from "../activity-context"
-import { ActivityMembers, ActivityRow } from "../activity-row"
+import { ActivityMembers, ActivityRow, useGroupGoing } from "../activity-row"
 import { CopyAction, DetailBox, DetailScroll } from "../detail-box"
 import { useDisclosure } from "../disclosure-store"
 import { RailIcon } from "../rail-icon"
@@ -143,7 +143,7 @@ function CommandLabel({
           {verb}
         </span>
         <span
-          className="min-w-0 truncate font-mono text-[0.8125rem] text-muted-foreground"
+          className="min-w-0 truncate font-mono text-[0.8125rem] text-activity-secondary"
           dir="ltr"
         >
           {target}
@@ -160,14 +160,14 @@ function CommandLabel({
         </span>
         {command.display ? (
           <span
-            className="min-w-0 truncate font-mono text-[0.8125rem] text-muted-foreground"
+            className="min-w-0 truncate font-mono text-[0.8125rem] text-activity-secondary"
             dir="ltr"
           >
             {command.display}
           </span>
         ) : null}
         {command.lineCount > 0 ? (
-          <span className="shrink-0 text-muted-foreground">
+          <span className="shrink-0 text-activity-secondary">
             {t("row.script", { count: command.lineCount })}
           </span>
         ) : null}
@@ -194,24 +194,24 @@ function CommandLabel({
         {t("row.command")}
       </span>
       {command.description ? (
-        <span dir="auto" className="min-w-0 truncate text-muted-foreground">
+        <span dir="auto" className="min-w-0 truncate text-activity-secondary">
           {command.description}
         </span>
       ) : (
         <>
           <span
             ref={commandRef}
-            className="min-w-0 truncate font-mono text-[0.8125rem] text-muted-foreground"
+            className="min-w-0 truncate font-mono text-[0.8125rem] text-activity-secondary"
             dir="ltr"
           >
             {firstLine}
           </span>
           {heredoc ? (
-            <span className="shrink-0 text-muted-foreground">
+            <span className="shrink-0 text-activity-secondary">
               {t("row.script", { count: heredoc.bodyLines })}
             </span>
           ) : extraLines > 0 ? (
-            <span className="shrink-0 text-muted-foreground">
+            <span className="shrink-0 text-activity-secondary">
               {t("row.moreLines", { count: extraLines })}
             </span>
           ) : null}
@@ -223,7 +223,7 @@ function CommandLabel({
         </span>
       ) : null}
       {command.announcedSession ? (
-        <span className="shrink-0 font-mono text-xs text-muted-foreground">
+        <span className="shrink-0 font-mono text-xs text-activity-secondary">
           {tParts("shellSession", { id: command.announcedSession })}
         </span>
       ) : null}
@@ -443,9 +443,11 @@ function LiveTail({ text }: { text: string }) {
  * session polls and scripts). The row says what the command is for, in the
  * agent's own description of it, and the panel opens on the command itself;
  * with no description the row shows the command, `Command  pnpm --filter web
- * test`. A failure opens itself — output anchored at the end, where the error
- * is — and stays open; a running command stays folded with its last lines
- * showing beneath.
+ * test`. Folded however it ended: a command that exits non-zero is routine
+ * (a grep with no match, a test run mid-fix), so a failure says so in red on
+ * its line — and opens, output anchored at the end where the error is, when
+ * the reader asks. Only a command waiting on the user's approval opens
+ * itself. A running command stays folded with its last lines showing beneath.
  */
 export const CommandRow = memo(function CommandRow({
   step: given,
@@ -457,16 +459,13 @@ export const CommandRow = memo(function CommandRow({
   const t = useTranslations("Folder.chat.activity")
   const statusText = useStatusText()
   const elapsedLabel = useElapsedLabel()
-  const { recoveredKeys } = useActivityRender()
   const step = useLiveToolStep(given)
   const { tool } = step
   const output = useCommandOutput(step)
-  const failed = tool.status === "failed" || tool.status === "rejected"
   const live = tool.status === "running" || tool.status === "pending"
   const [open, setOpen] = useDisclosure(step.key, {
     defaultOpen: false,
-    force:
-      (failed && !recoveredKeys.has(step.key)) || tool.status === "awaiting",
+    force: tool.status === "awaiting",
   })
   // A codex fan-out command can come with no output of its own and only a
   // note saying why (the truncated output lost its separator); that note is
@@ -539,9 +538,12 @@ export const CommandRow = memo(function CommandRow({
  * commands, one row each, as they run — its header names none of them — and
  * folds, sliding shut, once it has ended: the reply has moved past it (a step
  * or the answer follows, so no command joins it now) and none of its commands
- * is still going. A reply that is done folds them all. A failed member that
- * nothing redid keeps it open, and what the reader chose stands. Folded while
- * live, the member waiting on the user or running shows under the header.
+ * is still going. A reply that is done folds them all. A failed member keeps
+ * it open no more than a passing one does — the header counts the failures in
+ * red — and what the reader chose stands. Open, its commands end on a foot
+ * that turns while the group is still going, then folds it (`Collapse 3
+ * commands`). Folded while live, the member waiting on the user or running
+ * shows under the header.
  */
 export const CommandGroupRow = memo(function CommandGroupRow({
   groupKey,
@@ -557,18 +559,17 @@ export const CommandGroupRow = memo(function CommandGroupRow({
 }) {
   const t = useTranslations("Folder.chat.activity")
   const statusText = useStatusText()
-  const { recoveredKeys, isStreaming } = useActivityRender()
+  const { isStreaming } = useActivityRender()
   const failures = steps.filter(
     (s) => s.tool.status === "failed" || s.tool.status === "rejected"
   )
-  const unrecovered = failures.some((s) => !recoveredKeys.has(s.key))
   const awaited = useAwaitedStep(steps)
   const status = awaited ? "awaiting" : given
   const live = status === "running" || status === "pending"
   const ended = followed && !live && !awaited
+  const going = useGroupGoing(live, followed)
   const [open, setOpen] = useDisclosure(`group:${groupKey}`, {
     defaultOpen: isStreaming && !ended,
-    force: unrecovered,
   })
   // Folded, the member that needs the user — or else the one running — shows
   // under the header, so the current step is never hidden.
@@ -616,7 +617,14 @@ export const CommandGroupRow = memo(function CommandGroupRow({
         ) : null
       }
       detail={() => (
-        <ActivityMembers end={live || awaited ? "pending" : "reached"}>
+        <ActivityMembers
+          foot={{
+            working: going,
+            after: "ring",
+            what: t("header.commands", { count: steps.length }),
+            onFold: () => setOpen(false),
+          }}
+        >
           {steps.map((step) => (
             <CommandRow key={step.key} step={step} inGroup />
           ))}

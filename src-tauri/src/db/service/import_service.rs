@@ -10,7 +10,7 @@ use crate::models::{AgentType, ConversationSummary, ImportResult};
 use crate::parsers::{build_agent_parser, path_eq_for_matching, AgentEnv, AgentEnvs, AgentParser};
 
 /// Every locally-parsable agent, in the canonical parser order.
-const ALL_PARSER_AGENTS: [AgentType; 19] = [
+const ALL_PARSER_AGENTS: [AgentType; 20] = [
     AgentType::ClaudeCode,
     AgentType::Codex,
     AgentType::OpenCode,
@@ -29,11 +29,14 @@ const ALL_PARSER_AGENTS: [AgentType; 19] = [
     AgentType::Kiro,
     // Codeg-owned ACP history only; no scan of ZCode's native SQLite store.
     AgentType::ZCode,
-    // Codeg-owned ACP history only; TRAE CLI's own rollouts are not read.
+    // Codeg-owned ACP message history, enriched with usage from TRAE's native
+    // token_usage_record rows.
     AgentType::Trae,
     // Codeg-owned ACP history only; Command Code's own session trees are not
     // read.
     AgentType::CommandCode,
+    // Codeg-owned ACP history only; no import of MiniMax Code CLI sessions.
+    AgentType::MiniMaxCode,
 ];
 
 fn build_parser(agent_type: AgentType, env: &AgentEnv) -> Box<dyn AgentParser> {

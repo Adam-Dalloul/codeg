@@ -52,6 +52,26 @@ describe("toolStepKind", () => {
     ["mcp__linear__get_issue", { id: "HVAC-1" }, "mcp"],
     // codeg's own MCP companions are never third-party MCP rows
     ["mcp__codeg-mcp__delegate_to_agent", { task: "t" }, "delegation"],
+    // opencode 2.x code-mode: the delegation call rides inside the `execute`
+    // tool's `code` source string, so only the input shape can classify it.
+    [
+      "execute",
+      {
+        code: 'await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: `t` })',
+      },
+      "delegation",
+    ],
+    // A code-mode `execute` that is not a delegation call keeps its own row:
+    // `execute` normalizes to `bash`, so it stays a command.
+    ["execute", { code: "return 1 + 1" }, "command"],
+    // Another tool's `code` argument shaped like the call is no delegation.
+    [
+      "mcp__playwright__browser_run_code",
+      {
+        code: 'await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: `t` })',
+      },
+      "mcp",
+    ],
     [
       "mcp__codeg-mcp__get_delegation_status",
       { task_ids: [] },
@@ -215,6 +235,85 @@ describe("describeToolCall: commands", () => {
       )
     )
     expect(tool.exit).toEqual({ code: 2, signal: null })
+  })
+
+  it("settles a search that matched nothing as done, saying so", () => {
+    // Claude Code: the failure is the bare `Exit code 1`.
+    const claude = describeToolCall(
+      call(
+        "Bash",
+        { command: "rg -n 'source_bindings' src" },
+        { state: "output-error", errorText: "Exit code 1" }
+      )
+    )
+    expect(claude.status).toBe("succeeded")
+    expect(claude.exitMeaning).toBe("noMatch")
+    expect(claude.exit).toEqual({ code: 1, signal: null })
+    // claude-agent-acp fences it for a client without a terminal channel.
+    expect(
+      describeToolCall(
+        call(
+          "Bash",
+          { command: "grep -rn TODO src" },
+          { state: "output-error", errorText: "```\nExit code 1\n```" }
+        )
+      ).exitMeaning
+    ).toBe("noMatch")
+    // codex: its framing, the code kept as a field.
+    const codex = describeToolCall(
+      call(
+        "exec_command",
+        { cmd: '/bin/zsh -lc "test -f package.json"' },
+        {
+          state: "output-error",
+          errorText:
+            "Chunk ID: 1a2b\nWall time: 0.0100 seconds\nProcess exited with code 1\nOriginal token count: 0\nOutput:\n",
+          exitCode: 1,
+        }
+      )
+    )
+    expect(codex.status).toBe("succeeded")
+    expect(codex.exitMeaning).toBe("false")
+  })
+
+  it("keeps a failure that only looks like an answer", () => {
+    const tool = describeToolCall(
+      call(
+        "Bash",
+        { command: "grep -rn TODO missing-dir" },
+        {
+          state: "output-error",
+          errorText:
+            "grep: missing-dir: No such file or directory\n\nExit code 2",
+        }
+      )
+    )
+    expect(tool.status).toBe("failed")
+    expect(tool.exitMeaning).toBeNull()
+  })
+
+  it("names a failure its code stands for", () => {
+    const notFound = describeToolCall(
+      call(
+        "Bash",
+        { command: "pyhton x.py" },
+        {
+          state: "output-error",
+          errorText: "Exit code 127\n(eval):1: command not found: pyhton",
+        }
+      )
+    )
+    expect(notFound.status).toBe("failed")
+    expect(notFound.exitMeaning).toBe("commandNotFound")
+    const killed = describeToolCall(
+      call(
+        "Bash",
+        { command: "node build.js" },
+        { state: "output-error", errorText: "Killed\n\nExit code 137" }
+      )
+    )
+    expect(killed.status).toBe("failed")
+    expect(killed.exit).toEqual({ code: 137, signal: "SIGKILL" })
   })
 
   it("leaves the exit unknown when a failure reports none", () => {

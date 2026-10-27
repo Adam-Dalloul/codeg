@@ -199,7 +199,7 @@ function BackgroundTaskRowView({
           </span>
         ) : null}
         {detail ? (
-          <span className="min-w-0 truncate text-muted-foreground" dir="auto">
+          <span className="min-w-0 truncate text-activity-secondary" dir="auto">
             {detail}
           </span>
         ) : null}

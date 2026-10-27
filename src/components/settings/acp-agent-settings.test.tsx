@@ -2731,8 +2731,9 @@ describe("TRAE CLI env keys", () => {
 
 describe("Command Code env keys", () => {
   // Command Code's sign-in for a browser-less machine is the API key it reads
-  // ahead of its stored login; it talks only to its own service and the model
-  // is chosen over ACP, so there is no endpoint or model variable.
+  // ahead of its stored login; providers of the user's own (BYOK) are
+  // connected inside Command Code (`/connect`) and the model is chosen over
+  // ACP, so there is no endpoint or model variable.
   it("offers only the API key, under the name Command Code reads", () => {
     expect(importantEnvKeysByAgent("command_code" as AgentType)).toEqual({
       apiBaseUrl: [],
@@ -2810,5 +2811,23 @@ describe("ZCode runtime configuration", () => {
       buildAcpAdapterCheck({ ...adapter, native_path: "C:/ZCode/zcode.cjs" })
         ?.status
     ).toBe("pass")
+  })
+})
+
+describe("MiniMax Code native configuration", () => {
+  it("does not offer generic API fields or write keys to codeg settings", () => {
+    expect(importantEnvKeysByAgent("minimax_code")).toEqual({
+      apiBaseUrl: [],
+      apiKey: [],
+      model: [],
+    })
+    expect(importantFieldsFor("minimax_code")).toEqual({
+      apiBaseUrl: false,
+      apiKey: false,
+      model: false,
+    })
+    expect(
+      patchEnvByImportantKey("minimax_code", "KEEP=value", "apiKey", "secret")
+    ).toBe("KEEP=value")
   })
 })
