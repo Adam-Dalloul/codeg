@@ -38,6 +38,7 @@ import {
 import {
   buildNewConversationDraftStorageKey,
   clearMessageInputDraftV2,
+  loadMessageInputDraftV2,
   moveMessageInputDraft,
   sweepOrphanDraftKeys,
 } from "@/lib/message-input-draft"
@@ -1295,6 +1296,66 @@ function focusTab(tabId: string) {
   applyGroupInvariants()
 }
 
+/** A draft whose composer holds no saved text — closing it loses nothing. */
+function isBlankDraft(tab: TabItemInternal): boolean {
+  return (
+    tab.conversationId == null &&
+    loadMessageInputDraftV2(buildNewConversationDraftStorageKey(tab.id)) == null
+  )
+}
+
+/**
+ * One draft per group: close the blank drafts that share a group with
+ * `keepId` in its own folder view (parked or on screen). While tabs follow
+ * the folder, a draft moved into a folder can land beside that folder's own
+ * draft; the moved one is what the user is typing in, so it stays. A draft
+ * with text in it is kept too — two drafts beat a lost prompt.
+ */
+function closeBlankDraftsBeside(keepId: string) {
+  const st = useTabStore.getState()
+  const kept = st.rawTabs.find((t) => t.id === keepId)
+  if (!kept || kept.conversationId != null) return
+  const scope = folderScope(kept.folderId)
+  const group = shellGroupOfTab(st, keepId)
+  for (const tab of st.rawTabs) {
+    if (
+      tab.id !== keepId &&
+      isBlankDraft(tab) &&
+      folderScope(tab.folderId) === scope &&
+      shellGroupOfTab(st, tab.id) === group
+    ) {
+      useTabStore.getState().closeTab(tab.id, { recordForReopen: false })
+    }
+  }
+}
+
+/**
+ * Turning the mode off puts every folder's drafts back in one layout, where a
+ * group carries one draft: per group keep the active draft, else one with
+ * text, else the first, and close the other blank ones (never one with text).
+ */
+function closeBlankDraftsPerGroup() {
+  const st = useTabStore.getState()
+  const draftsByGroup = new Map<string, TabItemInternal[]>()
+  for (const tab of st.rawTabs) {
+    if (tab.conversationId != null) continue
+    const group = groupOfTab(st.groupOf, st.groupLayout, tab.id)
+    draftsByGroup.set(group, [...(draftsByGroup.get(group) ?? []), tab])
+  }
+  for (const drafts of draftsByGroup.values()) {
+    if (drafts.length < 2) continue
+    const keep =
+      drafts.find((draft) => draft.id === st.activeTabId) ??
+      drafts.find((draft) => !isBlankDraft(draft)) ??
+      drafts[0]
+    for (const draft of drafts) {
+      if (draft !== keep && isBlankDraft(draft)) {
+        useTabStore.getState().closeTab(draft.id, { recordForReopen: false })
+      }
+    }
+  }
+}
+
 /**
  * Recompute the decorated `tabs` from `rawTabs` × `conversations` ×
  * `childSummaries`, reusing prior-derive references so an update touching no open
@@ -2307,6 +2368,10 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
         ),
       })
       recomputeTabs()
+      // A draft moved in from a folder can land beside the chat view's own.
+      if (movingDraft && useFolderTabsStore.getState().enabled) {
+        closeBlankDraftsBeside(existingTab.id)
+      }
     }
 
     if (needsDisconnect && existingDraft) {
@@ -3007,6 +3072,9 @@ export const useTabStore = create<TabStoreState>()((set, get) => ({
             .activateScope(folderScope(request.folderId))
           focusTab(request.tabId)
         }
+        if (useFolderTabsStore.getState().enabled) {
+          closeBlankDraftsBeside(request.tabId)
+        }
       })()
     }
   },
@@ -3460,6 +3528,7 @@ useFolderTabsStore.subscribe((next, previous) => {
     useTabStore.setState({ activeTabId: after.rawTabs[0]?.id ?? null })
   }
   applyGroupInvariants()
+  if (previous.enabled && !next.enabled) closeBlankDraftsPerGroup()
   useTabStore.getState().syncActiveFolderId()
 })
 

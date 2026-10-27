@@ -12,6 +12,10 @@ import {
 } from "./tab-store"
 import { leafIds, type SplitNode } from "@/lib/tab-group-layout"
 import {
+  buildNewConversationDraftStorageKey,
+  saveMessageInputDraftV2,
+} from "@/lib/message-input-draft"
+import {
   resetAppWorkspaceStore,
   useAppWorkspaceStore,
 } from "./app-workspace-store"
@@ -321,6 +325,20 @@ describe("Folder-tabs scope repairs", () => {
   function sync() {
     useTabStore.getState().syncActiveFolderId()
   }
+  const draftIds = () =>
+    useTabStore
+      .getState()
+      .rawTabs.filter((tab) => tab.conversationId == null)
+      .map((tab) => tab.id)
+  /** What the composer saves once the user has typed in a draft. */
+  function typeInto(draftId: string) {
+    saveMessageInputDraftV2(buildNewConversationDraftStorageKey(draftId), {
+      type: "doc",
+      content: [
+        { type: "paragraph", content: [{ type: "text", text: "keep me" }] },
+      ],
+    })
+  }
 
   it("turning the mode back on keeps the tab the user is on", () => {
     const a1 = open(1, 11)
@@ -496,9 +514,21 @@ describe("Folder-tabs scope repairs", () => {
     expect(
       useTabStore.getState().rawTabs.find((tab) => tab.id === draftA)
     ).toMatchObject({ isChat: true, folderId: 0 })
-    expect(
-      useTabStore.getState().rawTabs.some((tab) => tab.id === globalDraft)
-    ).toBe(true)
+    // The chat view's own blank draft would sit beside it: one is enough.
+    expect(draftIds()).toEqual([draftA])
+  })
+
+  it("keeps the chat view's own draft when it holds text", () => {
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope("global")
+    const globalDraft = useTabStore.getState().openChatModeTab().tabId
+    typeInto(globalDraft)
+    useFolderTabsStore.getState().activateScope(1)
+    const draftA = useTabStore
+      .getState()
+      .openNewConversationTab(1, "/repo1").tabId
+    useTabStore.getState().openChatModeTab({ retargetTabId: draftA })
+    expect(draftIds().sort()).toEqual([draftA, globalDraft].sort())
   })
 
   it("a new chat inherits the agent of the tab the user is on", () => {
@@ -542,9 +572,73 @@ describe("Folder-tabs scope repairs", () => {
     )
     expect(useFolderTabsStore.getState().scope).toBe(2)
     expect(useTabStore.getState().activeTabId).toBe(draftA)
-    expect(
-      useTabStore.getState().rawTabs.some((tab) => tab.id === draftB)
-    ).toBe(true)
+    // Folder 2's own blank draft would sit beside it: one is enough.
+    expect(draftIds()).toEqual([draftA])
+  })
+
+  async function moveDraftIntoFolder2(
+    prepareTarget: (draftB: string) => void,
+    beforeLanding: () => void = () => {}
+  ) {
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(2)
+    const draftB = useTabStore
+      .getState()
+      .openNewConversationTab(2, "/repo2").tabId
+    prepareTarget(draftB)
+    useFolderTabsStore.getState().activateScope(1)
+    const draftA = useTabStore
+      .getState()
+      .openNewConversationTab(1, "/repo1").tabId
+    useTabStore.getState().openNewConversationTab(2, "/repo2", {
+      inheritFromActive: true,
+      retargetTabId: draftA,
+    })
+    beforeLanding()
+    useTabStore.getState().consumeDraftRetargets()
+    await vi.waitFor(() =>
+      expect(
+        useTabStore.getState().rawTabs.find((tab) => tab.id === draftA)
+          ?.folderId
+      ).toBe(2)
+    )
+    return { draftA, draftB }
+  }
+
+  it("keeps the target folder's own draft when it holds text", async () => {
+    const { draftA, draftB } = await moveDraftIntoFolder2(typeInto)
+    expect(draftIds().sort()).toEqual([draftA, draftB].sort())
+  })
+
+  it("closes the target folder's blank draft even when the user moved on", async () => {
+    const { draftA } = await moveDraftIntoFolder2(
+      () => {},
+      // Off to another folder before the move lands: nothing follows it.
+      () => useFolderTabsStore.getState().activateScope(3)
+    )
+    expect(useFolderTabsStore.getState().scope).toBe(3)
+    expect(draftIds()).toEqual([draftA])
+  })
+
+  it("turning the mode off leaves one blank draft per group, plus every draft with text", () => {
+    useFolderTabsStore.getState().setEnabled(true)
+    useFolderTabsStore.getState().activateScope(1)
+    const draftA = useTabStore
+      .getState()
+      .openNewConversationTab(1, "/repo1").tabId
+    useFolderTabsStore.getState().activateScope(2)
+    const draftB = useTabStore
+      .getState()
+      .openNewConversationTab(2, "/repo2").tabId
+    typeInto(draftB)
+    useFolderTabsStore.getState().activateScope(3)
+    useTabStore.getState().openNewConversationTab(3, "/repo3")
+    useFolderTabsStore.getState().activateScope(1)
+    expect(useTabStore.getState().activeTabId).toBe(draftA)
+
+    useFolderTabsStore.getState().setEnabled(false)
+    expect(draftIds().sort()).toEqual([draftA, draftB].sort())
+    expect(useTabStore.getState().activeTabId).toBe(draftA)
   })
 })
 
