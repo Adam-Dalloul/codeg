@@ -144,10 +144,11 @@ const TOP_CONVERSATIONS: usize = 8;
 ///   codeg's ACP-projected history; each sub-agent's own rollout is read too,
 ///   and its spend lands on the turn that launched it. See
 ///   `parsers::trae_usage`.
-/// * `9` — a prompt that produced no text or tools keeps the usage its turn
-///   end reports. ZCode's turn metrics are recorded there, and so is the
-///   official Claude adapter's prompt-response usage for custom agents; with
-///   no reply in the turn to carry them, that spend used to be dropped. See
+/// * `9` — the usage a turn end reports is kept when no open reply is there
+///   to carry it: a prompt that produced no text or tools, or a reply that a
+///   relayed user message closed before the turn ended. Such usage used to be
+///   dropped. It comes from ZCode's turn metrics and, for custom agents, from
+///   the official Claude adapter's prompt response. See
 ///   `parsers::acp_native::project_turns`. (`8` is skipped: preview builds of
 ///   an earlier proposal wrote it.)
 ///

@@ -532,10 +532,13 @@ pub fn project_turns(entries: &[TranscriptEntry]) -> Vec<MessageTurn> {
                     // prompt; the part's own span (`flush`) is the honest one.
                     apply_turn_end(p, &entry.p, !steered);
                     p.last_at_ms = entry.t;
-                } else if steered {
-                    // Nothing came after the last steer, so the usage and model
-                    // the turn end reports go on the part before it — never on
-                    // a reply to an earlier prompt.
+                } else {
+                    // Nothing came after the last user message of this turn —
+                    // a steer, or one the agent relayed from another client
+                    // (claude-agent-acp forwards Remote Control messages as
+                    // `user_message_chunk`). The usage and model the turn end
+                    // reports go on the part before it — never on a reply to an
+                    // earlier prompt.
                     if let Some(last) = turns
                         .iter_mut()
                         .skip(prompt_start.unwrap_or(usize::MAX))
@@ -1195,6 +1198,31 @@ mod tests {
         assert_eq!(turns[1].usage.as_ref().unwrap().cache_read_input_tokens, 4);
         assert_eq!(turns[1].duration_ms, Some(100));
         assert!(project_turns(&[footer]).is_empty());
+    }
+
+    /// A message typed in another client of the session reaches codeg as a
+    /// `user_message_chunk` while the prompt is still open. It closes the
+    /// reply so far, and when nothing follows it the turn end's usage still
+    /// belongs to that reply.
+    #[test]
+    fn a_relayed_user_message_does_not_drop_the_turn_end_usage() {
+        let turns = project_turns(&[
+            prompt(100, "P"),
+            update(150, text_chunk("agent_message_chunk", "Reply")),
+            update(200, text_chunk("user_message_chunk", "Remote follow-up")),
+            entry(
+                300,
+                EntryKind::TurnEnd,
+                serde_json::json!({
+                    "stopReason": "end_turn", "model": "opus",
+                    "usage": {"inputTokens": 4000, "outputTokens": 10, "totalTokens": 4010}
+                }),
+            ),
+        ]);
+        assert_eq!(roles(&turns), ["User", "Assistant", "User"]);
+        assert_eq!(turns[1].usage.as_ref().map(|u| u.input_tokens), Some(4000));
+        assert_eq!(turns[1].model.as_deref(), Some("opus"));
+        assert_eq!(turns[2].usage, None);
     }
 
     fn attachment_prompt() -> serde_json::Value {
