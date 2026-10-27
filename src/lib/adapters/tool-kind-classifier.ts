@@ -20,7 +20,6 @@ const CANCEL_DELEGATION_SUFFIX_RE = /[^a-z0-9]cancel_delegation$/
 const CREATE_GOAL_SUFFIX_RE = /[^a-z0-9]create_goal$/
 const UPDATE_GOAL_SUFFIX_RE = /[^a-z0-9]update_goal$/
 const ASK_USER_QUESTION_SUFFIX_RE = /[^a-z0-9]ask_user_question$/
-const ASK_QUESTION_SUFFIX_RE = /[^a-z0-9]ask_question$/
 const CHECK_USER_FEEDBACK_SUFFIX_RE = /[^a-z0-9]check_user_feedback$/
 
 /**
@@ -65,6 +64,9 @@ export function isAgentLikeToolName(toolName: string): boolean {
     // forms, since this runs pre-normalize.
     name === "question" ||
     name === "ask_user_question" ||
+    // Google Antigravity's native ask tool: the history parser keeps this raw
+    // name. Bare only, like the alias in `tool-call-normalization` — a
+    // host-prefixed `*ask_question` is a third-party MCP tool.
     name === "ask_question" ||
     // Kimi Code's native AskUserQuestion (also Claude's SDK tool of the same
     // name). The history parsers keep this raw camel-case name; the live path
@@ -86,7 +88,6 @@ export function isAgentLikeToolName(toolName: string): boolean {
   if (CREATE_GOAL_SUFFIX_RE.test(name)) return true
   if (UPDATE_GOAL_SUFFIX_RE.test(name)) return true
   if (ASK_USER_QUESTION_SUFFIX_RE.test(name)) return true
-  if (ASK_QUESTION_SUFFIX_RE.test(name)) return true
   if (CHECK_USER_FEEDBACK_SUFFIX_RE.test(name)) return true
   if (CODEG_MCP_WORKBENCH_NAMES.has(name)) return true
   if (CODEG_MCP_WORKBENCH_SUFFIX_RE.test(name)) return true
