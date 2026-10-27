@@ -179,12 +179,14 @@ ignore = "0.4"
 # The official ACP runtime (the `sacp` crate was upstreamed into it and renamed).
 # Stable protocol v1 only: `unstable_protocol_v2` is deliberately left off, so
 # `initialize` goes out as codeg writes it, at protocol version 1, and the
-# runtime refuses an answer that names any other version. Beyond the stable
-# schema, codeg consumes `session/fork` and prompt-response usage only for
-# adapters with an explicit counter contract (`acp/reported_usage.rs`). Agents
-# with native usage stores retain their own parsers. Session Notices and
-# Compaction are stable since schema 1.11. No default features: codeg uses its own transport
-# (`acp/agent_process.rs`), not the crate's `process`/`stdio` ones.
+# runtime refuses an answer that names any other version. The two unstable
+# features are the surface codeg consumes beyond the stable schema:
+# `session/fork`, and the prompt response's `usage`, which is read only for
+# adapters whose counter contract is known (`acp/reported_usage.rs`); agents
+# with native usage stores keep their own parsers. (The Session Notices and
+# Session Compaction RFDs are stable since schema 1.11.) No default features:
+# codeg runs an agent through its own transport (`acp/agent_process.rs`), not
+# the crate's `process`/`stdio` ones.
 agent-client-protocol = { version = "3.4.0", features = ["unstable_session_fork", "unstable_end_turn_token_usage"] }
 tokio = { version = "1", features = ["process", "io-util", "sync", "macros", "rt", "net", "rt-multi-thread"] }
 uuid = { version = "1", features = ["v4"] }

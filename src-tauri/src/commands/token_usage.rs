@@ -144,6 +144,12 @@ const TOP_CONVERSATIONS: usize = 8;
 ///   codeg's ACP-projected history; each sub-agent's own rollout is read too,
 ///   and its spend lands on the turn that launched it. See
 ///   `parsers::trae_usage`.
+/// * `9` — a prompt that produced no text or tools keeps the usage its turn
+///   end reports. ZCode's turn metrics are recorded there, and so is the
+///   official Claude adapter's prompt-response usage for custom agents; with
+///   no reply in the turn to carry them, that spend used to be dropped. See
+///   `parsers::acp_native::project_turns`. (`8` is skipped: preview builds of
+///   an earlier proposal wrote it.)
 ///
 /// Only the accounting stored in `token_usage_turn` counts: the four token
 /// counters, the duration and the timestamp. A conversation's context WINDOW is
@@ -158,8 +164,6 @@ const TOP_CONVERSATIONS: usize = 8;
 /// counters predate it, since a custom/BYO model has always exposed them and
 /// the parser reads every session under `~/.qoder/projects`, not just the ones
 /// codeg launched.
-// Empty-output turns retain their own reported spend. Version 9 also rebuilds
-// preview databases that used version 8 for the earlier recovery proposal.
 const FACT_SCHEMA_VERSION: &str = "9";
 
 const FACT_SCHEMA_VERSION_KEY: &str = "token_usage_fact_schema_version";
