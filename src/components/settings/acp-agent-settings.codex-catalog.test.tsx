@@ -135,7 +135,7 @@ describe("AcpAgentSettings — Codex saves and the keys codeg manages", () => {
     const user = userEvent.setup()
     await openPanel(codexAgent())
     const row = (await screen.findByText("GPT-5.5 mini")).closest(
-      "div.rounded-md"
+      "[data-model-row]"
     ) as HTMLElement
     await user.click(within(row).getByRole("button", { name: "Remove" }))
 
@@ -152,7 +152,7 @@ describe("AcpAgentSettings — Codex saves and the keys codeg manages", () => {
     const user = userEvent.setup()
     await openPanel(codexAgent())
     const row = (await screen.findByText("GPT-5.5 mini")).closest(
-      "div.rounded-md"
+      "[data-model-row]"
     ) as HTMLElement
     await user.click(
       within(row).getByRole("button", { name: "Set as default" })
@@ -169,7 +169,7 @@ describe("AcpAgentSettings — Codex saves and the keys codeg manages", () => {
     const user = userEvent.setup()
     await openPanel(codexAgent())
     const mini = (await screen.findByText("GPT-5.5 mini")).closest(
-      "div.rounded-md"
+      "[data-model-row]"
     ) as HTMLElement
     await user.click(
       within(mini).getByRole("button", { name: "Set as default" })
