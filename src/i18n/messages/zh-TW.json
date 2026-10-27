@@ -7673,5 +7673,16 @@
         "probeFailed": "內建瀏覽器無法確認它能透過通道連到遠端主機。請稍後再試。"
       }
     }
+  },
+  "HtmlCodePreview": {
+    "code": "程式碼",
+    "preview": "預覽",
+    "title": "HTML 預覽",
+    "generating": "正在產生 HTML…",
+    "expand": "展開全部",
+    "collapse": "收合",
+    "settingsTitle": "聊天 HTML 算繪",
+    "settingsDescription": "在 AI 回覆中直接顯示自包含的 HTML/CSS 卡片與圖表，不執行模型腳本或載入外部資源。",
+    "settingsEnable": "啟用豐富 HTML 算繪"
   }
 }

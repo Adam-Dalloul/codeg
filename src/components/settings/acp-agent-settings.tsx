@@ -5275,8 +5275,13 @@ export function AcpAgentSettings() {
     handledSearchAgentRef.current = requestedAgentType
   }, [requestedAgentType, sortedAgents])
 
+  // Bring the selected agent into view when the selection changes, and again
+  // when a reload returns the list: it is unmounted while agents load and
+  // comes back scrolled to the top. Changes to the list itself must not
+  // scroll it — a drag reorders the agents on every row it passes, and
+  // following the selected agent then pulls the list away from the pointer.
   useEffect(() => {
-    if (!selectedAgentType) return
+    if (loadingAgents || !selectedAgentType) return
     const container = agentListRef.current
     if (!container) return
     const selected = container.querySelector<HTMLElement>(
@@ -5284,7 +5289,7 @@ export function AcpAgentSettings() {
     )
     if (!selected) return
     selected.scrollIntoView({ block: "nearest", behavior: "smooth" })
-  }, [selectedAgentType, sortedAgents])
+  }, [loadingAgents, selectedAgentType])
 
   useEffect(() => {
     if (sortedAgents.length === 0) {
