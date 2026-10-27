@@ -266,6 +266,8 @@ pub struct SessionState {
     /// them as copied history and drop them.
     pub external_id_changed_at: Option<std::time::SystemTime>,
     pub agent_type: AgentType,
+    /// Counter semantics of the adapter definition used for this launch.
+    pub(crate) prompt_usage_mode: crate::acp::reported_usage::PromptUsageMode,
     pub working_dir: Option<PathBuf>,
     pub owner_window_label: String,
     pub folder_id: Option<i32>,
@@ -859,6 +861,7 @@ impl SessionState {
             external_id: None,
             external_id_changed_at: None,
             agent_type,
+            prompt_usage_mode: crate::acp::reported_usage::PromptUsageMode::default(),
             working_dir,
             owner_window_label,
             folder_id,
