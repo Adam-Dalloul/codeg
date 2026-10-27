@@ -16,6 +16,7 @@ import { normalizeToolName } from "@/lib/tool-call-normalization"
 import { MessageResponse } from "@/components/ai-elements/message"
 import { JsonRenderScope } from "@/components/ai-elements/json-render-pre"
 import { ActivityTimeline } from "./activity/activity-timeline"
+import type { ActivityFoot } from "./activity/timeline-foot"
 import { CodegMcpToolCard } from "./codeg-mcp-tool-card"
 import { CodexVisualizeCard } from "./codex-visualize-card"
 import { CollabAgentCard } from "./collab-agent-card"
@@ -302,11 +303,18 @@ export const ActivityParts = memo(function ActivityParts({
   model,
   isStreaming,
   pinnedOnly = false,
+  foot,
+  headed = false,
 }: {
   model: ActivityModel
   isStreaming: boolean
   /** Only the rows still running (see `ActivityTimeline`). */
   pinnedOnly?: boolean
+  /** The capsule the rail ends on, which folds the reply's steps away (see
+   *  `ActivityTimeline`). */
+  foot?: ActivityFoot
+  /** Hung under the turn's header (see `ActivityTimeline`). */
+  headed?: boolean
 }) {
   const render = useAssistantRenderPart(isStreaming)
   return (
@@ -315,6 +323,8 @@ export const ActivityParts = memo(function ActivityParts({
       isStreaming={isStreaming}
       renderPart={render}
       pinnedOnly={pinnedOnly}
+      foot={foot}
+      headed={headed}
     />
   )
 })

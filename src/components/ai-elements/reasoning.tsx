@@ -9,6 +9,7 @@ import {
 } from "streamdown"
 
 import { markdownLinkComponents } from "./markdown-link"
+import { scrollportComponents } from "./markdown-scrollport"
 import { mermaidComponents } from "./mermaid-block"
 import { LIVE_REMEND, normalizeMathDelimiters } from "./message"
 import { rehypePluginsAllowingCodeg } from "./rehype-allow-codeg"
@@ -52,7 +53,11 @@ const rehypePlugins = [
   rehypeListDirection,
 ]
 
-const reasoningComponents = { ...markdownLinkComponents, ...mermaidComponents }
+const reasoningComponents = {
+  ...markdownLinkComponents,
+  ...mermaidComponents,
+  ...scrollportComponents,
+}
 
 /**
  * The reasoning text itself, rendered as Markdown — the activity timeline's
@@ -92,9 +97,11 @@ export const ReasoningMarkdown = memo(function ReasoningMarkdown({
       remend={LIVE_REMEND}
       // Each block reads in the direction of its own text, as in
       // MessageResponse; an item keeps its own side against the UA's
-      // `-webkit-match-parent`.
+      // `-webkit-match-parent`. Lists draw as a reply's do: numbered or
+      // bulleted, the marker inside the text column — outside it, a bullet
+      // would sit on the timeline's rail beside a thought.
       dir="auto"
-      className="[&_li]:text-start"
+      className="[&_ul]:list-inside [&_ol]:list-inside [&_ul]:list-disc [&_ol]:list-decimal [&_ul]:ps-2 [&_ol]:ps-2 [&_li]:text-start"
       // The link icon + safety override, and the diagram blocks.
       components={reasoningComponents}
     >

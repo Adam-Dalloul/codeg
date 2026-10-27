@@ -4,7 +4,11 @@ import { memo, useMemo } from "react"
 import Ansi from "ansi-to-react"
 import { useTranslations } from "next-intl"
 
-import { CodeBlock } from "@/components/ai-elements/code-block"
+import {
+  TokenSpan,
+  useHighlightedTokens,
+} from "@/components/ai-elements/code-block"
+import { useElapsedLabel } from "@/hooks/use-elapsed-label"
 import { useTruncation } from "@/hooks/use-truncation"
 import { normalizeCommandOutput } from "@/lib/activity/command"
 import {
@@ -16,8 +20,8 @@ import type { StepStatus } from "@/lib/activity/types"
 import { describeStdinChars } from "@/lib/shell-session-tool"
 import { cn } from "@/lib/utils"
 import { useActivityRender } from "../activity-context"
-import { ActivityMembers, ActivityRow } from "../activity-row"
-import { CopyAction, DetailBox } from "../detail-box"
+import { ActivityMembers, ActivityRow, useGroupGoing } from "../activity-row"
+import { CopyAction, DetailBox, DetailScroll } from "../detail-box"
 import { useDisclosure } from "../disclosure-store"
 import { RailIcon } from "../rail-icon"
 import {
@@ -57,13 +61,6 @@ function decodeEscapedAnsi(output: string): string {
 
 function stripAnsi(text: string): string {
   return text.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "")
-}
-
-function formatDuration(ms: number): string {
-  const seconds = Math.round(ms / 1000)
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  return `${minutes}m ${seconds % 60}s`
 }
 
 interface CommandOutput {
@@ -108,7 +105,9 @@ function useCommandOutput(step: ToolStep): CommandOutput | null {
 /** What a command row says: a fixed "Command", then the agent's description
  *  of the command when it gave one, else the command line (a heredoc's opener
  *  for a heredoc); codex's session polls and scripts lead with their own verb.
- *  `commandRef` measures whether the line cuts the command short. */
+ *  All of it in the label's light ink: a command line is long and dense, and
+ *  in the body colour it would outweigh every other row. `commandRef`
+ *  measures whether the line cuts the command short. */
 function CommandLabel({
   step,
   commandRef,
@@ -143,7 +142,10 @@ function CommandLabel({
         <span className="shrink-0 font-medium text-muted-foreground">
           {verb}
         </span>
-        <span className="min-w-0 truncate font-mono text-[0.8125rem]" dir="ltr">
+        <span
+          className="min-w-0 truncate font-mono text-[0.8125rem] text-activity-secondary"
+          dir="ltr"
+        >
           {target}
         </span>
       </span>
@@ -158,14 +160,14 @@ function CommandLabel({
         </span>
         {command.display ? (
           <span
-            className="min-w-0 truncate font-mono text-[0.8125rem]"
+            className="min-w-0 truncate font-mono text-[0.8125rem] text-activity-secondary"
             dir="ltr"
           >
             {command.display}
           </span>
         ) : null}
         {command.lineCount > 0 ? (
-          <span className="shrink-0 text-muted-foreground">
+          <span className="shrink-0 text-activity-secondary">
             {t("row.script", { count: command.lineCount })}
           </span>
         ) : null}
@@ -179,8 +181,8 @@ function CommandLabel({
   const live = step.tool.status === "running" || step.tool.status === "pending"
   // One line: the label, then the title, which gives way first (the panel and
   // the tooltip have it whole); its notes keep their room, and nothing runs
-  // past the line's end. A description is words, in the label's light ink,
-  // with nothing about the command's lines — the command is atop the panel.
+  // past the line's end. A description is words, with nothing about the
+  // command's lines — the command is atop the panel.
   return (
     <span className="flex min-w-0 items-baseline gap-2 overflow-hidden">
       <span
@@ -192,24 +194,24 @@ function CommandLabel({
         {t("row.command")}
       </span>
       {command.description ? (
-        <span dir="auto" className="min-w-0 truncate text-muted-foreground">
+        <span dir="auto" className="min-w-0 truncate text-activity-secondary">
           {command.description}
         </span>
       ) : (
         <>
           <span
             ref={commandRef}
-            className="min-w-0 truncate font-mono text-[0.8125rem]"
+            className="min-w-0 truncate font-mono text-[0.8125rem] text-activity-secondary"
             dir="ltr"
           >
             {firstLine}
           </span>
           {heredoc ? (
-            <span className="shrink-0 text-muted-foreground">
+            <span className="shrink-0 text-activity-secondary">
               {t("row.script", { count: heredoc.bodyLines })}
             </span>
           ) : extraLines > 0 ? (
-            <span className="shrink-0 text-muted-foreground">
+            <span className="shrink-0 text-activity-secondary">
               {t("row.moreLines", { count: extraLines })}
             </span>
           ) : null}
@@ -221,7 +223,7 @@ function CommandLabel({
         </span>
       ) : null}
       {command.announcedSession ? (
-        <span className="shrink-0 font-mono text-xs text-muted-foreground">
+        <span className="shrink-0 font-mono text-xs text-activity-secondary">
           {tParts("shellSession", { id: command.announcedSession })}
         </span>
       ) : null}
@@ -233,6 +235,66 @@ function CommandLabel({
         </span>
       ) : null}
     </span>
+  )
+}
+
+/** Columns to a tab stop: the app's `tab-size` (Tailwind's preflight). */
+const TAB_SIZE = 4
+
+/** A line with its tabs spelled out as the spaces to the next tab stop. A
+ *  hanging indent moves where a line starts, and a browser sets tab stops
+ *  from the block's edge, not the line's: a tab left in lands short. */
+function expandTabs(line: string): string {
+  if (!line.includes("\t")) return line
+  let out = ""
+  for (const char of line) {
+    out += char === "\t" ? " ".repeat(TAB_SIZE - (out.length % TAB_SIZE)) : char
+  }
+  return out
+}
+
+/**
+ * A codex script, set in its panel the way a command is: flush, at the
+ * output's size, in the colours of the app's code blocks. Its lines wrap, as
+ * the command's and the output's do, so all of a line reads without a
+ * sideways scroll; a wrapped line hangs two columns in from its own indent,
+ * so it never reads as the next line. A long script scrolls on its own under
+ * a lower cap than the output's, which keeps its full height beneath it.
+ */
+function ScriptSource({ source }: { source: string }) {
+  const code = useMemo(
+    () => source.replace(/\n+$/, "").split("\n").map(expandTabs).join("\n"),
+    [source]
+  )
+  const { tokens } = useHighlightedTokens(code, "javascript")
+  const lines = useMemo(
+    () =>
+      tokens.map((line) => {
+        const text = line.map((token) => token.content).join("")
+        const indent = text.length - text.replace(/^ +/, "").length
+        return { line, hang: `${indent + 2}ch` }
+      }),
+    [tokens]
+  )
+  return (
+    <DetailScroll className="max-h-40 border-b border-foreground/5">
+      <div
+        className="px-4 py-3 font-mono text-[0.78125rem] leading-relaxed"
+        dir="ltr"
+      >
+        {lines.map(({ line, hang }, index) => (
+          <div
+            key={index}
+            className="whitespace-pre-wrap break-words"
+            style={{ paddingLeft: hang, textIndent: `-${hang}` }}
+          >
+            {line.length === 0
+              ? "\n"
+              : line.map((token, at) => <TokenSpan key={at} token={token} />)}
+          </div>
+        ))}
+      </div>
+    </DetailScroll>
   )
 }
 
@@ -270,36 +332,59 @@ function CommandDetail({
     () => parseCodexScriptMeta(step.part.meta),
     [step.part.meta]
   )
+  // A script's panel copies the script; a command's, its command line.
+  const copy = script
+    ? { text: script.source, label: t("detail.copyScript") }
+    : fullCommand && !command?.session
+      ? { text: fullCommand, label: t("detail.copyCommand") }
+      : null
+  // Opened on a failure or a running command, the output shows its end,
+  // where the error or the latest line is.
+  const anchor = failed || live ? "end" : "start"
+  const shownOutput = output ? (
+    <>
+      {output.truncated > 0 ? (
+        <p className="px-4 pt-2 font-mono text-2xs text-muted-foreground">
+          {t("detail.tailOnly", { count: MAX_OUTPUT_LINES })}
+        </p>
+      ) : null}
+      <pre
+        className="activity-ansi whitespace-pre-wrap break-words px-4 py-3 font-mono text-[0.78125rem] leading-relaxed"
+        dir="ltr"
+      >
+        <Ansi>{output.text}</Ansi>
+      </pre>
+    </>
+  ) : (
+    <p className="px-4 py-3 text-xs text-muted-foreground">
+      {t("detail.noOutput")}
+    </p>
+  )
 
+  // A script and its output each scroll on their own, one above the other
+  // (the box does not), so a long script never pushes the output out of the
+  // panel, and neither's scrollbar runs along the other's.
   return (
     <DetailBox
       tone={failed ? "danger" : "neutral"}
-      anchor={failed || live ? "end" : "start"}
+      anchor={script ? "start" : anchor}
+      unbounded={!!script}
       footer={output ? t("detail.lines", { count: output.lines }) : null}
       actions={
-        <>
-          {fullCommand && !command?.session ? (
-            <CopyAction text={fullCommand} label={t("detail.copyCommand")} />
-          ) : null}
-          {output ? (
-            <CopyAction
-              text={() => stripAnsi(output.text)}
-              label={t("detail.copyOutput")}
-            />
-          ) : null}
-        </>
+        copy || output ? (
+          <>
+            {copy ? <CopyAction text={copy.text} label={copy.label} /> : null}
+            {output ? (
+              <CopyAction
+                text={() => stripAnsi(output.text)}
+                label={t("detail.copyOutput")}
+              />
+            ) : null}
+          </>
+        ) : null
       }
     >
-      {script ? (
-        <div className="border-b border-foreground/5">
-          <CodeBlock code={script.source} language="javascript" />
-          {script.callCount > 0 ? (
-            <p className="px-4 pb-2 text-xs text-muted-foreground">
-              {tParts("scriptToolCalls", { count: script.callCount })}
-            </p>
-          ) : null}
-        </div>
-      ) : null}
+      {script ? <ScriptSource source={script.source} /> : null}
       {scriptMeta?.sharedWith.length ? (
         <p className="border-b border-foreground/5 px-4 py-2 text-xs text-muted-foreground">
           {tParts("codexScript.sharedWith", {
@@ -325,24 +410,10 @@ function CommandDetail({
           {fullCommand}
         </pre>
       ) : null}
-      {output ? (
-        <>
-          {output.truncated > 0 ? (
-            <p className="px-4 pt-2 font-mono text-2xs text-muted-foreground">
-              {t("detail.tailOnly", { count: MAX_OUTPUT_LINES })}
-            </p>
-          ) : null}
-          <pre
-            className="activity-ansi whitespace-pre-wrap break-words px-4 py-3 font-mono text-[0.78125rem] leading-relaxed"
-            dir="ltr"
-          >
-            <Ansi>{output.text}</Ansi>
-          </pre>
-        </>
+      {script && output ? (
+        <DetailScroll anchor={anchor}>{shownOutput}</DetailScroll>
       ) : (
-        <p className="px-4 py-3 text-xs text-muted-foreground">
-          {t("detail.noOutput")}
-        </p>
+        shownOutput
       )}
     </DetailBox>
   )
@@ -372,9 +443,11 @@ function LiveTail({ text }: { text: string }) {
  * session polls and scripts). The row says what the command is for, in the
  * agent's own description of it, and the panel opens on the command itself;
  * with no description the row shows the command, `Command  pnpm --filter web
- * test`. A failure opens itself — output anchored at the end, where the error
- * is — and stays open; a running command stays folded with its last lines
- * showing beneath.
+ * test`. Folded however it ended: a command that exits non-zero is routine
+ * (a grep with no match, a test run mid-fix), so a failure says so in red on
+ * its line — and opens, output anchored at the end where the error is, when
+ * the reader asks. Only a command waiting on the user's approval opens
+ * itself. A running command stays folded with its last lines showing beneath.
  */
 export const CommandRow = memo(function CommandRow({
   step: given,
@@ -385,16 +458,14 @@ export const CommandRow = memo(function CommandRow({
 }) {
   const t = useTranslations("Folder.chat.activity")
   const statusText = useStatusText()
-  const { recoveredKeys } = useActivityRender()
+  const elapsedLabel = useElapsedLabel()
   const step = useLiveToolStep(given)
   const { tool } = step
   const output = useCommandOutput(step)
-  const failed = tool.status === "failed" || tool.status === "rejected"
   const live = tool.status === "running" || tool.status === "pending"
   const [open, setOpen] = useDisclosure(step.key, {
     defaultOpen: false,
-    force:
-      (failed && !recoveredKeys.has(step.key)) || tool.status === "awaiting",
+    force: tool.status === "awaiting",
   })
   // A codex fan-out command can come with no output of its own and only a
   // note saying why (the truncated output lost its separator); that note is
@@ -423,7 +494,7 @@ export const CommandRow = memo(function CommandRow({
     tool.status === "succeeded" &&
     tool.command?.durationMs != null &&
     tool.command.durationMs >= SHOW_DURATION_MS
-      ? formatDuration(tool.command.durationMs)
+      ? elapsedLabel(tool.command.durationMs)
       : null
 
   return (
@@ -463,33 +534,43 @@ export const CommandRow = memo(function CommandRow({
 })
 
 /**
- * "Ran 2 commands · all passed". Folded unless a member failed without being
- * redone; while folded, a member waiting on the user or running shows under
- * the header.
+ * "Ran 2 commands · all passed". While the reply is being written it lists its
+ * commands, one row each, as they run — its header names none of them — and
+ * folds, sliding shut, once it has ended: the reply has moved past it (a step
+ * or the answer follows, so no command joins it now) and none of its commands
+ * is still going. A reply that is done folds them all. A failed member keeps
+ * it open no more than a passing one does — the header counts the failures in
+ * red — and what the reader chose stands. Open, its commands end on a foot
+ * that turns while the group is still going, then folds it (`Collapse 3
+ * commands`). Folded while live, the member waiting on the user or running
+ * shows under the header.
  */
 export const CommandGroupRow = memo(function CommandGroupRow({
   groupKey,
   steps,
   status: given,
+  followed = false,
 }: {
   groupKey: string
   steps: ToolStep[]
   status: StepStatus
+  /** Something follows the group in the reply: a row, or the answer. */
+  followed?: boolean
 }) {
   const t = useTranslations("Folder.chat.activity")
   const statusText = useStatusText()
-  const { recoveredKeys } = useActivityRender()
+  const { isStreaming } = useActivityRender()
   const failures = steps.filter(
     (s) => s.tool.status === "failed" || s.tool.status === "rejected"
   )
-  const unrecovered = failures.some((s) => !recoveredKeys.has(s.key))
   const awaited = useAwaitedStep(steps)
-  const [open, setOpen] = useDisclosure(`group:${groupKey}`, {
-    defaultOpen: false,
-    force: unrecovered,
-  })
   const status = awaited ? "awaiting" : given
   const live = status === "running" || status === "pending"
+  const ended = followed && !live && !awaited
+  const going = useGroupGoing(live, followed)
+  const [open, setOpen] = useDisclosure(`group:${groupKey}`, {
+    defaultOpen: isStreaming && !ended,
+  })
   // Folded, the member that needs the user — or else the one running — shows
   // under the header, so the current step is never hidden.
   const liveStep = open
@@ -518,6 +599,7 @@ export const CommandGroupRow = memo(function CommandGroupRow({
       expandable
       expanded={open}
       onExpandedChange={setOpen}
+      slideShut={isStreaming && ended}
       trailing={
         failures.length > 0 ? (
           <span className="text-tone-danger">
@@ -535,7 +617,14 @@ export const CommandGroupRow = memo(function CommandGroupRow({
         ) : null
       }
       detail={() => (
-        <ActivityMembers end={live || awaited ? "pending" : "reached"}>
+        <ActivityMembers
+          foot={{
+            working: going,
+            after: "ring",
+            what: t("header.commands", { count: steps.length }),
+            onFold: () => setOpen(false),
+          }}
+        >
           {steps.map((step) => (
             <CommandRow key={step.key} step={step} inGroup />
           ))}

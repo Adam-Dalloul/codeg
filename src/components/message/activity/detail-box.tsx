@@ -47,67 +47,23 @@ export function DetailBox({
   actions?: ReactNode
   className?: string
   bodyClassName?: string
-  /** No height cap — for content that manages its own (a diff). */
+  /** No height cap — for content that caps and scrolls its own parts (the
+   *  halves of a side-by-side diff, a script and its output, each in a
+   *  `DetailScroll`). */
   unbounded?: boolean
 }) {
-  // The scrollport is OverlayScrollbars' viewport, there once it has set up.
-  const viewportRef = useRef<HTMLElement | null>(null)
-  const [viewport, setViewport] = useState<HTMLElement | null>(null)
-  const onViewportRef = useCallback((node: HTMLElement | null) => {
-    viewportRef.current = node
-    // Its own class, so the edge fade (globals.css) masks this viewport and
-    // no scroll area nested inside it.
-    node?.classList.add("activity-detail-viewport")
-    setViewport(node)
-  }, [])
-
-  const measure = useCallback(() => {
-    const node = viewportRef.current
-    if (!node) return
-    const above = node.scrollTop > 1
-    const below = node.scrollTop + node.clientHeight < node.scrollHeight - 1
-    const overflow =
-      above && below ? "both" : above ? "start" : below ? "end" : null
-    if (overflow) node.dataset.overflow = overflow
-    else delete node.dataset.overflow
-  }, [])
-
-  const stickToEnd = useRef(anchor === "end")
-  const followEnd = useCallback(() => {
-    const node = viewportRef.current
-    if (node && stickToEnd.current) node.scrollTop = node.scrollHeight
-  }, [])
-
-  // Only the open panel is mounted, so only it pays for observing its size.
-  useEffect(() => {
-    if (!viewport || typeof ResizeObserver === "undefined") return
-    const observer = new ResizeObserver(() => {
-      followEnd()
-      measure()
-    })
-    observer.observe(viewport)
-    if (viewport.firstElementChild) observer.observe(viewport.firstElementChild)
-    return () => observer.disconnect()
-  }, [viewport, followEnd, measure])
-
-  useLayoutEffect(followEnd)
-
-  const onScroll = useCallback(() => {
-    const node = viewportRef.current
-    if (node && anchor === "end") {
-      stickToEnd.current =
-        node.scrollTop + node.clientHeight >= node.scrollHeight - 4
-    }
-    measure()
-  }, [anchor, measure])
+  const { onViewportRef, onScroll } = useScrollBody(anchor)
 
   const rule =
     tone === "danger" ? "border-tone-danger/15" : "border-foreground/5"
 
   return (
     <div
+      // Over a workspace background image the panel turns translucent and
+      // takes a hairline border (`ws-msg-panel`; a failed one's red-tinted).
+      data-tone={tone}
       className={cn(
-        "activity-detail-box overflow-hidden rounded-[0.625rem]",
+        "activity-detail-box ws-msg-panel overflow-hidden rounded-[0.625rem]",
         tone === "neutral" && "bg-activity-surface ws-msg-card",
         tone === "danger" && "bg-tone-danger-surface",
         tone === "plain" && "border border-border bg-background ws-msg-card",
@@ -149,6 +105,126 @@ export function DetailBox({
         </div>
       ) : null}
     </div>
+  )
+}
+
+/**
+ * The edge fade of a scroll body (globals.css): its OverlayScrollbars
+ * viewport — there once the library has set up — takes the class the fade
+ * masks, and `data-overflow` says at which edges more lies beyond, kept
+ * current as it scrolls (call `measure`) and as it or its content changes
+ * size. Each scroll body tags its own viewport, so the fade masks the one
+ * that scrolls and no scroll area nested in it. `onResize` runs on a size
+ * change first (a box that follows its end).
+ */
+function useEdgeFade(onResize?: (viewport: HTMLElement) => void) {
+  const viewportRef = useRef<HTMLElement | null>(null)
+  const [viewport, setViewport] = useState<HTMLElement | null>(null)
+  const onViewportRef = useCallback((node: HTMLElement | null) => {
+    viewportRef.current = node
+    node?.classList.add("activity-detail-viewport")
+    setViewport(node)
+  }, [])
+
+  const measure = useCallback(() => {
+    const node = viewportRef.current
+    if (!node) return
+    const above = node.scrollTop > 1
+    const below = node.scrollTop + node.clientHeight < node.scrollHeight - 1
+    const overflow =
+      above && below ? "both" : above ? "start" : below ? "end" : null
+    if (overflow) node.dataset.overflow = overflow
+    else delete node.dataset.overflow
+  }, [])
+
+  // Only an open panel is mounted, so only it pays for observing its size.
+  useEffect(() => {
+    if (!viewport || typeof ResizeObserver === "undefined") return
+    const observer = new ResizeObserver(() => {
+      onResize?.(viewport)
+      measure()
+    })
+    observer.observe(viewport)
+    if (viewport.firstElementChild) observer.observe(viewport.firstElementChild)
+    return () => observer.disconnect()
+  }, [viewport, onResize, measure])
+
+  return { viewportRef, onViewportRef, measure }
+}
+
+/**
+ * A scroll body's handlers: its edge fade, and its anchor — `"end"` opens it
+ * scrolled to the bottom and keeps it there as content streams in, until the
+ * reader scrolls up from it.
+ */
+function useScrollBody(anchor: "start" | "end") {
+  const stickToEnd = useRef(anchor === "end")
+  const followEnd = useCallback((node: HTMLElement) => {
+    if (stickToEnd.current) node.scrollTop = node.scrollHeight
+  }, [])
+  const { viewportRef, onViewportRef, measure } = useEdgeFade(followEnd)
+
+  useLayoutEffect(() => {
+    if (viewportRef.current) followEnd(viewportRef.current)
+  })
+
+  const onScroll = useCallback(() => {
+    const node = viewportRef.current
+    if (node && anchor === "end") {
+      stickToEnd.current =
+        node.scrollTop + node.clientHeight >= node.scrollHeight - 4
+    }
+    measure()
+  }, [anchor, measure, viewportRef])
+
+  return { onViewportRef, onScroll }
+}
+
+/**
+ * A scroll body of its own inside a detail box, capped at the box's height:
+ * it scrolls both ways, fades at an edge with more beyond it and keeps to its
+ * `anchor`, as the box's body does — for parts that each keep their
+ * scrollbars at the foot and the side of what shows where the box itself
+ * does not scroll (`unbounded`): the halves of a side-by-side diff, a script
+ * and its output. `onViewportRef` and `onScroll` pass through, to pair two of
+ * them.
+ */
+export function DetailScroll({
+  children,
+  className,
+  anchor = "start",
+  onViewportRef,
+  onScroll,
+}: {
+  children: ReactNode
+  className?: string
+  anchor?: "start" | "end"
+  onViewportRef?: (viewport: HTMLElement | null) => void
+  onScroll?: () => void
+}) {
+  const { onViewportRef: tagViewport, onScroll: ownScroll } =
+    useScrollBody(anchor)
+  const handleViewportRef = useCallback(
+    (node: HTMLElement | null) => {
+      tagViewport(node)
+      onViewportRef?.(node)
+    },
+    [tagViewport, onViewportRef]
+  )
+  const handleScroll = useCallback(() => {
+    ownScroll()
+    onScroll?.()
+  }, [ownScroll, onScroll])
+  return (
+    <ScrollArea
+      className={cn("max-h-72", className)}
+      x="scroll"
+      y="scroll"
+      onViewportRef={handleViewportRef}
+      onScroll={handleScroll}
+    >
+      {children}
+    </ScrollArea>
   )
 }
 

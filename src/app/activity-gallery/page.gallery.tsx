@@ -10,11 +10,16 @@
  * (default: all), `?lang=` sets the interface language.
  */
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import { Message, MessageContent } from "@/components/ai-elements/message"
+import { SessionDetailsInsights } from "@/components/layout/session-details-insights"
 import { CompletedTurnContent } from "@/components/message/completed-turn-content"
 import { ContentPartsRenderer } from "@/components/message/content-parts-renderer"
+import { extractDelegationSources } from "@/components/message/message-list-view"
+import { buildMessageNavEntries } from "@/components/message/message-nav-entries"
+import { MessageNavScrollContext } from "@/components/message/message-nav-scroll-context"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   ActivityLiveProvider,
   type ActivityLiveValue,
@@ -47,6 +52,7 @@ import {
   toolUse,
 } from "@/lib/activity/__fixtures__/mockup-turn"
 import type { MessageTurn } from "@/lib/types"
+import { publishTranscriptInsights } from "@/stores/transcript-insights-store"
 
 const params =
   typeof window !== "undefined"
@@ -132,6 +138,88 @@ const FAILURE_TURN: MessageTurn = {
       type: "text",
       text: "The build fails on a type error and I could not open the pull request.",
     },
+  ],
+}
+
+/** Commands that exited non-zero: some answered what they asked (a search that
+ *  found nothing, a test that came out false, a name or a path that is not
+ *  there, files that differ), some failed — one with a code that names why. */
+const EXITS_TURN: MessageTurn = {
+  id: "turn-exits",
+  role: "assistant",
+  timestamp: "2026-10-22T09:01:00Z",
+  duration_ms: 132000,
+  blocks: [
+    toolUse("x1", "Bash", { command: "rg -n 'source_bindings' web/lib" }),
+    toolResult("x1", "Exit code 1", true),
+    toolUse("x2", "Bash", { command: "test -f .env.local && echo present" }),
+    toolResult("x2", "Exit code 1", true),
+    toolUse("x3", "Bash", { command: "which python2" }),
+    toolResult("x3", "Exit code 1\npython2 not found", true),
+    toolUse("x4", "Bash", { command: "cat web/.env.example" }),
+    toolResult(
+      "x4",
+      "Exit code 1\ncat: web/.env.example: No such file or directory",
+      true
+    ),
+    toolUse("x5", "Bash", { command: "git diff --quiet -- web" }),
+    toolResult("x5", "Exit code 1", true),
+    {
+      type: "text",
+      text: "No `.env.local` and nothing reads `source_bindings` in `web/lib`; the web tree has uncommitted changes.",
+    },
+    toolUse("x6", "Bash", { command: "pyhton scripts/regen_report.py" }),
+    toolResult(
+      "x6",
+      "Exit code 127\n(eval):1: command not found: pyhton",
+      true
+    ),
+    toolUse("x7", "Bash", {
+      command: "pnpm --filter web test",
+      description: "Run web unit tests",
+    }),
+    toolResult(
+      "x7",
+      [
+        "FAIL  lib/report.test.ts > maps inactive bindings",
+        "",
+        "Tests: 1 failed, 47 passed, 48 total",
+        "",
+        "Exit code 1",
+      ].join("\n"),
+      true
+    ),
+    toolUse("x8", "Bash", { command: "node scripts/crawl-audit.js" }),
+    toolResult("x8", "Exit code 143\nCommand timed out after 2m 0s", true),
+    {
+      type: "text",
+      text: "The test run still fails one case, and the crawl timed out.",
+    },
+  ],
+}
+
+/** A reply that is all process: prose first, then a call that failed, and no
+ *  answer after it — the header cannot fold it away. */
+const NO_ANSWER_TURN: MessageTurn = {
+  id: "turn-no-answer",
+  role: "assistant",
+  timestamp: "2026-10-22T09:02:00Z",
+  duration_ms: 9000,
+  blocks: [
+    { type: "text", text: "Checking the build before I change anything." },
+    toolUse("n1", "Bash", { command: "pnpm --filter web build" }),
+    toolResult(
+      "n1",
+      [
+        "> web@0.1.0 build",
+        "> next build",
+        "",
+        "Failed to compile.",
+        "",
+        "[terminal exited: exit code: 1]",
+      ].join("\n"),
+      true
+    ),
   ],
 }
 
@@ -425,6 +513,146 @@ const FILES_TURN: MessageTurn = {
   ],
 }
 
+/** An edit taller than its panel, with lines wider than it: the panel scrolls
+ *  both ways, in the inline and the side-by-side view. */
+const LONG_EDIT_OLD = [
+  "export async function loadTasks(client: ApiClient, folder: string) {",
+  "  const response = await client.get(`/folders/${encodeURIComponent(folder)}/tasks?include=bindings,assignees,labels&state=open`)",
+  "  const tasks = response.data.tasks",
+  "  return tasks.filter((task) => task.binding.active)",
+  "}",
+]
+const LONG_EDIT_NEW = [
+  "export async function loadTasks(",
+  "  client: ApiClient,",
+  "  folder: string,",
+  "  { includeInactive = false, signal }: LoadTasksOptions = {}",
+  ") {",
+  "  const query = new URLSearchParams({ include: 'bindings,assignees,labels', state: 'open', page_size: String(TASK_PAGE_SIZE) })",
+  "  const tasks: Task[] = []",
+  "  for (let page = 1; ; page += 1) {",
+  "    query.set('page', String(page))",
+  "    const response = await client.get(`/folders/${encodeURIComponent(folder)}/tasks?${query}`, { signal })",
+  "    tasks.push(...response.data.tasks)",
+  "    if (!response.data.next_page) break",
+  "  }",
+  "  // A binding the server marks `is_active: false` belongs to a task that was moved to another folder; keep it only on request.",
+  "  return includeInactive",
+  "    ? tasks",
+  "    : tasks.filter((task) => task.bindings.some((binding) => binding.isActive))",
+  "}",
+]
+const LONG_EDIT_TURN: MessageTurn = {
+  id: "turn-long-edit",
+  role: "assistant",
+  timestamp: "2026-10-22T09:55:00Z",
+  duration_ms: 12000,
+  blocks: [
+    toolUse("le1", "Edit", {
+      file_path: `${MOCKUP_REPO}/web/lib/tasks.ts`,
+      old_string: LONG_EDIT_OLD.join("\n"),
+      new_string: LONG_EDIT_NEW.join("\n"),
+    }),
+    toolResult(
+      "le1",
+      `The file ${MOCKUP_REPO}/web/lib/tasks.ts has been updated successfully.`
+    ),
+    { type: "text", text: "Tasks now load page by page." },
+  ],
+}
+
+/** Codex scripts the history parser could not take apart: one with a long
+ *  output, one that failed, one that printed nothing. */
+const CODEX_SCRIPT_SOURCE = [
+  "const cmds = [",
+  '  "git show 71be0b15:src/components/browser/browser-page-handoff.tsx",',
+  '  "git show ef1c3766:src/components/browser/browser-page-handoff.tsx",',
+  "  \"nl -ba src/components/browser/browser-screenshot-markup.tsx | sed -n '1,100p;430,520p'\",",
+  "  \"nl -ba src/components/browser/browser-page-handoff.test.tsx | sed -n '1,260p;455,565p'\"",
+  "];",
+  'const results = await Promise.allSettled(cmds.map(cmd => tools.exec_command({cmd, workdir:"/Users/dev/work/codeg", max_output_tokens: 12000})));',
+  'results.forEach((r,i) => text(JSON.stringify({cmd:cmds[i], result:r.status==="fulfilled"?r.value:String(r.reason)})));',
+  "",
+].join("\n")
+const CODEX_SCRIPT_RESULT = (cmd: string) =>
+  JSON.stringify({
+    cmd,
+    result: {
+      output: Array.from(
+        { length: 24 },
+        (_, i) =>
+          `${String(i + 1).padStart(4)}\timport { useBrowserPageHandoff } from "./browser-page-handoff" // line ${i + 1}`
+      ).join("\n"),
+      exit_code: 0,
+    },
+  })
+const CODEX_SCRIPT_TURN: MessageTurn = {
+  id: "turn-codex-script",
+  role: "assistant",
+  timestamp: "2026-10-22T09:58:00Z",
+  duration_ms: 31000,
+  blocks: [
+    toolUse("cs1", "codex_script", {
+      source: CODEX_SCRIPT_SOURCE,
+      title:
+        "git show 71be0b15:src/components/browser/browser-page-handoff.tsx",
+      call_count: 1,
+    }),
+    toolResult(
+      "cs1",
+      [
+        "Warning: truncated output (original token count: 11720)",
+        "Total output lines: 4",
+        "",
+        CODEX_SCRIPT_RESULT(
+          "git show 71be0b15:src/components/browser/browser-page-handoff.tsx"
+        ),
+        CODEX_SCRIPT_RESULT(
+          "git show ef1c3766:src/components/browser/browser-page-handoff.tsx"
+        ),
+        CODEX_SCRIPT_RESULT(
+          "nl -ba src/components/browser/browser-screenshot-markup.tsx | sed -n '1,100p;430,520p'"
+        ),
+      ].join("\n")
+    ),
+    toolUse("cs2", "codex_script", {
+      source: [
+        "const dirs = ['web', 'agent'];",
+        "for (const dir of dirs) {",
+        '  const r = await tools.exec_command({cmd: `pnpm --filter ${dir} test`, workdir: "/Users/dev/work/codeg"});',
+        "  text(r.output);",
+        "}",
+      ].join("\n"),
+      title: "pnpm --filter web test",
+      call_count: 1,
+    }),
+    toolResult(
+      "cs2",
+      [
+        ...Array.from(
+          { length: 18 },
+          (_, i) => ` ✓ lib/tasks-${i + 1}.test.ts (4 tests) ${12 + i}ms`
+        ),
+        "FAIL  lib/report.test.ts > writes bindings in id order",
+        "AssertionError: expected [ 'b2', 'b1' ] to deeply equal [ 'b1', 'b2' ]",
+        "Test Files  1 failed | 18 passed (19)",
+        "     Tests  1 failed | 83 passed (84)",
+      ].join("\n"),
+      true
+    ),
+    toolUse("cs3", "codex_script", {
+      source: [
+        "const notes = ['report.md', 'CHANGELOG.md'];",
+        "for (const n of notes)",
+        '\ttext(`${n}: ${(await tools.exec_command({cmd: `wc -l ${n}`, workdir: "/Users/dev/work/codeg"})).output.trim()}`);',
+      ].join("\n"),
+      call_count: 1,
+    }),
+    toolResult("cs3", ""),
+    { type: "text", text: "Compared the two versions of the handoff." },
+  ],
+}
+
 const POLLED_TASK_ID = "9e82cbc1-5d0e-4f6a-8b3c-2a1d0e9f8c7b"
 const POLLED_TASK =
   "Run `pnpm build` in /Users/me/work/my-app without changing any files. Report whether it succeeded (exit code), the key output, and — if it failed — the full error with file paths and line numbers."
@@ -545,6 +773,321 @@ const TEXT_TURN: MessageTurn = {
   blocks: [{ type: "text", text: "Yes — the fix is already on `main`." }],
 }
 
+/** Commands run back to back, the last still running, none described. */
+const COMMANDS_LIVE_TURN: MessageTurn = {
+  id: "turn-commands-live",
+  role: "assistant",
+  timestamp: "2026-10-23T08:00:00Z",
+  blocks: [
+    { type: "text", text: "Writing the page, then checking it." },
+    toolUse("k1", "Bash", {
+      command: [
+        "mkdir -p app/neon && cat > app/neon/page.tsx <<'EOF'",
+        'import { NeonDemo } from "@/components/neon-demo"',
+        "",
+        "export default function Page() {",
+        "  return <NeonDemo />",
+        "}",
+        "EOF",
+      ].join("\n"),
+    }),
+    toolResult("k1", ""),
+    toolUse("k2", "Bash", {
+      command: [
+        "npx eslint app/neon components/neon-demo.tsx && npx tsc --noEmit && echo OK",
+        "(npx next dev -p 3917 >/dev/null 2>&1 &) ; sleep 8; curl -s -o /dev/null -w '%{http_code}' localhost:3917/neon",
+      ].join("\n"),
+    }),
+    toolResult("k2", "OK\n200"),
+    toolUse("k3", "Bash", {
+      command: "pnpm --filter web test -- --watch=false",
+    }),
+    toolResult(
+      "k3",
+      [
+        "> web@0.1.0 test",
+        "> vitest run",
+        "",
+        " ✓ lib/report.test.ts (12 tests)",
+      ].join("\n")
+    ),
+  ],
+}
+
+/** Every Markdown block a reply carries, the wide ones wider than the column. */
+const MARKDOWN_TURN: MessageTurn = {
+  id: "turn-markdown",
+  role: "assistant",
+  timestamp: "2026-10-23T08:10:00Z",
+  duration_ms: 9000,
+  blocks: [
+    {
+      type: "thinking",
+      text: [
+        "**Planning the retry change**",
+        "",
+        "- read the settings first",
+        "- then the wrapper",
+        "",
+        "1. timeout",
+        "2. attempts",
+      ].join("\n"),
+    },
+    {
+      type: "text",
+      text: [
+        "The retry wrapper now backs off exponentially. What changed:",
+        "",
+        "- The timeout moved from a constant to the settings",
+        "- Each attempt logs its delay, so a slow upstream shows in the trace",
+        "  - the first retry waits 200 ms",
+        "  - the wait doubles, up to 5 s",
+        "- `lib/retry.ts` keeps its signature",
+        "",
+        "How a request goes now:",
+        "",
+        "1. Read the timeout from the settings",
+        "2. Try, and on a failure wait before the next attempt",
+        "3. Give up after five attempts and keep the last error",
+        "",
+        "Left to do:",
+        "",
+        "- [x] Move the timeout into the settings",
+        "- [ ] Document the new option",
+        "",
+        "| Setting | Default | Range | Environment variable | Config path | What it does | Updated |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| `retry.timeoutMs` | 2000 | 100–60000 | `CODEG_RETRY_TIMEOUT_MS` | `network.retry.timeoutMs` | How long one attempt may take before it counts as failed | 2026-10-23T08:00:00Z |",
+        "| `retry.attempts` | 5 | 1–10 | `CODEG_RETRY_ATTEMPTS` | `network.retry.attempts` | How many times a request is tried before it gives up | 2026-10-23T08:00:00Z |",
+        "| `retry.maxDelayMs` | 5000 | 200–60000 | `CODEG_RETRY_MAX_DELAY_MS` | `network.retry.maxDelayMs` | The longest wait between two attempts | 2026-10-23T08:00:00Z |",
+        "",
+        "```ts",
+        "export async function withRetry<T>(fn: () => Promise<T>, { attempts = 5, baseDelayMs = 200, maxDelayMs = 5_000 }: RetryOptions = {}): Promise<T> {",
+        "  let lastError: unknown",
+        "  for (let attempt = 0; attempt < attempts; attempt += 1) {",
+        "    try {",
+        "      return await fn()",
+        "    } catch (error) {",
+        "      lastError = error",
+        "      await sleep(Math.min(baseDelayMs * 2 ** attempt, maxDelayMs))",
+        "    }",
+        "  }",
+        "  throw lastError",
+        "}",
+        "```",
+        "",
+        "The log line, in a fence that names no language:",
+        "",
+        "```",
+        "retry 2/5 after 400 ms: ECONNRESET",
+        "```",
+        "",
+        "> The old constant is still exported for one release.",
+      ].join("\n"),
+    },
+  ],
+}
+
+/**
+ * A reply that streams in a step at a time (`?view=stream`), then settles and
+ * starts over: prose that ends the reply and then turns into a note, a read,
+ * commands that gather into a group one by one, an edit. `&interval=` sets the
+ * beat in ms, `&beat=` holds it on one beat (`window.__setStreamBeat` moves
+ * it).
+ */
+const STREAM_BEATS: MessageTurn["blocks"][] = [
+  [
+    {
+      type: "thinking",
+      text: "**Looking at the page first**\n\nThen the styles it pulls in.",
+    },
+  ],
+  [toolUse("s1", "Read", { file_path: `${MOCKUP_REPO}/web/app/page.tsx` })],
+  [toolResult("s1", fixtureLines(30, "page.tsx"))],
+  [{ type: "text", text: "The page imports the console. Checking it next." }],
+  [toolUse("s2", "Bash", { command: "ls app components" })],
+  [toolResult("s2", "app\ncomponents")],
+  [toolUse("s3", "Bash", { command: "wc -l components/*.tsx" })],
+  [toolResult("s3", "  120 components/cyberpunk-console.tsx")],
+  [toolUse("s4", "Bash", { command: 'grep -n "keyframes" app/globals.css' })],
+  [toolResult("s4", "12:@keyframes flicker {")],
+  [{ type: "text", text: "Found it: the flicker runs on every frame." }],
+  [
+    toolUse("s5", "Edit", {
+      file_path: `${MOCKUP_REPO}/web/app/globals.css`,
+      old_string: "  animation: flicker 16ms infinite;",
+      new_string: "  animation: flicker 1.6s infinite;",
+      _start_line: 14,
+    }),
+  ],
+  [
+    toolResult(
+      "s5",
+      `The file ${MOCKUP_REPO}/web/app/globals.css has been updated successfully.`
+    ),
+  ],
+  [toolUse("s6", "Bash", { command: "pnpm --filter web test" })],
+  [toolResult("s6", " ✓ lib/report.test.ts (12 tests)")],
+  [{ type: "text", text: "Done: the flicker now runs every 1.6 s." }],
+]
+/** Beats the settled reply stays up for before it starts over. */
+const STREAM_SETTLED_BEATS = 3
+
+function StreamScenario() {
+  const interval = Number(params.get("interval") ?? 1400)
+  const held = params.get("beat")
+  const [beat, setBeat] = useState(held ? Number(held) : 1)
+  useEffect(() => {
+    // A probe steps a held reply itself.
+    Object.assign(window, { __setStreamBeat: setBeat })
+    if (held) return
+    const id = window.setInterval(
+      () =>
+        setBeat((b) =>
+          b >= STREAM_BEATS.length + STREAM_SETTLED_BEATS ? 1 : b + 1
+        ),
+      interval
+    )
+    return () => window.clearInterval(id)
+  }, [held, interval])
+  const scenario = useMemo<Scenario>(() => {
+    const blocks = STREAM_BEATS.slice(0, beat).flat()
+    const answered = new Set(
+      blocks.flatMap((b) =>
+        b.type === "tool_result" && b.tool_use_id ? [b.tool_use_id] : []
+      )
+    )
+    return {
+      id: "stream",
+      title: "Streaming, a step at a time",
+      turn: {
+        id: "turn-stream",
+        role: "assistant",
+        timestamp: "2026-10-23T09:00:00Z",
+        duration_ms: 21000,
+        blocks,
+      },
+      live: beat <= STREAM_BEATS.length,
+      inProgress: blocks.flatMap((b) =>
+        b.type === "tool_use" && b.tool_use_id && !answered.has(b.tool_use_id)
+          ? [b.tool_use_id]
+          : []
+      ),
+    }
+  }, [beat])
+  return <ScenarioView scenario={scenario} />
+}
+
+/**
+ * The Session Details panel's message navigator (`?view=nav`), fed the replies
+ * above as the rounds of one conversation: the last — two sub-agents, and
+ * files written, edited and patched — open, as the panel opens the latest.
+ * `&width=` sets the panel's width (default 348, the panel's own), `&height=`
+ * its height (default the window's), `&current=` the message the transcript
+ * shows (default the last).
+ */
+const NAV_CONVERSATION_ID = -1
+
+function navUserTurn(id: string, text: string): MessageTurn {
+  return {
+    id,
+    role: "user",
+    timestamp: "2026-10-22T08:00:00Z",
+    blocks: [{ type: "text", text }],
+  }
+}
+
+const NAV_TURNS: MessageTurn[] = [
+  navUserTurn("nav-1", "Survey the project and list its components"),
+  FILES_TURN,
+  navUserTurn("nav-2", "/compact"),
+  navUserTurn(
+    "nav-3",
+    "Page through the tasks instead of loading them all at once"
+  ),
+  LONG_EDIT_TURN,
+  navUserTurn(
+    "nav-4",
+    "继续打磨优化会话详情tab内容：\n1、Git分支名的左边那个图标不要；\n2、检查消息导航是否有性能问题，有的话一并修掉，然后跑一遍测试"
+  ),
+  DELEGATION_TURN,
+  { ...FILES_TURN, id: "nav-files" },
+  { ...LONG_EDIT_TURN, id: "nav-long-edit" },
+  { ...CODEX_TURN, id: "nav-codex" },
+]
+
+function navInsights() {
+  const threadIndexByTurnId = new Map(
+    NAV_TURNS.flatMap((turn, index) =>
+      turn.role === "user" ? [[turn.id, index] as const] : []
+    )
+  )
+  const entries = buildMessageNavEntries({
+    earlierTurns: null,
+    earlierUserCount: 0,
+    loadedTurns: NAV_TURNS,
+    threadIndexByTurnId,
+    loadedSubAgents: {
+      byUserTurnId: new Map([
+        [
+          "nav-4",
+          extractDelegationSources(
+            adaptMessageTurn(DELEGATION_TURN, MOCKUP_ADAPTER_TEXT).content
+          ),
+        ],
+      ]),
+      leading: [],
+    },
+  })
+  const plan = DELEGATION_TURN.blocks.find((block) => block.type === "plan")
+  return {
+    nav: {
+      count: entries.length,
+      entries,
+      earlier: null,
+      revealingTurnId: null,
+      currentTurnId: params.get("current") ?? "nav-4",
+    },
+    plan: {
+      entries: plan?.type === "plan" ? plan.entries : [],
+      streaming: false,
+    },
+    actions: { selectNavEntry: () => {}, retryEarlierNav: () => {} },
+  }
+}
+
+function NavScenario() {
+  // Published before the first render reads it.
+  useState(() =>
+    publishTranscriptInsights(NAV_CONVERSATION_ID, "gallery", navInsights())
+  )
+  // As the Session Details tab hosts it: one scroll area, whose viewport the
+  // navigator renders its rows in view of.
+  const [viewport, setViewport] = useState<HTMLElement | null>(null)
+  const height = params.get("height")
+  return (
+    <div
+      data-scenario="nav"
+      className="ws-surface ms-auto flex h-screen flex-col border-s border-border ws-chrome-border"
+      style={{
+        width: Number(params.get("width") ?? 348),
+        height: height ? Number(height) : undefined,
+      }}
+    >
+      <ScrollArea className="min-h-0 flex-1" onViewportRef={setViewport}>
+        <MessageNavScrollContext.Provider value={viewport}>
+          <div className="min-w-0 space-y-4 p-3 text-sm">
+            <SessionDetailsInsights
+              conversationId={NAV_CONVERSATION_ID}
+              active
+            />
+          </div>
+        </MessageNavScrollContext.Provider>
+      </ScrollArea>
+    </div>
+  )
+}
+
 type Scenario = {
   id: string
   title: string
@@ -587,6 +1130,8 @@ const SCENARIOS: Scenario[] = [
     inProgress: ["l3"],
   },
   { id: "failure", title: "Failures", turn: FAILURE_TURN },
+  { id: "exits", title: "Exit codes", turn: EXITS_TURN },
+  { id: "no-answer", title: "Stopped on a failed call", turn: NO_ANSWER_TURN },
   { id: "codex", title: "Codex", turn: CODEX_TURN },
   { id: "agent", title: "Sub-agent", turn: AGENT_TURN },
   {
@@ -599,7 +1144,17 @@ const SCENARIOS: Scenario[] = [
   { id: "workflow", title: "Plans, questions and tasks", turn: WORKFLOW_TURN },
   { id: "delegation", title: "Delegation checks", turn: DELEGATION_TURN },
   { id: "files", title: "Files: match, read, write, edit", turn: FILES_TURN },
+  { id: "long-edit", title: "A long edit", turn: LONG_EDIT_TURN },
+  { id: "codex-script", title: "Codex scripts", turn: CODEX_SCRIPT_TURN },
   { id: "text", title: "Text-only reply", turn: TEXT_TURN },
+  {
+    id: "commands-live",
+    title: "Commands back to back, running",
+    turn: COMMANDS_LIVE_TURN,
+    live: true,
+    inProgress: ["k3"],
+  },
+  { id: "markdown", title: "Markdown", turn: MARKDOWN_TURN },
 ]
 
 function ScenarioView({ scenario }: { scenario: Scenario }) {
@@ -617,6 +1172,7 @@ function ScenarioView({ scenario }: { scenario: Scenario }) {
   const live = useMemo<ActivityLiveValue>(
     () => ({
       awaitingToolCallId: null,
+      awaitingUser: false,
       approvals: scenario.approvals ?? EMPTY_TOOL_APPROVALS,
     }),
     [scenario]
@@ -657,19 +1213,27 @@ export default function ActivityGalleryPage() {
       <StaticDelegationProvider value={DELEGATION}>
         <StaticWorkspaceActionsProvider value={WORKSPACE}>
           <div className="chat-motion-scope min-h-screen bg-background text-foreground">
-            <div
-              id="gallery-root"
-              className="mx-auto flex w-full max-w-[48rem] flex-col gap-8 px-6 py-8"
-            >
-              <Message from="user">
-                <MessageContent>
-                  <ContentPartsRenderer parts={user.content} role="user" />
-                </MessageContent>
-              </Message>
-              {scenarios.map((scenario) => (
-                <ScenarioView key={scenario.id} scenario={scenario} />
-              ))}
-            </div>
+            {view === "nav" ? (
+              <NavScenario />
+            ) : (
+              <div
+                id="gallery-root"
+                className="mx-auto flex w-full max-w-[48rem] flex-col gap-8 px-6 py-8"
+              >
+                <Message from="user">
+                  <MessageContent>
+                    <ContentPartsRenderer parts={user.content} role="user" />
+                  </MessageContent>
+                </Message>
+                {view === "stream" ? (
+                  <StreamScenario />
+                ) : (
+                  scenarios.map((scenario) => (
+                    <ScenarioView key={scenario.id} scenario={scenario} />
+                  ))
+                )}
+              </div>
+            )}
           </div>
         </StaticWorkspaceActionsProvider>
       </StaticDelegationProvider>

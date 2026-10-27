@@ -461,9 +461,15 @@ const ACP_ADAPTER_DOCS_URL: &str = "https://docs.codeg.app/guide/supported-agent
 /// `src/lib/pi-config.ts`, held equal by a test).
 pub const PI_MIN_RUNTIME_VERSION: &str = "0.81.0";
 
+/// The `@openai/codex` the pinned codex-acp drives (`AgentType::Codex` below),
+/// for when the installed copy's own package.json cannot be read. A runtime
+/// resolved to this value is marked unconfirmed (`codex_runtime`), so it never
+/// counts as the version a catalog was checked against. Move it with the pin.
+pub const CODEX_NESTED_VERSION_FALLBACK: &str = "0.160.1";
+
 /// The npm package the built-in Claude Code entry runs — and the name the
 /// adapter reports as `agentInfo.name` at `initialize`, which is its
-/// `packageJson.name` (read from the 0.58.1 to 0.94.0 sources). A custom agent
+/// `packageJson.name` (read from the 0.58.1 to 0.97.0 sources). A custom agent
 /// whose running adapter reports exactly this name follows the Claude Code
 /// steering policy (`connection.rs::steering_policy_agent`).
 pub const CLAUDE_AGENT_ACP_PACKAGE: &str = "@agentclientprotocol/claude-agent-acp";
@@ -2538,9 +2544,136 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             //     record types (2.1.300 with forks turned on); a fork's own
             //     transcript adds a `fork-context-ref` record, and 2.1.303 adds
             //     `finished` to its `.meta.json`, both of which codeg ignores.
+            //
+            // 0.97.0 (over 0.95.0 and 0.96.0) moves the Claude SDK 0.3.303 →
+            // 0.3.310 (CLI 2.1.303 → 2.1.310) and the ACP SDK 2.0.0 → 2.0.2,
+            // and keeps `engines.node` at ">=22". Its scenario harness is
+            // byte-identical to 0.94.0's recording in all 40 scenarios with
+            // codeg's exact `clientCapabilities`, but for one entry: the
+            // `initialize` response lists `backgroundSubagents` among the
+            // agent's AIR capabilities (see (iiii)). A live `initialize`
+            // differs from 0.94.0's in that entry and the version only, and a
+            // live `session/new` only adds the `ultracode` option (see (hhhh));
+            // model rows and slash commands are unchanged. No harness scenario
+            // reaches the paths this release changed, so (gggg)–(kkkk) were
+            // measured live against the local fake Anthropic API (no model
+            // call), 0.94.0 and 0.97.0 side by side.
+            //
+            // (gggg) **Autonomous turns as async tasks** (#1390, #1413). A turn
+            // Claude Code starts on its own after the prompt ended (for the
+            // notification of a finished background task, a ScheduleWakeup or a
+            // cron fire) is announced to a client with `asyncTasks` as
+            // `async_task_spawned {asyncTaskId: "autonomous-turn-<uuid>", name:
+            // "Claude is working", taskType: "turn", showInTranscript: false,
+            // canStop: true}`, with no tool call. Its description is the
+            // notification's summary (measured: `Background command "…"
+            // completed (exit code 0)`) or one of a few fixed sentences. It ends
+            // with the turn's result (`completed` or `failed`), or when a prompt
+            // is folded into the turn. `_session/async_task/stop` on it
+            // interrupts the turn. Measured: `{stopped: true}`, the task
+            // `stopped`, the turn's running Bash rejected, a "Task stopped by
+            // user" notice, and the next prompt answered normally. While a
+            // prompt waits to be folded in, it answers `{stopped: false}`.
+            // 0.94.0 sent nothing for the same turn. codeg reads the channel
+            // already (`air_async_task_delta`), so the turn gets a row in the
+            // async-task strip, and a live row keeps the connection from the
+            // idle sweeps (`has_live_async_task`), which is right while the
+            // CLI works. The strip names the agent in the user's language and
+            // words the fixed causes itself (`AUTONOMOUS_TURN_TASK_TYPE` and
+            // `autonomousTurnCause` in `src/lib/async-tasks.ts`). The turn's
+            // content still comes from the transcript (`background_watch`).
+            //
+            // (hhhh) **Ultracode** (#1438): an `ultracode` On/Off select
+            // (`category: "model_config"`), which turns on dynamic workflows
+            // for every task. It is a boolean only for a client that declares
+            // `session.configOptions.boolean`, which codeg does not (see
+            // `build_client_capabilities`). The adapter offers it while dynamic
+            // workflows are enabled and the model supports `xhigh` effort.
+            // Measured through the gateway: it is offered on all four model
+            // rows, where Fast mode is offered on Opus only, and an effort
+            // change leaves it on (the adapter now sends the toggle with every
+            // effort change; before, an effort pick turned it off). The
+            // composer shows it as a switch, as it does Fast mode, with no
+            // change. A saved "on" replays at connect like any preference. On a
+            // model that hides the option the adapter answers "Unknown config
+            // option", which `apply_preferred_session_options` logs and skips,
+            // as it already does for Fast mode.
+            //
+            // (iiii) **`backgroundSubagents`** (#1262) stays undeclared. With
+            // it, a turn ends at its result while its background subagents
+            // still run, and their updates, permission requests and the model's
+            // follow-up go out after the prompt response, as a cycle Claude
+            // Code runs on its own. Without it the adapter keeps the hold codeg
+            // is built on (#864, #866): the turn stays open until the subagents
+            // settle, their tool calls nest under the Agent card as they run,
+            // and their permission requests come inside the turn. codeg draws a
+            // Claude cycle outside a turn from the transcript only, so opting in
+            // would trade that live card for one that fills in later.
+            //
+            // (jjjj) **Advisor results** (#1247). With the `advisorModel`
+            // setting (or `--advisor`), the model can call the `advisor` server
+            // tool, whose result comes back inside the response as an
+            // `advisor_tool_result` block. 0.94.0 dropped the block: the call
+            // ended `failed` ("Claude ended the turn without returning a result
+            // for this tool.") and the prompt response carried a session
+            // failure. 0.97.0 completes the call with the advice (measured with
+            // a scripted advisor call). Claude Code writes the block as an
+            // assistant record of its own, which codeg's history parser
+            // dropped, so a reloaded session showed the call without a result.
+            // `parsers::claude::advisor_tool_result` now reads it as the
+            // adapter does, in the main transcript and in a subagent's.
+            //
+            // (kkkk) **Foreground forks** (#1431) fix the live frame of
+            // agentclientprotocol/claude-agent-acp#1389, which codeg reported:
+            // the fork's copied "Fork started" result is no longer reported as
+            // the launching call's result, and the call completes with the
+            // fork's report (measured: one completion, with the report). The fix
+            // codeg carries for it (`claude_fork_inherited_result`, see (cccc))
+            // never arms on 0.97.0, and stays for an older adapter. CLI 2.1.307
+            // rewords the copied results ("Fork started — that fork is you." for
+            // the fork's own call), while the `<fork-boilerplate>` directive
+            // that `is_fork_directive_record` reads is unchanged.
+            //
+            // (llll) Nothing to change in codeg, each checked:
+            //   * ACP v2 is served by default (#1400): the adapter connects
+            //     through the SDK's protocol router and answers a client that
+            //     asks for protocol 2 in v2 (`CLAUDE_AGENT_ACP_PROTOCOL` limits
+            //     it to one version). codeg asks for 1 and gets v1; every live
+            //     probe above went through that router.
+            //   * #1371 forwards a message typed in another Remote Control
+            //     client as a `user_message_chunk`, and starts reading the SDK
+            //     stream right after `/remote-control`. codeg drops user chunks
+            //     and draws a turn it did not prompt from the transcript, which
+            //     has the message too (see (aaaa)).
+            //   * #1406 asks for the session title as the prompt is sent, so
+            //     the title arrives mid-turn. codeg holds Claude's wire title
+            //     for the transcript's `ai-title` record anyway
+            //     (`acp::session_title`), and the CLI writes that record within
+            //     seconds.
+            //   * #1185 settles a steer folded into a cycle Claude Code started,
+            //     which left `session/prompt` pending. #1377 keeps a usage-limit
+            //     failure that arrives after a compaction in the same turn.
+            //     #1286 appends the model value to duplicate model labels, which
+            //     only an `availableModels` allowlist of aliases produces. #1392
+            //     fixes the auth-status probe of a session with
+            //     `options.settings`, as codeg's model-picker rows send; codeg
+            //     does not read `_auth/status_update`.
+            //   * #1399, #1405, #1417, #1423, #1424 and #1432–#1434 serve the
+            //     session index and native subagent sessions, which codeg does
+            //     not declare (see `build_client_capabilities`). Measured with a
+            //     foreground subagent: the same frames as 0.94.0, and no
+            //     `config_option_update`.
+            //   * CLI 2.1.304–2.1.310 otherwise: transcripts add a
+            //     `deferred_tools_delta` attachment (tool search is on by
+            //     default behind a custom `ANTHROPIC_BASE_URL`, so the model may
+            //     call `ToolSearch` before using a deferred tool) and a
+            //     `sandboxed` key on tool-result records, both of which codeg
+            //     ignores. Per the changelog, subagent transcripts now record
+            //     real usage for streamed responses, and the Monitor tool is
+            //     offered on more providers.
             distribution: AgentDistribution::Npx {
-                version: "0.94.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.94.0",
+                version: "0.97.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.97.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -5522,8 +5655,9 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // install and pins none; `~/.local/bin` is probed by the system
             // resolver even when a Finder-launched app's PATH lacks it.
             //
-            // History is codeg's own ACP transcript
-            // (`AgentType::uses_acp_transcript`), not TRAE CLI's rollouts —
+            // Message history is codeg's own ACP transcript
+            // (`AgentType::uses_acp_transcript`); only exact
+            // `token_usage_record` rows are read from TRAE CLI's rollouts —
             // see `acp::trae` for why. MCP servers
             // come from `<TRAE_HOME>/traecli.toml`, which the CLI loads itself
             // and codeg's MCP settings manage, so codeg does not forward the
@@ -6126,8 +6260,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.94.0",
-            "@agentclientprotocol/claude-agent-acp@0.94.0",
+            "0.97.0",
+            "@agentclientprotocol/claude-agent-acp@0.97.0",
             Some("22.0.0"),
         );
         assert_npx_version(

@@ -19,7 +19,10 @@ import {
 import { isCodegMcpWorkbenchTool } from "@/lib/codeg-mcp-tool"
 import { COLLAB_AGENT_TOOL_NAME } from "@/lib/collab-tool"
 import { isContextCompactionMeta } from "@/lib/context-compaction"
-import { isDelegateToAgentToolName } from "@/lib/delegation-card"
+import {
+  isCodeModeDelegationCall,
+  isDelegateToAgentToolName,
+} from "@/lib/delegation-card"
 import {
   extractAnnouncedSessionId,
   isShellSessionToolName,
@@ -41,9 +44,11 @@ import {
   type CommandExit,
   extractDisplayCommandFromToolInput,
   extractWallTimeMs,
+  normalizeCommandOutput,
   simplifyShellCommand,
 } from "./command"
 import { describeEditFiles } from "./edit"
+import { isExitAnswer, readCommandExit, signalOfExitCode } from "./exit-meaning"
 import {
   readLineCount,
   searchResultText,
@@ -93,6 +98,14 @@ const TODO_TOOLS = new Set([
 export function toolStepKind(part: AdaptedToolCallPart): ToolStepKind {
   if (isContextCompactionMeta(part.meta)) return "compaction"
   const name = normalizeToolName(part.toolName).toLowerCase()
+  // opencode 2.x code-mode routes MCP calls through the built-in `execute`
+  // tool, which normalizes to `bash` — so the name alone would call this a
+  // command. The delegation call lives inside the `code` source string, and
+  // on that tool the input shape outranks the name (the same order the old
+  // ToolCallPart checked in, before its command card).
+  if (isCodeModeDelegationCall(name, part.input ?? null)) {
+    return part.toolCallId ? "delegation" : "generic"
+  }
   switch (name) {
     case "agent":
       return "agent"
@@ -256,6 +269,7 @@ function emptyDescriptor(
     notes: [],
     metric: null,
     exit: null,
+    exitMeaning: null,
     command: null,
     files: null,
     mcp: null,
@@ -345,17 +359,35 @@ function describeCommand(
     : toolCallMovedToBackground(part.meta) && isUnsettledToolCall(part)
       ? { taskId: null }
       : null
-  const exit =
+  const reported =
     base.status === "failed"
       ? (structuredExit(part) ?? extractCommandExit(payload.output))
       : null
+  // A non-zero exit on a call that still reports success is the program's
+  // own text, not its status; only a failure gets an exit badge.
+  const exit =
+    reported && (reported.code !== 0 || reported.signal)
+      ? {
+          code: reported.code,
+          signal: reported.signal ?? signalOfExitCode(reported.code),
+        }
+      : null
+  const exitMeaning = exit
+    ? readCommandExit(
+        display,
+        exit,
+        payload.output ? normalizeCommandOutput(payload.output) : ""
+      )
+    : null
   return {
     ...base,
+    // An exit that answers the command's question — a search that matched
+    // nothing — is no failure.
+    status: isExitAnswer(exitMeaning) ? "succeeded" : base.status,
     command,
     background,
-    // A non-zero exit on a call that still reports success is the program's
-    // own text, not its status; only a failure gets an exit badge.
-    exit: exit && (exit.code !== 0 || exit.signal) ? exit : null,
+    exit,
+    exitMeaning,
   }
 }
 

@@ -1,6 +1,6 @@
 "use client"
 
-import { memo, useMemo, type MouseEvent } from "react"
+import { memo, useMemo, type MouseEvent, type Ref } from "react"
 import { useTranslations } from "next-intl"
 
 import type { ActivitySummary } from "@/lib/activity/types"
@@ -30,19 +30,22 @@ const CATEGORY_KEY = {
   searches: "header.searches",
 } as const
 
-const MAX_CATEGORIES = 3
-
 /**
- * The turn's activity header: `Activity  14 steps · 6 commands · 1 edit ·
- * 1 agent · 1 failed, recovered › ———— 3m 34s` — laid out like a timeline
- * row, its chevron after the text and its time at the end. While the turn runs
- * it reads `Working  6 steps` with a shimmer; a reply with no steps keeps a
- * `Reply ———— 3s` header so the slot never blinks in and out as a turn settles.
+ * The turn's activity header: a capsule only as wide as what it says —
+ * `Activity 14 steps · 1 failed, recovered · 3m 34s ›` — and 2rem tall, a
+ * little taller than a timeline row, the head of the rows hung under it.
+ * The count comes first, then how the turn ended, then the time the turn
+ * took; the chevron ends it. The breakdown by kind (`6 commands · 1 edit ·
+ * …`) is the tooltip's, not the line's, so the capsule stays short however
+ * much a turn did. While the turn runs it reads `Working 6 steps` with a
+ * shimmer; a reply with no steps keeps a `Reply 3s` header so the slot never
+ * blinks in and out as a turn settles.
  *
  * An unrecovered failure is red and, when `onJumpToFailure` is given, a button
  * that opens the turn at that step.
  */
 export const ActivityHeader = memo(function ActivityHeader({
+  ref,
   summary,
   completed,
   hasSteps,
@@ -50,6 +53,8 @@ export const ActivityHeader = memo(function ActivityHeader({
   toggle,
   onJumpToFailure,
 }: {
+  /** The capsule, for the turn to bring back into view as it folds. */
+  ref?: Ref<HTMLDivElement>
   summary: ActivitySummary | null
   completed: boolean
   hasSteps: boolean
@@ -61,6 +66,8 @@ export const ActivityHeader = memo(function ActivityHeader({
   const t = useTranslations("Folder.chat.activity")
   const separator = t("header.separator")
 
+  // The line carries the step count only — the breakdown by kind is what the
+  // tooltip is for. `full` keeps it for that tooltip, most telling first.
   const { pieces, full } = useMemo(() => {
     if (!summary) return { pieces: [] as string[], full: [] as string[] }
     const categories = CATEGORY_ORDER.filter(
@@ -68,10 +75,7 @@ export const ActivityHeader = memo(function ActivityHeader({
     ).map((key) => t(CATEGORY_KEY[key], { count: summary.counts[key] }))
     const lead =
       summary.steps > 0 ? [t("header.steps", { count: summary.steps })] : []
-    return {
-      pieces: [...lead, ...categories.slice(0, MAX_CATEGORIES)],
-      full: [...lead, ...categories],
-    }
+    return { pieces: lead, full: [...lead, ...categories] }
   }, [summary, t])
 
   const label = !completed
@@ -97,9 +101,16 @@ export const ActivityHeader = memo(function ActivityHeader({
       ? t("header.interrupted", { count: summary.interrupted })
       : null
 
+  const hasSummaryLine =
+    pieces.length > 0 || !!failureClause || !!interruptedClause
   const tooltip = full.join(separator)
+  // The label takes the same size as the figures beside it; only its weight
+  // sets it apart. Where the capsule runs out of room (a narrow column) the
+  // summary gives way first, then the label — kept whole until the summary is
+  // gone, never wider than the room left — each cut with an ellipsis, so the
+  // time and the chevron stay whole and nothing runs over them.
   const labelClass = cn(
-    "shrink-0 font-semibold",
+    "max-w-full shrink-0 truncate text-xs font-semibold",
     completed ? "text-foreground" : "activity-shimmer"
   )
 
@@ -117,14 +128,22 @@ export const ActivityHeader = memo(function ActivityHeader({
 
   return (
     <div
+      ref={ref}
+      // `activity-capsule`: filled like the user's message bubble, over a
+      // workspace background image too — translucent there, with its ring
+      // (globals.css). A block, not inline: no line box around it adds room
+      // under it, so what follows starts at its bottom edge.
       className={cn(
-        "flex w-full min-w-0 items-center gap-3 pb-1 text-sm leading-6",
-        toggle && "group/row cursor-pointer"
+        "activity-capsule flex h-8 w-fit max-w-full min-w-0 items-center gap-2 rounded-full bg-activity-capsule px-4 text-xs transition-colors",
+        toggle && "group/row cursor-pointer hover:bg-activity-capsule-hover"
       )}
       onClick={onHeaderClick}
     >
-      <span className="flex min-w-0 items-start gap-1">
-        <span className="flex min-w-0 items-baseline gap-2.5">
+      {/* What the capsule says, the time last: the time keeps its width
+          while the words before it give way, so it never runs over the
+          chevron. */}
+      <span className="flex min-w-0 items-center">
+        <span className="flex min-w-0 items-center gap-2">
           {toggle ? (
             <button
               type="button"
@@ -141,9 +160,9 @@ export const ActivityHeader = memo(function ActivityHeader({
           ) : (
             <span className={labelClass}>{label}</span>
           )}
-          {pieces.length > 0 || failureClause || interruptedClause ? (
+          {hasSummaryLine ? (
             <span
-              className="activity-mono min-w-0 truncate text-xs text-muted-foreground"
+              className="activity-mono min-w-0 truncate text-xs text-activity-muted-strong"
               title={tooltip || undefined}
             >
               {pieces.join(separator)}
@@ -179,16 +198,27 @@ export const ActivityHeader = memo(function ActivityHeader({
             </span>
           ) : null}
         </span>
-        {toggle ? <RowChevron open={toggle.open} always /> : null}
+        {/* The time closes what the capsule says, after the separator the
+            summary uses — kept as written (`whitespace-pre`: a flex item
+            would drop its leading space). It stays, a reply with no steps
+            keeping its `Reply 3s`, so the slot never blinks in and out as a
+            turn settles. */}
+        {elapsed && completed ? (
+          <span
+            className={cn(
+              "activity-mono shrink-0 whitespace-pre text-xs text-activity-muted-strong",
+              !hasSummaryLine && "ms-2"
+            )}
+          >
+            {hasSummaryLine ? separator : null}
+            {elapsed}
+          </span>
+        ) : null}
       </span>
-      <span
-        aria-hidden="true"
-        className="h-px min-w-6 flex-1 bg-foreground/10"
-      />
-      {elapsed && completed ? (
-        <span className="activity-mono shrink-0 text-xs text-muted-foreground">
-          {elapsed}
-        </span>
+      {/* The chevron ends the capsule, centred on it (the row's own is
+          placed for a 1.5rem line by margin, which the flex centres here). */}
+      {toggle ? (
+        <RowChevron open={toggle.open} always className="mb-0 mt-0" />
       ) : null}
     </div>
   )

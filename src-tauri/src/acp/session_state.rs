@@ -481,6 +481,10 @@ pub struct SessionState {
     /// at creation by [`owner_composes_prompts`]. Backend-internal — not
     /// serialized, not carried on `to_snapshot()`.
     pub wants_prompt_suggestions: bool,
+    /// The `--settings` a Claude launch hands every session request of its
+    /// connection (`connection::ClaudeSessionOptions::settings`): the
+    /// `/model` picker rows codeg adds. Fixed at spawn; backend-internal.
+    pub claude_settings: Option<serde_json::Value>,
     /// Claude Code's Remote Control while it is on (`AcpEvent::RemoteControl`):
     /// the session can be continued from claude.ai/code or a phone. It lives
     /// in the agent CLI, so the idle sweeps leave the connection alone while
@@ -832,6 +836,15 @@ impl SessionState {
         }
     }
 
+    /// What this connection's Claude session requests all name in
+    /// `_meta.claudeCode`.
+    pub(crate) fn claude_session_options(&self) -> crate::acp::connection::ClaudeSessionOptions {
+        crate::acp::connection::ClaudeSessionOptions {
+            prompt_suggestions: self.wants_prompt_suggestions,
+            settings: self.claude_settings.clone(),
+        }
+    }
+
     pub fn new(
         connection_id: String,
         agent_type: AgentType,
@@ -879,6 +892,7 @@ impl SessionState {
             usage: None,
             prompt_suggestion: None,
             wants_prompt_suggestions,
+            claude_settings: None,
             remote_control: None,
             selectors_ready: false,
             last_error: None,

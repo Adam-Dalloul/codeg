@@ -103,6 +103,7 @@ import {
   acpDeleteCustomAgent,
   acpUninstallAgent,
   acpUpdateAgentConfig,
+  acpUpdateClaudeModelPicker,
   acpUpdateAgentEnv,
   acpUpdateHermesConfig,
   acpRevealHermesHome,
@@ -130,11 +131,20 @@ import type {
 import {
   HERMES_PROVIDERS,
   parseClaudeProviderModel,
+  normalizeModelIds,
   parseCodexModelConfig,
   serializeCodexModelConfig,
   type CodexModelConfig,
 } from "@/lib/types"
 import { CodexModelListEditor } from "@/components/settings/codex-model-list-editor"
+import {
+  CodexSavePreview,
+  type CodexCatalogEndpoint,
+} from "@/components/settings/codex-catalog-source"
+import {
+  describeCodexSaveError,
+  type CodexCatalogTranslator,
+} from "@/lib/codex-catalog-error"
 import {
   OpenCodeConnectDialog,
   OpenCodeCustomProviderDialog,
@@ -148,6 +158,7 @@ import {
   disconnectProvider,
   formatContextWindow,
   modelReferencesProvider,
+  openCodeModelsProtocol,
   setProviderApiKey,
   setProviderEnabled,
   type OpenCodeModelOptionGroup,
@@ -155,6 +166,15 @@ import {
 import { toErrorMessage } from "@/lib/app-error"
 import { getInstallErrorHintKey } from "@/lib/agent-install-error"
 import { useAgentInstallStream } from "@/hooks/use-agent-install-stream"
+import { useProviderModels } from "@/hooks/use-provider-models"
+import { ClaudePickerModelsField } from "@/components/settings/claude-model-fields"
+import {
+  ModelIdInputWithFetch,
+  ModelIdListField,
+  ProviderModelsFetchButton,
+  ProviderModelsPicker,
+  ProviderModelsStatus,
+} from "@/components/settings/provider-models"
 import { OpencodePluginsModal } from "./opencode-plugins-modal"
 import {
   ANTIGRAVITY_ENV_KEYS,
@@ -173,6 +193,7 @@ import {
 import { CodeBuddyConfigPanel } from "./codebuddy-config-panel"
 import { CursorConfigPanel } from "./cursor-config-panel"
 import {
+  DEEPSEEK_DEFAULT_BASE_URL,
   DEEPSEEK_PANEL_ENV_KEYS,
   DeepSeekConfigPanel,
 } from "./deepseek-config-panel"
@@ -253,10 +274,22 @@ interface AgentDraft {
   // default on (disabled).
   claudeSendAttributionHeader: boolean
   claudeDisableNonessentialTraffic: boolean
+  /** CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY: Claude lists the gateway's
+   *  own Claude models. Any non-empty value turns it on, so off removes it. */
+  claudeGatewayDiscovery: boolean
+  /** The /model picker ids codeg adds while no provider is bound, and as
+   *  loaded: a save stores them only once they moved off it. */
+  claudePickerModels: string[]
+  claudePickerModelsBaseline: string[]
   codexAuthJsonText: string
   codexConfigTomlText: string
-  /** Structured codex custom-model list (mirrors the catalog source sidecar).
-   *  Drives the model editor + `model_catalog_json` generation on save. */
+  /** The config.toml text the draft was loaded from. Sent with a save, so the
+   *  backend can tell a hand edit of a key it manages (`model_catalog_json`,
+   *  root `model` while a catalog is published) from the disk changing. */
+  codexConfigTomlBaseline: string
+  /** Structured codex model list (mirrors the catalog source sidecar). The
+   *  backend publishes the catalog, `model_catalog_json` and root `model` from
+   *  it on save. */
   codexModelList: CodexModelConfig
   grokConfigTomlText: string
   // Grok authentication method (subscription via `grok login` vs XAI_API_KEY).
@@ -280,6 +313,10 @@ interface AgentDraft {
   // the levels are sent only once the chips moved off it.
   grokCustomReasoningEfforts: string[]
   grokCustomReasoningEffortsBaseline: string[]
+  /** The endpoint's other models codeg offers beside the managed one, and the
+   *  list as read: sent only once it moved off it. */
+  grokCustomExtraModels: string[]
+  grokCustomExtraModelsBaseline: string[]
   grokAutoCompactThreshold: string
   openCodeAuthJsonText: string
   openClawGatewayUrl: string
@@ -289,6 +326,10 @@ interface AgentDraft {
   clineApiKey: string
   clineModel: string
   clineBaseUrl: string
+  /** The ids of an OpenAI-compatible provider's `models.json` table: the only
+   *  models a Cline session can pick for it. `null` while the config names no
+   *  table, so a save leaves the one on disk as it is. */
+  clineModels: string[] | null
   // Hermes — `apiKey`/`model`/`apiBaseUrl` are reused for the active provider's
   // key, model.default, and model.base_url. These carry the rest.
   hermesProvider: string
@@ -626,6 +667,13 @@ const CLAUDE_ENV_FLAG_OFF = "0"
 // telemetry / redundant pings" → default ON (disabled).
 const CLAUDE_SEND_ATTRIBUTION_HEADER_DEFAULT = false
 const CLAUDE_DISABLE_NONESSENTIAL_TRAFFIC_DEFAULT = true
+// Claude Code asks `ANTHROPIC_BASE_URL` for `/v1/models` and adds the ids that
+// name Claude or Anthropic to /model. Read as set-or-not: "0" turns it on too.
+const CLAUDE_GATEWAY_DISCOVERY_ENV_KEY =
+  "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
+
+/** Where Gemini CLI goes with an API key and no base URL of its own. */
+const GEMINI_DEFAULT_API_BASE_URL = "https://generativelanguage.googleapis.com"
 
 const GEMINI_AUTH_MODES = [
   "custom",
@@ -693,6 +741,10 @@ const CLINE_SIGNIN_PROVIDERS = [
  * selection reaches `session/new` as an unknown provider with an empty model
  * list. The backend's `normalize_cline_provider_id` maps the legacy value on
  * read so an existing config still lands on the right row here. */
+/** The provider whose model ids live in Cline's `models.json`, mirroring the
+ *  backend's `CLINE_CUSTOM_MODEL_PROVIDER`. */
+const CLINE_CUSTOM_MODEL_PROVIDER = "openai-compatible"
+
 const CLINE_BYO_PROVIDERS = [
   { value: "anthropic", label: "Anthropic" },
   { value: "openai-native", label: "OpenAI" },
@@ -744,6 +796,8 @@ const GROK_UNSET = "__grok_unset__"
  * what Grok's own build models use; a BYO OpenAI-compatible proxy would pick
  * `chat_completions`, an Anthropic-format endpoint `messages`. */
 const GROK_DEFAULT_API_BACKEND = "responses"
+/** Where Grok goes for a custom model with no `base_url`. */
+const GROK_DEFAULT_BASE_URL = "https://api.x.ai/v1"
 
 /**
  * Reasoning-effort levels offered as chips for a Grok custom model's
@@ -895,9 +949,11 @@ export function importantEnvKeysByAgent(
     // ("设置后自动使用 PAT 认证" in the CLI package's own README) and the only
     // way to authenticate a headless/server/Docker install, where the
     // `qoder login` browser flow cannot run. `QODER_MODEL` is the env twin of
-    // `-m/--model`. Qoder talks only to its own service, so there is no
-    // endpoint var at all — an EMPTY list here hides that field rather than
-    // offering a box whose value nothing reads (see `importantFieldsFor`).
+    // `-m/--model`. There is no endpoint var at all: Qoder reaches models
+    // through its own service, and a key the account brings (BYOK, where
+    // Qoder allows it) is set up in Qoder itself — so an EMPTY list here hides
+    // that field rather than offering a box whose value nothing reads (see
+    // `importantFieldsFor`).
     // Generic OPENAI_*/API_KEY aliases are deliberately absent: Qoder reads
     // neither, and listing them would let the panel report "configured" off a
     // key that never reaches it. Mirrors the backend `agent_env_keys(Qoder)`.
@@ -961,8 +1017,8 @@ export function importantEnvKeysByAgent(
  * Which of the three generic env fields this agent actually has a variable for.
  *
  * An empty list in {@link importantEnvKeysByAgent} means "this agent reads no
- * env var for that slot" — Qoder, for instance, talks only to its own service
- * and has no endpoint override. Rendering the input anyway offers a box whose
+ * env var for that slot" — Qoder, for instance, has no endpoint override (a
+ * key the account brings is set up in Qoder, not passed in). Rendering the input anyway offers a box whose
  * value nothing will ever read, and (before `patchEnvByImportantKey` guarded
  * it) wrote the typed value to an env var literally named `undefined`.
  */
@@ -1126,6 +1182,7 @@ function extractImportantConfigValues(
   claudeCustomModelOptionDescription: string
   claudeSendAttributionHeader: boolean
   claudeDisableNonessentialTraffic: boolean
+  claudeGatewayDiscovery: boolean
   configError: string | null
 } {
   const parseResult = parseConfigJsonText(configText)
@@ -1192,6 +1249,10 @@ function extractImportantConfigValues(
         : CLAUDE_DISABLE_NONESSENTIAL_TRAFFIC_DEFAULT
       : false
 
+  const claudeGatewayDiscovery =
+    agentType === "claude_code" &&
+    Boolean(findEnvValue(mergedEnv, [CLAUDE_GATEWAY_DISCOVERY_ENV_KEY]))
+
   return {
     apiBaseUrl: apiBaseUrl ?? "",
     apiKey: apiKey ?? "",
@@ -1215,6 +1276,7 @@ function extractImportantConfigValues(
       agentType === "claude_code" ? claudeCustomModelOptionDescription : "",
     claudeSendAttributionHeader,
     claudeDisableNonessentialTraffic,
+    claudeGatewayDiscovery,
     configError: parseResult.error,
   }
 }
@@ -1310,6 +1372,7 @@ interface ClineImportantValues {
   apiKey: string
   model: string
   baseUrl: string
+  models: string[] | null
 }
 
 /** Mirrors the backend `normalize_cline_provider_id`, so a legacy `"openai"`
@@ -1331,6 +1394,11 @@ function extractClineImportantValues(configText: string): ClineImportantValues {
     apiKey: typeof config.apiKey === "string" ? config.apiKey : "",
     model: typeof config.model === "string" ? config.model : "",
     baseUrl: typeof config.apiBaseUrl === "string" ? config.apiBaseUrl : "",
+    models: Array.isArray(config.models)
+      ? normalizeModelIds(
+          config.models.filter((id): id is string => typeof id === "string")
+        )
+      : null,
   }
 }
 
@@ -1968,6 +2036,25 @@ interface CodexImportantValues {
 }
 
 const CODEX_DEFAULT_MODEL_PROVIDER = "codeg"
+
+/** `text` with root `model` as `baseline` has it; untouched when the two
+ *  already agree, so formatting and comments stay. */
+function withRootModelOf(text: string, baseline: string): string {
+  const loaded = extractCodexTomlImportantValues(baseline).model
+  return extractCodexTomlImportantValues(text).model === loaded
+    ? text
+    : updateTomlRootStringKey(text, "model", loaded)
+}
+
+/** Whether codeg publishes a catalog for this list, and so owns
+ *  `model_catalog_json` and root `model` in config.toml. */
+function codexListIsManaged(list: CodexModelConfig): boolean {
+  return (
+    list.customs.length > 0 ||
+    (list.excludedOfficials?.length ?? 0) > 0 ||
+    !!list.catalog
+  )
+}
 
 /**
  * Provider ids codex builds in (codex 0.160.1, `built_in_model_providers` in
@@ -2823,22 +2910,6 @@ function findTomlKeyInRange(
   return -1
 }
 
-function removeTomlSection(
-  configTomlText: string,
-  sectionName: string
-): string {
-  const lines = configTomlText.split(/\r?\n/)
-  const range = findTomlSectionRange(lines, sectionName)
-  if (!range) return configTomlText
-  // Remove blank line before section header if present
-  const removeStart =
-    range.start > 0 && lines[range.start - 1].trim() === ""
-      ? range.start - 1
-      : range.start
-  lines.splice(removeStart, range.end - removeStart)
-  return lines.join("\n").trim()
-}
-
 /**
  * Drop any ROOT-level `<section>.<key> = …` line — the dotted spelling of the
  * very key this upsert is about to write into `[section]`.
@@ -3398,6 +3469,8 @@ export function buildGrokStructuredConfig(draft: {
   grokCustomContextWindow: string
   grokCustomReasoningEfforts: string[]
   grokCustomReasoningEffortsBaseline: string[]
+  grokCustomExtraModels?: string[]
+  grokCustomExtraModelsBaseline?: string[]
   grokAutoCompactThreshold: string
 }): GrokStructuredConfig {
   // The custom-model group applies only in the `custom` auth method; the
@@ -3416,7 +3489,17 @@ export function buildGrokStructuredConfig(draft: {
     const n = Number.parseInt(trimmed, 10)
     return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : null
   }
+  // Likewise only once the list moved; left out, the extras codeg added stay.
+  const extrasMoved =
+    modelId &&
+    !sameModelIds(
+      draft.grokCustomExtraModels ?? [],
+      draft.grokCustomExtraModelsBaseline ?? []
+    )
   return {
+    ...(extrasMoved
+      ? { customExtraModels: draft.grokCustomExtraModels ?? [] }
+      : {}),
     permissionMode: draft.grokPermissionMode || null,
     defaultReasoningEffort: draft.grokReasoningEffort || null,
     customModelId: modelId || null,
@@ -3469,6 +3552,8 @@ export function buildGrokSaveOptions(
     grokCustomContextWindow: string
     grokCustomReasoningEfforts: string[]
     grokCustomReasoningEffortsBaseline: string[]
+    grokCustomExtraModels?: string[]
+    grokCustomExtraModelsBaseline?: string[]
     grokAutoCompactThreshold: string
     grokConfigTomlText: string
   },
@@ -3636,10 +3721,16 @@ export function configTextForClaudeSave(
  * written explicitly ("1"/"0") rather than left implicit/absent. Pure — shared
  * by the toggle handler, the save path, and tests.
  */
+/** The same ids in the same order. */
+export function sameModelIds(a: readonly string[], b: readonly string[]) {
+  return a.length === b.length && a.every((id, i) => id === b[i])
+}
+
 export function setClaudeEnvFlagInConfigText(
   configText: string,
   envKey: string,
-  value: string
+  /** `null` removes the key. */
+  value: string | null
 ): { configText: string; recoveredFromInvalid: boolean } {
   const parseResult = parseConfigJsonText(configText)
   const config: Record<string, unknown> = parseResult.error
@@ -3649,8 +3740,16 @@ export function setClaudeEnvFlagInConfigText(
     typeof config.env === "object" && config.env && !Array.isArray(config.env)
       ? { ...(config.env as Record<string, unknown>) }
       : {}
-  env[envKey] = value
-  config.env = env
+  if (value === null) {
+    delete env[envKey]
+  } else {
+    env[envKey] = value
+  }
+  if (Object.keys(env).length === 0) {
+    delete config.env
+  } else {
+    config.env = env
+  }
   return {
     configText: JSON.stringify(config, null, 2),
     recoveredFromInvalid: Boolean(parseResult.error),
@@ -3964,8 +4063,12 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
     claudeSendAttributionHeader: important.claudeSendAttributionHeader,
     claudeDisableNonessentialTraffic:
       important.claudeDisableNonessentialTraffic,
+    claudeGatewayDiscovery: important.claudeGatewayDiscovery,
+    claudePickerModels: agent.claude_model_picker ?? [],
+    claudePickerModelsBaseline: agent.claude_model_picker ?? [],
     codexAuthJsonText,
     codexConfigTomlText,
+    codexConfigTomlBaseline: codexConfigTomlText,
     codexModelList: parseCodexModelConfig(agent.codex_model_catalog ?? null),
     grokConfigTomlText,
     grokAuthMode,
@@ -3984,6 +4087,9 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
       agent.grok_settings?.custom_reasoning_efforts ?? [],
     grokCustomReasoningEffortsBaseline:
       agent.grok_settings?.custom_reasoning_efforts ?? [],
+    grokCustomExtraModels: agent.grok_settings?.custom_extra_models ?? [],
+    grokCustomExtraModelsBaseline:
+      agent.grok_settings?.custom_extra_models ?? [],
     grokAutoCompactThreshold:
       agent.grok_settings?.auto_compact_threshold_percent != null
         ? String(agent.grok_settings.auto_compact_threshold_percent)
@@ -3996,6 +4102,7 @@ function buildAgentDraft(agent: AcpAgentInfo): AgentDraft {
     clineApiKey: clineImportant.apiKey,
     clineModel: clineImportant.model,
     clineBaseUrl: clineImportant.baseUrl,
+    clineModels: clineImportant.models,
     hermesProvider: hermesValues?.provider ?? "openrouter",
     hermesConfigYaml: agent.hermes_config_yaml ?? "",
     hermesHome: hermesValues?.hermesHome ?? "",
@@ -4771,6 +4878,9 @@ export function AcpAgentSettings() {
   const ime = useImeGuard()
   const locale = useLocale()
   const t = useTranslations("AcpAgentSettings")
+  const tCatalogScoped = useTranslations("CodexModelEditor.catalogSource")
+  const tCatalog = tCatalogScoped as unknown as CodexCatalogTranslator
+  const tModels = useTranslations("ProviderModels")
   const rawTranslator = t as unknown as AcpTranslator
   acpTranslator = (key, values) => rawTranslator(key, values)
   const searchParams = useSearchParams()
@@ -5281,6 +5391,7 @@ export function AcpAgentSettings() {
         openCodeAuthJsonText?: string
         codexAuthJsonText?: string
         codexConfigTomlText?: string
+        codexConfigTomlBaseline?: string
         codexModelCatalog?: string
         codexSandbox?: CodexSandboxStructuredConfig
         grokConfigTomlText?: string
@@ -5331,6 +5442,10 @@ export function AcpAgentSettings() {
           codex_config_toml:
             typeof options?.codexConfigTomlText === "string"
               ? options.codexConfigTomlText
+              : null,
+          codex_config_toml_baseline:
+            typeof options?.codexConfigTomlBaseline === "string"
+              ? options.codexConfigTomlBaseline
               : null,
           codex_model_catalog:
             typeof options?.codexModelCatalog === "string"
@@ -5408,21 +5523,31 @@ export function AcpAgentSettings() {
   // drafts (to preserve in-progress edits), so without this the collapsed raw
   // editor and the structured dropdowns could drift out of sync with disk (the
   // structured merge and the raw editor each write keys the other doesn't echo).
-  const reseedAgentDraft = useCallback(async (agentType: AgentType) => {
-    try {
-      const fresh = await acpListAgents()
-      setAgents(fresh)
-      publishAgentDisplay(fresh)
-      const agent = fresh.find((a) => a.agent_type === agentType)
-      if (agent) {
-        setDrafts((prev) => ({ ...prev, [agentType]: buildAgentDraft(agent) }))
+  const reseedAgentDraft = useCallback(
+    async (agentType: AgentType, onlyIfStill?: AgentDraft) => {
+      try {
+        const fresh = await acpListAgents()
+        setAgents(fresh)
+        publishAgentDisplay(fresh)
+        const agent = fresh.find((a) => a.agent_type === agentType)
+        if (agent) {
+          // `onlyIfStill`: the draft a save submitted. An edit made while the
+          // save was in flight replaced it, and is kept — with the draft's own
+          // baseline, which still matches its text.
+          setDrafts((prev) =>
+            onlyIfStill && prev[agentType] && prev[agentType] !== onlyIfStill
+              ? prev
+              : { ...prev, [agentType]: buildAgentDraft(agent) }
+          )
+        }
+      } catch (err) {
+        // Non-fatal: the save already committed, and the agents-updated
+        // subscription will resync shortly — never surface this as a save failure.
+        console.error(`[Settings] reseed ${agentType} draft failed:`, err)
       }
-    } catch (err) {
-      // Non-fatal: the save already committed, and the agents-updated
-      // subscription will resync shortly — never surface this as a save failure.
-      console.error(`[Settings] reseed ${agentType} draft failed:`, err)
-    }
-  }, [])
+    },
+    []
+  )
 
   const reseedGrokDraft = useCallback(
     () => reseedAgentDraft("grok"),
@@ -6175,6 +6300,88 @@ export function AcpAgentSettings() {
     )
   }, [modelProviders, selectedAgent])
 
+  // The models a custom Claude gateway lists, for its model fields and the
+  // extra /model rows — asked the way Claude sends this key: as a Bearer
+  // token (`ANTHROPIC_AUTH_TOKEN`).
+  const claudeProviderModels = useProviderModels(
+    selectedAgent?.agent_type === "claude_code" &&
+      selectedDraft?.claudeAuthMode === "custom"
+      ? {
+          protocol: "anthropic",
+          baseUrl: selectedDraft.apiBaseUrl,
+          apiKey: selectedDraft.apiKey,
+          keyHeader: "bearer",
+        }
+      : null
+  )
+  // An OpenAI-compatible Cline provider's models, for its model field and the
+  // models.json table.
+  const clineProviderModels = useProviderModels(
+    selectedAgent?.agent_type === "cline" &&
+      selectedDraft?.clineProvider === CLINE_CUSTOM_MODEL_PROVIDER
+      ? {
+          protocol: "openai",
+          baseUrl: selectedDraft.clineBaseUrl,
+          apiKey: selectedDraft.clineApiKey,
+        }
+      : null
+  )
+  // A custom Grok endpoint's models, asked the way its backend talks: the
+  // Anthropic Messages list for `messages`, the OpenAI one otherwise; xAI's
+  // own API when the URL is left blank.
+  const grokProviderModels = useProviderModels(
+    selectedAgent?.agent_type === "grok" &&
+      selectedDraft?.grokAuthMode === "custom"
+      ? {
+          protocol:
+            selectedDraft.grokCustomApiBackend === "messages"
+              ? "anthropic"
+              : "openai",
+          baseUrl:
+            selectedDraft.grokCustomBaseUrl.trim() || GROK_DEFAULT_BASE_URL,
+          apiKey: selectedDraft.grokCustomApiKey,
+        }
+      : null
+  )
+  // A custom Hermes endpoint's models (OpenAI-compatible), for its model
+  // field. Hermes lists them in the composer itself, from the named provider
+  // codeg writes the endpoint as.
+  const hermesProviderModels = useProviderModels(
+    selectedAgent?.agent_type === "hermes" &&
+      selectedDraft?.hermesProvider === "custom"
+      ? {
+          protocol: "openai",
+          baseUrl: selectedDraft.apiBaseUrl,
+          apiKey: selectedDraft.apiKey,
+        }
+      : null
+  )
+  // The Gemini API's own models for a key-authenticated Gemini (a custom
+  // endpoint, or Google's when no URL is set): suggestions for its model
+  // field. Gemini CLI itself only ever offers its built-in list.
+  const geminiProviderModels = useProviderModels(
+    selectedAgent?.agent_type === "gemini" &&
+      (selectedDraft?.geminiAuthMode === "custom" ||
+        selectedDraft?.geminiAuthMode === "gemini_api_key")
+      ? {
+          protocol: "gemini",
+          baseUrl:
+            (selectedDraft.geminiAuthMode === "custom"
+              ? selectedDraft.apiBaseUrl.trim()
+              : "") || GEMINI_DEFAULT_API_BASE_URL,
+          apiKey: selectedDraft.geminiApiKey,
+        }
+      : null
+  )
+  /** The extra /model ids in effect: the bound provider's, else the panel's. */
+  const claudeBoundPickerModels = useMemo(() => {
+    if (selectedDraft?.claudeAuthMode !== "model_provider") return null
+    const provider = modelProviders.find(
+      (p) => p.id === selectedDraft.modelProviderId
+    )
+    return parseClaudeProviderModel(provider?.model ?? null).pickerModels ?? []
+  }, [modelProviders, selectedDraft])
+
   // The provider each agent was last bound to, remembered across auth-mode
   // changes. The auth-mode handlers drop `draft.modelProviderId` whenever the
   // mode leaves "model_provider", so that a save in another mode cannot
@@ -6412,6 +6619,10 @@ export function AcpAgentSettings() {
           clineApiKey: cline.apiKey,
           clineModel: cline.model,
           clineBaseUrl: cline.baseUrl,
+          // Text that names no table says nothing about the one loaded: the
+          // list keeps it, so a later pick edits the whole table rather than
+          // replacing it with the pick alone.
+          clineModels: cline.models ?? current.clineModels,
         }))
         return
       }
@@ -6467,6 +6678,7 @@ export function AcpAgentSettings() {
         claudeSendAttributionHeader: important.claudeSendAttributionHeader,
         claudeDisableNonessentialTraffic:
           important.claudeDisableNonessentialTraffic,
+        claudeGatewayDiscovery: important.claudeGatewayDiscovery,
       }))
     },
     [selectedAgent, selectedDraft, updateSelectedDraft]
@@ -6540,6 +6752,40 @@ export function AcpAgentSettings() {
         // re-persist a stale value from the overlay. Mirrors
         // handleImportantConfigChange's dual configText + envText write.
         envText: patchEnvText(current.envText, { [envKey]: value }),
+        configText: next.configText,
+      }))
+    },
+    [selectedAgent, selectedDraft, t, updateSelectedDraft]
+  )
+
+  // Claude reads the gateway discovery switch as set-or-not, so turning it off
+  // removes the key from the native config `env` and the DB env overlay.
+  const handleClaudeGatewayDiscoveryChange = useCallback(
+    (enabled: boolean) => {
+      if (
+        !selectedAgent ||
+        !selectedDraft ||
+        selectedAgent.agent_type !== "claude_code"
+      )
+        return
+      const next = setClaudeEnvFlagInConfigText(
+        selectedDraft.configText,
+        CLAUDE_GATEWAY_DISCOVERY_ENV_KEY,
+        enabled ? CLAUDE_ENV_FLAG_ON : null
+      )
+      if (next.recoveredFromInvalid) {
+        toast.warning(t("warnings.nativeJsonRecoveredStructured"))
+      }
+      setConfigErrors((prev) => ({
+        ...prev,
+        [selectedAgent.agent_type]: null,
+      }))
+      updateSelectedDraft((current) => ({
+        ...current,
+        claudeGatewayDiscovery: enabled,
+        envText: patchEnvText(current.envText, {
+          [CLAUDE_GATEWAY_DISCOVERY_ENV_KEY]: enabled ? CLAUDE_ENV_FLAG_ON : "",
+        }),
         configText: next.configText,
       }))
     },
@@ -6771,31 +7017,22 @@ export function AcpAgentSettings() {
           }
         })
       } else if (agentType === "codex") {
-        // The provider stores a structured model config; root `model` is its
-        // default slug and we reference the catalog the bind path generates.
+        // The provider stores a structured model config. The save publishes
+        // what it makes — the catalog, `model_catalog_json`, root `model` —
+        // from the provider's row; the draft only mirrors the endpoint.
         const codexList = parseCodexModelConfig(provider?.model ?? null)
-        const codexHasConfig =
-          codexList.customs.length > 0 ||
-          (codexList.excludedOfficials?.length ?? 0) > 0
         const codexModel = codexList.default ?? codexList.customs[0]?.slug ?? ""
         const nextAuthPatch = patchCodexAuthJsonText(
           selectedDraft.codexAuthJsonText,
           { apiKey, authMode: null }
         )
         const nextAuthJsonText = nextAuthPatch.authJsonText
-        // Always pass the provider's model (empty string clears it from the toml).
-        let nextConfigTomlText = patchCodexConfigTomlText(
+        const nextConfigTomlText = patchCodexConfigTomlText(
           selectedDraft.codexConfigTomlText,
           {
             modelProvider: CODEX_DEFAULT_MODEL_PROVIDER,
             apiBaseUrl: apiUrl,
-            model: codexModel,
           }
-        )
-        nextConfigTomlText = updateTomlRootStringKey(
-          nextConfigTomlText,
-          "model_catalog_json",
-          codexHasConfig ? "codeg-model-catalog.json" : ""
         )
         const synced = extractCodexImportantValues(
           nextAuthJsonText,
@@ -7210,8 +7447,13 @@ export function AcpAgentSettings() {
 
   const handleClineFieldChange = useCallback(
     (
-      key: "clineProvider" | "clineApiKey" | "clineModel" | "clineBaseUrl",
-      value: string
+      key:
+        | "clineProvider"
+        | "clineApiKey"
+        | "clineModel"
+        | "clineBaseUrl"
+        | "clineModels",
+      value: string | string[]
     ) => {
       if (
         !selectedAgent ||
@@ -7224,14 +7466,17 @@ export function AcpAgentSettings() {
         const next = { ...current, [key]: value }
         // Rebuild config_json from Cline draft fields
         const config: Record<string, unknown> = {}
-        config.apiProvider =
-          key === "clineProvider" ? value : next.clineProvider
-        const apiKey = key === "clineApiKey" ? value : next.clineApiKey
-        if (apiKey.trim()) config.apiKey = apiKey.trim()
-        const model = key === "clineModel" ? value : next.clineModel
-        if (model.trim()) config.model = model.trim()
-        const baseUrl = key === "clineBaseUrl" ? value : next.clineBaseUrl
-        if (baseUrl.trim()) config.apiBaseUrl = baseUrl.trim()
+        config.apiProvider = next.clineProvider
+        if (next.clineApiKey.trim()) config.apiKey = next.clineApiKey.trim()
+        if (next.clineModel.trim()) config.model = next.clineModel.trim()
+        if (next.clineBaseUrl.trim())
+          config.apiBaseUrl = next.clineBaseUrl.trim()
+        // Only an OpenAI-compatible provider's models come from the table.
+        if (
+          next.clineProvider === CLINE_CUSTOM_MODEL_PROVIDER &&
+          next.clineModels !== null
+        )
+          config.models = next.clineModels
         next.configText = JSON.stringify(config, null, 2)
         return next
       })
@@ -7739,6 +7984,35 @@ export function AcpAgentSettings() {
     [handleOpenCodeConfigPatch, openCodeNewModelIds, selectedOpenCodeConfig, t]
   )
 
+  // The provider's models as picked from its own list: a model that stays
+  // keeps its entry, a new one is `{name: id}`, an unpicked one goes.
+  const handleOpenCodeSetModels = useCallback(
+    (providerId: string, ids: string[]) => {
+      const targetProviderId = providerId.trim()
+      if (!targetProviderId) return
+      handleOpenCodeConfigPatch((config) => {
+        const providerRoot = asObjectRecord(config.provider) ?? {}
+        if (!asObjectRecord(config.provider)) {
+          config.provider = providerRoot
+        }
+        const currentProvider =
+          asObjectRecord(providerRoot[targetProviderId]) ?? {}
+        if (!asObjectRecord(providerRoot[targetProviderId])) {
+          providerRoot[targetProviderId] = currentProvider
+        }
+        const previous = asObjectRecord(currentProvider.models) ?? {}
+        const next: Record<string, unknown> = {}
+        for (const id of ids) {
+          next[id] = Object.prototype.hasOwnProperty.call(previous, id)
+            ? previous[id]
+            : { name: id }
+        }
+        currentProvider.models = next
+      })
+    },
+    [handleOpenCodeConfigPatch]
+  )
+
   const handleOpenCodeRemoveModel = useCallback(
     (providerId: string, modelId: string) => {
       const targetProviderId = providerId.trim()
@@ -7921,37 +8195,44 @@ export function AcpAgentSettings() {
           { authMode: "chatgpt" }
         )
         const nextAuthJsonText = nextAuth.authJsonText
-        let nextConfigTomlText = updateTomlRootStringKey(
+        // Only `model_provider` goes. The save removes codeg's provider table
+        // when it holds codeg's keys alone, and keeps one the user wrote into
+        // whole (codex refuses a provider table missing its `name`).
+        const nextConfigTomlText = updateTomlRootStringKey(
           selectedDraft.codexConfigTomlText,
           "model_provider",
           ""
-        )
-        nextConfigTomlText = removeTomlSection(
-          nextConfigTomlText,
-          `model_providers.${CODEX_DEFAULT_MODEL_PROVIDER}`
         )
         const synced = extractCodexImportantValues(
           nextAuthJsonText,
           nextConfigTomlText
         )
-        updateSelectedDraft((current) => ({
-          ...current,
-          codexAuthMode: nextMode,
-          modelProviderId: null,
-          codexAuthJsonText: nextAuthJsonText,
-          codexConfigTomlText: nextConfigTomlText,
-          envText: patchEnvText(current.envText, {
-            OPENAI_API_KEY: "",
-            OPENAI_BASE_URL: "",
-          }),
-          apiBaseUrl: "",
-          apiKey: "",
-          model: synced.model,
-          codexModelProvider: synced.modelProvider,
-          codexProviderOptions: synced.providerOptions,
-          codexSupportsWebsockets: synced.supportsWebsockets,
-          codexDefaultModeRequestUserInput: synced.defaultModeRequestUserInput,
-        }))
+        updateSelectedDraft((current) => {
+          // A subscription runs on codex's own list: the provider source goes
+          // with the provider, persisted by the save.
+          const { catalog: _source, ...codexModelList } = current.codexModelList
+          void _source
+          return {
+            ...current,
+            codexModelList,
+            codexAuthMode: nextMode,
+            modelProviderId: null,
+            codexAuthJsonText: nextAuthJsonText,
+            codexConfigTomlText: nextConfigTomlText,
+            envText: patchEnvText(current.envText, {
+              OPENAI_API_KEY: "",
+              OPENAI_BASE_URL: "",
+            }),
+            apiBaseUrl: "",
+            apiKey: "",
+            model: synced.model,
+            codexModelProvider: synced.modelProvider,
+            codexProviderOptions: synced.providerOptions,
+            codexSupportsWebsockets: synced.supportsWebsockets,
+            codexDefaultModeRequestUserInput:
+              synced.defaultModeRequestUserInput,
+          }
+        })
         return
       }
 
@@ -7994,29 +8275,60 @@ export function AcpAgentSettings() {
       // `next` arrives already pruned of exclusions that no longer name a
       // listable official, so a plain count is the *effective* customization —
       // codeg only takes over codex's model table when something really deviates.
-      const hasCatalog =
-        next.customs.length > 0 || (next.excludedOfficials?.length ?? 0) > 0
-      updateSelectedDraft((current) => {
-        let toml = updateTomlRootStringKey(
-          current.codexConfigTomlText,
-          "model",
-          defaultSlug
-        )
-        toml = updateTomlRootStringKey(
-          toml,
-          "model_catalog_json",
-          hasCatalog ? "codeg-model-catalog.json" : ""
-        )
-        return {
-          ...current,
-          codexModelList: next,
-          model: defaultSlug,
-          codexConfigTomlText: toml,
-        }
-      })
+      const managed =
+        next.customs.length > 0 ||
+        (next.excludedOfficials?.length ?? 0) > 0 ||
+        !!next.catalog
+      updateSelectedDraft((current) => ({
+        ...current,
+        codexModelList: next,
+        model: defaultSlug,
+        // While codeg publishes a catalog, `model_catalog_json` and root
+        // `model` are the backend's, written from this list on save, so the
+        // text carries root `model` as it was loaded — a star placed before
+        // the list became customized must not read as a hand edit. Otherwise
+        // the star is root `model`.
+        codexConfigTomlText: managed
+          ? withRootModelOf(
+              current.codexConfigTomlText,
+              current.codexConfigTomlBaseline
+            )
+          : updateTomlRootStringKey(
+              current.codexConfigTomlText,
+              "model",
+              defaultSlug
+            ),
+      }))
     },
     [updateSelectedDraft]
   )
+
+  // Where the Codex model editor takes a provider's own list from: the bound
+  // provider (its key, read-only), or the panel's API URL and key.
+  const codexCatalogEndpoint = useMemo<CodexCatalogEndpoint | null>(() => {
+    if (!selectedDraft || selectedAgent?.agent_type !== "codex") return null
+    if (selectedDraft.codexAuthMode === "model_provider") {
+      const provider = modelProviders.find(
+        (p) => p.id === selectedDraft.modelProviderId
+      )
+      if (!provider) return null
+      return {
+        baseUrl: provider.api_url,
+        keySource: { kind: "provider", providerId: provider.id },
+        showStatus: true,
+        managedBy: provider.name,
+      }
+    }
+    if (selectedDraft.codexAuthMode === "api_key") {
+      const apiKey = selectedDraft.apiKey.trim()
+      return {
+        baseUrl: selectedDraft.apiBaseUrl,
+        keySource: apiKey ? { kind: "inline", apiKey } : null,
+        showStatus: true,
+      }
+    }
+    return null
+  }, [selectedAgent?.agent_type, selectedDraft, modelProviders])
 
   const handleCodexImportantConfigChange = useCallback(
     (key: "apiBaseUrl" | "apiKey" | "model", value: string) => {
@@ -8233,14 +8545,14 @@ export function AcpAgentSettings() {
               await persistConfig("codex", draft.configText, {
                 codexAuthJsonText: authJson,
                 codexConfigTomlText: draft.codexConfigTomlText,
+                codexConfigTomlBaseline: draft.codexConfigTomlBaseline,
                 codexModelCatalog:
                   serializeCodexModelConfig(draft.codexModelList) ?? "",
                 codexSandbox: codexSandboxSaveConfig(draft),
               })
             } catch (err) {
-              const msg = toErrorMessage(err)
               toast.error(t("codex.loginSaveFailed"), {
-                description: msg,
+                description: describeCodexSaveError(err, tCatalog),
               })
             }
           }
@@ -8272,6 +8584,7 @@ export function AcpAgentSettings() {
     persistEnv,
     updateSelectedDraft,
     t,
+    tCatalog,
   ])
 
   useEffect(() => {
@@ -8929,7 +9242,7 @@ export function AcpAgentSettings() {
                       selectedDraft.codexAuthMode === "model_provider") && (
                       <div className="space-y-1.5">
                         <label className="text-2xs text-muted-foreground">
-                          API URL
+                          {t("codex.apiUrlLabel")}
                         </label>
                         <Input
                           value={selectedDraft.apiBaseUrl}
@@ -8951,7 +9264,7 @@ export function AcpAgentSettings() {
                       selectedDraft.codexAuthMode === "model_provider") && (
                       <div className="space-y-1.5">
                         <label className="text-2xs text-muted-foreground">
-                          API Key
+                          {t("codex.apiKeyLabel")}
                         </label>
                         <div className="flex items-center gap-2">
                           <Input
@@ -9008,7 +9321,19 @@ export function AcpAgentSettings() {
                           readOnly={
                             selectedDraft.codexAuthMode === "model_provider"
                           }
+                          endpoint={codexCatalogEndpoint}
                         />
+                        {selectedDraft.codexAuthMode === "api_key" && (
+                          <CodexSavePreview
+                            configToml={selectedDraft.codexConfigTomlText}
+                            authJson={selectedDraft.codexAuthJsonText}
+                            modelList={
+                              serializeCodexModelConfig(
+                                selectedDraft.codexModelList
+                              ) ?? ""
+                            }
+                          />
+                        )}
                       </div>
                     )}
 
@@ -9331,6 +9656,12 @@ model_provider = "codeg"
 base_url = "https://api.openai.com/v1"`}
                         className="min-h-40 max-h-80 font-mono text-xs"
                       />
+                      {selectedDraft.codexAuthMode !== "chatgpt_subscription" &&
+                        codexListIsManaged(selectedDraft.codexModelList) && (
+                          <p className="text-2xs text-muted-foreground">
+                            {t("codex.managedKeysHint")}
+                          </p>
+                        )}
                     </div>
 
                     <div className="flex justify-end">
@@ -9374,6 +9705,8 @@ base_url = "https://api.openai.com/v1"`}
                                     selectedDraft.codexAuthJsonText,
                                   codexConfigTomlText:
                                     selectedDraft.codexConfigTomlText,
+                                  codexConfigTomlBaseline:
+                                    selectedDraft.codexConfigTomlBaseline,
                                   codexModelCatalog:
                                     serializeCodexModelConfig(
                                       selectedDraft.codexModelList
@@ -9382,6 +9715,12 @@ base_url = "https://api.openai.com/v1"`}
                                     codexSandboxSaveConfig(selectedDraft),
                                 }
                               )
+                            )
+                            // The backend wrote the keys it manages (catalog,
+                            // `model_catalog_json`, root `model`); start the
+                            // next edit from what is on disk.
+                            .then(() =>
+                              reseedAgentDraft("codex", selectedDraft)
                             )
                             .then(() => {
                               toast.success(t("toasts.codexSaved"), {
@@ -9393,9 +9732,11 @@ base_url = "https://api.openai.com/v1"`}
                                 "[Settings] save codex native config failed:",
                                 err
                               )
-                              const message = toErrorMessage(err)
                               toast.error(t("toasts.saveCodexNativeFailed"), {
-                                description: message,
+                                description: describeCodexSaveError(
+                                  err,
+                                  tCatalog
+                                ),
                               })
                             })
                         }}
@@ -9497,19 +9838,33 @@ base_url = "https://api.openai.com/v1"`}
                     )}
 
                     <div className="space-y-1.5">
-                      <label className="text-2xs text-muted-foreground">
-                        Model
-                      </label>
-                      <Input
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-2xs text-muted-foreground">
+                          Model
+                        </label>
+                        {(selectedDraft.geminiAuthMode === "custom" ||
+                          selectedDraft.geminiAuthMode ===
+                            "gemini_api_key") && (
+                          <ProviderModelsFetchButton
+                            state={geminiProviderModels}
+                          />
+                        )}
+                      </div>
+                      <ModelIdInputWithFetch
                         value={selectedDraft.model}
                         readOnly={
                           selectedDraft.geminiAuthMode === "model_provider"
                         }
-                        onChange={(event) => {
-                          handleGeminiFieldChange("model", event.target.value)
+                        onChange={(value) => {
+                          handleGeminiFieldChange("model", value)
                         }}
+                        models={geminiProviderModels.models}
                         placeholder="gemini-3-pro-preview"
                       />
+                      {(selectedDraft.geminiAuthMode === "custom" ||
+                        selectedDraft.geminiAuthMode === "gemini_api_key") && (
+                        <ProviderModelsStatus state={geminiProviderModels} />
+                      )}
                       <p className="text-2xs text-muted-foreground">
                         {t("modelHintDefault")}
                       </p>
@@ -10287,6 +10642,27 @@ base_url = "https://api.openai.com/v1"`}
                                             >
                                               {t("openCode.addModel")}
                                             </Button>
+                                            {openCodeModelsProtocol(
+                                              provider.npm
+                                            ) && (
+                                              <ProviderModelsPicker
+                                                input={{
+                                                  protocol:
+                                                    openCodeModelsProtocol(
+                                                      provider.npm
+                                                    ) ?? "openai",
+                                                  baseUrl: provider.baseUrl,
+                                                  apiKey: provider.apiKey,
+                                                }}
+                                                configured={provider.modelIds}
+                                                onConfirm={(ids) =>
+                                                  handleOpenCodeSetModels(
+                                                    providerId,
+                                                    ids
+                                                  )
+                                                }
+                                              />
+                                            )}
                                           </div>
 
                                           {provider.modelIds.length === 0 ? (
@@ -10730,19 +11106,29 @@ base_url = "https://api.openai.com/v1"`}
                     )}
 
                     <div className="space-y-1.5">
-                      <label className="text-2xs text-muted-foreground">
-                        Model
-                      </label>
-                      <Input
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-2xs text-muted-foreground">
+                          Model
+                        </label>
+                        {selectedDraft.clineProvider ===
+                          CLINE_CUSTOM_MODEL_PROVIDER && (
+                          <ProviderModelsFetchButton
+                            state={clineProviderModels}
+                          />
+                        )}
+                      </div>
+                      <ModelIdInputWithFetch
                         value={selectedDraft.clineModel}
-                        onChange={(event) => {
-                          handleClineFieldChange(
-                            "clineModel",
-                            event.target.value
-                          )
+                        onChange={(value) => {
+                          handleClineFieldChange("clineModel", value)
                         }}
+                        models={clineProviderModels.models}
                         placeholder="claude-sonnet-5-5"
                       />
+                      {selectedDraft.clineProvider ===
+                        CLINE_CUSTOM_MODEL_PROVIDER && (
+                        <ProviderModelsStatus state={clineProviderModels} />
+                      )}
                     </div>
 
                     {/* Endpoint, like the key, is cline's own for a sign-in
@@ -10768,6 +11154,19 @@ base_url = "https://api.openai.com/v1"`}
                           placeholder="https://api.openai.com/v1"
                         />
                       </div>
+                    )}
+
+                    {selectedDraft.clineProvider ===
+                      CLINE_CUSTOM_MODEL_PROVIDER && (
+                      <ModelIdListField
+                        ids={selectedDraft.clineModels ?? []}
+                        onChange={(ids) =>
+                          handleClineFieldChange("clineModels", ids)
+                        }
+                        state={clineProviderModels}
+                        title={tModels("clineList.title")}
+                        hint={tModels("clineList.hint")}
+                      />
                     )}
 
                     <div className="space-y-1.5">
@@ -11120,17 +11519,29 @@ base_url = "https://api.openai.com/v1"`}
                     )}
 
                     <div className="space-y-1.5">
-                      <label className="text-2xs text-muted-foreground">
-                        {t("hermes.modelName")}
-                      </label>
-                      <Input
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-2xs text-muted-foreground">
+                          {t("hermes.modelName")}
+                        </label>
+                        {selectedDraft.hermesProvider === "custom" && (
+                          <ProviderModelsFetchButton
+                            state={hermesProviderModels}
+                            disabled={selectedIsSavingConfig}
+                          />
+                        )}
+                      </div>
+                      <ModelIdInputWithFetch
                         value={selectedDraft.model}
-                        onChange={(event) =>
-                          handleHermesFieldChange("model", event.target.value)
+                        onChange={(value) =>
+                          handleHermesFieldChange("model", value)
                         }
+                        models={hermesProviderModels.models}
                         placeholder="moonshotai/kimi-k2"
                         disabled={selectedIsSavingConfig}
                       />
+                      {selectedDraft.hermesProvider === "custom" && (
+                        <ProviderModelsStatus state={hermesProviderModels} />
+                      )}
                     </div>
 
                     {selectedHermesProviderOption?.kind === "oauth" && (
@@ -11433,6 +11844,12 @@ base_url = "https://api.openai.com/v1"`}
                       from. */}
                     <DeepSeekModelListEditor
                       launchModel={selectedAgent.env.DEEPSEEK_ACP_MODEL}
+                      endpoint={{
+                        baseUrl:
+                          selectedAgent.env.DEEPSEEK_BASE_URL?.trim() ||
+                          DEEPSEEK_DEFAULT_BASE_URL,
+                        apiKey: selectedAgent.env.DEEPSEEK_API_KEY ?? "",
+                      }}
                     />
                   </>
                 ) : selectedAgent.agent_type === "qoder" ? (
@@ -11738,23 +12155,29 @@ base_url = "https://api.openai.com/v1"`}
                         </div>
 
                         <div className="space-y-1.5">
-                          <label className="text-2xs text-muted-foreground">
-                            {t("grok.customModelIdLabel")}
-                          </label>
-                          <Input
+                          <div className="flex items-center justify-between gap-2">
+                            <label className="text-2xs text-muted-foreground">
+                              {t("grok.customModelIdLabel")}
+                            </label>
+                            <ProviderModelsFetchButton
+                              state={grokProviderModels}
+                              disabled={grokSaving}
+                            />
+                          </div>
+                          <ModelIdInputWithFetch
                             value={selectedDraft.grokCustomModelId}
-                            onChange={(event) =>
+                            onChange={(value) =>
                               updateSelectedDraft((current) => ({
                                 ...current,
-                                grokCustomModelId: event.target.value,
+                                grokCustomModelId: value,
                               }))
                             }
+                            models={grokProviderModels.models}
                             placeholder={t("grok.customModelIdPlaceholder")}
                             aria-label={t("grok.customModelIdLabel")}
-                            autoComplete="off"
-                            spellCheck={false}
                             disabled={grokSaving}
                           />
+                          <ProviderModelsStatus state={grokProviderModels} />
                           <p className="text-2xs text-muted-foreground">
                             {t("grok.customModelIdHint")}
                           </p>
@@ -11892,6 +12315,20 @@ base_url = "https://api.openai.com/v1"`}
                             {t("grok.customContextWindowHint")}
                           </p>
                         </div>
+
+                        <ModelIdListField
+                          ids={selectedDraft.grokCustomExtraModels}
+                          onChange={(ids) =>
+                            updateSelectedDraft((current) => ({
+                              ...current,
+                              grokCustomExtraModels: ids,
+                            }))
+                          }
+                          state={grokProviderModels}
+                          readOnly={grokSaving}
+                          title={tModels("grokList.title")}
+                          hint={tModels("grokList.hint")}
+                        />
 
                         {/* [model.<id>].reasoning_efforts — without levels from
                             here or from Grok's own model catalog (it never asks
@@ -12064,6 +12501,14 @@ base_url = "https://api.openai.com/v1"`}
                                 ...current,
                                 grokCustomReasoningEffortsBaseline:
                                   writtenLevels,
+                              }))
+                            }
+                            const writtenExtras =
+                              grokSave.grokStructured.customExtraModels
+                            if (writtenExtras) {
+                              updateSelectedDraft((current) => ({
+                                ...current,
+                                grokCustomExtraModelsBaseline: writtenExtras,
                               }))
                             }
                             // Independent second write (the API key lives in env).
@@ -12380,23 +12825,35 @@ base_url = "https://api.openai.com/v1"`}
 
                     {selectedAgent.agent_type === "claude_code" ? (
                       <div className="space-y-2">
+                        {selectedDraft.claudeAuthMode === "custom" && (
+                          <div className="flex items-center justify-between gap-2">
+                            <ProviderModelsStatus
+                              state={claudeProviderModels}
+                            />
+                            <ProviderModelsFetchButton
+                              state={claudeProviderModels}
+                              className="ml-auto"
+                            />
+                          </div>
+                        )}
                         <div className="grid gap-3 md:grid-cols-2">
                           <div className="space-y-1.5">
                             <label className="text-2xs text-muted-foreground">
                               {t("claude.mainModel")}
                             </label>
-                            <Input
+                            <ModelIdInputWithFetch
                               value={selectedDraft.claudeMainModel}
                               readOnly={
                                 selectedDraft.claudeAuthMode ===
                                 "model_provider"
                               }
-                              onChange={(event) => {
+                              onChange={(value) => {
                                 handleImportantConfigChange(
                                   "claudeMainModel",
-                                  event.target.value
+                                  value
                                 )
                               }}
+                              models={claudeProviderModels.models}
                               placeholder="claude-sonnet-5-5"
                             />
                           </div>
@@ -12404,18 +12861,19 @@ base_url = "https://api.openai.com/v1"`}
                             <label className="text-2xs text-muted-foreground">
                               {t("claude.reasoningModel")}
                             </label>
-                            <Input
+                            <ModelIdInputWithFetch
                               value={selectedDraft.claudeReasoningModel}
                               readOnly={
                                 selectedDraft.claudeAuthMode ===
                                 "model_provider"
                               }
-                              onChange={(event) => {
+                              onChange={(value) => {
                                 handleImportantConfigChange(
                                   "claudeReasoningModel",
-                                  event.target.value
+                                  value
                                 )
                               }}
+                              models={claudeProviderModels.models}
                               placeholder="claude-opus-5-5"
                             />
                           </div>
@@ -12423,18 +12881,19 @@ base_url = "https://api.openai.com/v1"`}
                             <label className="text-2xs text-muted-foreground">
                               {t("claude.haikuDefaultModel")}
                             </label>
-                            <Input
+                            <ModelIdInputWithFetch
                               value={selectedDraft.claudeDefaultHaikuModel}
                               readOnly={
                                 selectedDraft.claudeAuthMode ===
                                 "model_provider"
                               }
-                              onChange={(event) => {
+                              onChange={(value) => {
                                 handleImportantConfigChange(
                                   "claudeDefaultHaikuModel",
-                                  event.target.value
+                                  value
                                 )
                               }}
+                              models={claudeProviderModels.models}
                               placeholder="claude-haiku-5-5"
                             />
                           </div>
@@ -12442,18 +12901,19 @@ base_url = "https://api.openai.com/v1"`}
                             <label className="text-2xs text-muted-foreground">
                               {t("claude.sonnetDefaultModel")}
                             </label>
-                            <Input
+                            <ModelIdInputWithFetch
                               value={selectedDraft.claudeDefaultSonnetModel}
                               readOnly={
                                 selectedDraft.claudeAuthMode ===
                                 "model_provider"
                               }
-                              onChange={(event) => {
+                              onChange={(value) => {
                                 handleImportantConfigChange(
                                   "claudeDefaultSonnetModel",
-                                  event.target.value
+                                  value
                                 )
                               }}
+                              models={claudeProviderModels.models}
                               placeholder="claude-sonnet-5-5"
                             />
                           </div>
@@ -12461,18 +12921,19 @@ base_url = "https://api.openai.com/v1"`}
                             <label className="text-2xs text-muted-foreground">
                               {t("claude.opusDefaultModel")}
                             </label>
-                            <Input
+                            <ModelIdInputWithFetch
                               value={selectedDraft.claudeDefaultOpusModel}
                               readOnly={
                                 selectedDraft.claudeAuthMode ===
                                 "model_provider"
                               }
-                              onChange={(event) => {
+                              onChange={(value) => {
                                 handleImportantConfigChange(
                                   "claudeDefaultOpusModel",
-                                  event.target.value
+                                  value
                                 )
                               }}
+                              models={claudeProviderModels.models}
                               placeholder="claude-opus-5-5"
                             />
                           </div>
@@ -12480,18 +12941,19 @@ base_url = "https://api.openai.com/v1"`}
                             <label className="text-2xs text-muted-foreground">
                               {t("claude.fableDefaultModel")}
                             </label>
-                            <Input
+                            <ModelIdInputWithFetch
                               value={selectedDraft.claudeDefaultFableModel}
                               readOnly={
                                 selectedDraft.claudeAuthMode ===
                                 "model_provider"
                               }
-                              onChange={(event) => {
+                              onChange={(value) => {
                                 handleImportantConfigChange(
                                   "claudeDefaultFableModel",
-                                  event.target.value
+                                  value
                                 )
                               }}
+                              models={claudeProviderModels.models}
                               placeholder="claude-fable-5-1"
                             />
                           </div>
@@ -12505,18 +12967,19 @@ base_url = "https://api.openai.com/v1"`}
                               <label className="text-2xs text-muted-foreground">
                                 {t("claude.customModelOption")}
                               </label>
-                              <Input
+                              <ModelIdInputWithFetch
                                 value={selectedDraft.claudeCustomModelOption}
                                 readOnly={
                                   selectedDraft.claudeAuthMode ===
                                   "model_provider"
                                 }
-                                onChange={(event) => {
+                                onChange={(value) => {
                                   handleImportantConfigChange(
                                     "claudeCustomModelOption",
-                                    event.target.value
+                                    value
                                   )
                                 }}
+                                models={claudeProviderModels.models}
                                 placeholder="my-gateway/claude-opus-5-5"
                               />
                             </div>
@@ -12567,6 +13030,46 @@ base_url = "https://api.openai.com/v1"`}
                             {t("claude.customModelOptionHint")}
                           </p>
                         </div>
+                        {selectedDraft.claudeAuthMode !==
+                          "official_subscription" && (
+                          <div className="space-y-2 border-t border-border/60 pt-3">
+                            <ClaudePickerModelsField
+                              ids={
+                                claudeBoundPickerModels ??
+                                selectedDraft.claudePickerModels
+                              }
+                              onChange={(ids) =>
+                                updateSelectedDraft((current) => ({
+                                  ...current,
+                                  claudePickerModels: ids,
+                                }))
+                              }
+                              state={
+                                selectedDraft.claudeAuthMode === "custom"
+                                  ? claudeProviderModels
+                                  : null
+                              }
+                              readOnly={claudeBoundPickerModels != null}
+                            />
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between rounded-md border px-3 py-2">
+                                <label className="text-2xs text-muted-foreground">
+                                  {t("claude.gatewayDiscovery")}
+                                </label>
+                                <Switch
+                                  checked={selectedDraft.claudeGatewayDiscovery}
+                                  onCheckedChange={
+                                    handleClaudeGatewayDiscoveryChange
+                                  }
+                                  aria-label={t("claude.gatewayDiscoveryAria")}
+                                />
+                              </div>
+                              <p className="text-2xs text-muted-foreground">
+                                {t("claude.gatewayDiscoveryHint")}
+                              </p>
+                            </div>
+                          </div>
+                        )}
                         <div className="space-y-1.5">
                           <div className="flex items-center justify-between rounded-md border px-3 py-2">
                             <label className="text-2xs text-muted-foreground">
@@ -12705,6 +13208,18 @@ base_url = "https://api.openai.com/v1"`}
                             configToSave = materialized.configText
                             envToSave = materialized.envText
                           }
+                          // The extra /model rows of an unbound Claude are
+                          // kept by codeg, not in a config file (a bound
+                          // provider keeps its own): stored once they moved.
+                          const pickerToSave =
+                            selectedAgent.agent_type === "claude_code" &&
+                            selectedDraft.modelProviderId == null &&
+                            !sameModelIds(
+                              selectedDraft.claudePickerModels,
+                              selectedDraft.claudePickerModelsBaseline
+                            )
+                              ? selectedDraft.claudePickerModels
+                              : null
                           persistEnv(
                             selectedAgent.agent_type,
                             selectedDraft.enabled,
@@ -12717,6 +13232,14 @@ base_url = "https://api.openai.com/v1"`}
                                 configToSave
                               )
                             )
+                            .then(async () => {
+                              if (!pickerToSave) return
+                              await acpUpdateClaudeModelPicker(pickerToSave)
+                              updateSelectedDraft((current) => ({
+                                ...current,
+                                claudePickerModelsBaseline: pickerToSave,
+                              }))
+                            })
                             .then(() => {
                               // Reflect the provider-authoritative rewrite AND the
                               // materialized hardening flags in the editors so the

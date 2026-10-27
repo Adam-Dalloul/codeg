@@ -4,31 +4,30 @@ import { memo, useCallback, useMemo, useState } from "react"
 import { useTranslations } from "next-intl"
 import { ActivityIcon, BanIcon } from "lucide-react"
 
-import { AgentIcon } from "@/components/agent-icon"
-import { AssistantAvatar } from "@/components/assistants/assistant-avatar"
-import { DelegationIdentityName } from "@/components/message/delegation-identity"
-import { ErrorLabel } from "@/components/message/delegation-status-badge"
+import {
+  DelegationIdentityGlyph,
+  DelegationIdentityName,
+} from "@/components/message/delegation-identity"
+import {
+  DelegationStatusWord,
+  delegationStepStatus,
+} from "@/components/message/delegation-status-badge"
 import { DelegationStatusRow } from "@/components/message/delegation-status-row"
 import { useSessionViewerHost } from "@/components/message/session-viewer-host-context"
 import { SubAgentSessionDialog } from "@/components/message/sub-agent-session-dialog"
-import {
-  useDelegationCardModel,
-  type DelegationIdentity,
-} from "@/hooks/use-delegation-card-model"
+import { useDelegationCardModel } from "@/hooks/use-delegation-card-model"
 import { useTruncation } from "@/hooks/use-truncation"
 import { previewLine } from "@/lib/activity/format"
 import type { ActivityStep, StepStatus } from "@/lib/activity/types"
 import type { AdaptedToolCallPart } from "@/lib/adapters/ai-elements-adapter"
-import type { DelegationCardStatus } from "@/lib/delegation-card"
+import { delegateCallTaskId } from "@/lib/delegation-card"
 import {
   buildDelegationTaskRows,
   deriveBadge,
-  formatDuration,
   parseStatusReport,
   parseTaskId,
   type DelegationTaskRow,
 } from "@/lib/delegation-status"
-import { useAssistant } from "@/stores/assistants-store"
 import { useActivityRender } from "../activity-context"
 import { ActivityRow } from "../activity-row"
 import { DetailBox } from "../detail-box"
@@ -48,80 +47,6 @@ import { GenericRow } from "./generic-row"
 /** Longest result line shown under a finished delegation. */
 const RESULT_PREVIEW_CHARS = 240
 
-function stepStatusOf(status: DelegationCardStatus): StepStatus {
-  switch (status) {
-    case "starting":
-    case "running":
-      return "running"
-    case "waiting":
-      return "awaiting"
-    case "ok":
-      return "succeeded"
-    case "err":
-      return "failed"
-  }
-}
-
-/** The agent's logo — or the assistant's avatar — inside the rail's ring. */
-function IdentityGlyph({ identity }: { identity: DelegationIdentity }) {
-  const assistant = useAssistant(identity.assistantId)
-  if (identity.assistantId !== null) {
-    return (
-      <AssistantAvatar
-        avatar={assistant?.avatar ?? null}
-        name={assistant?.name ?? identity.assistantName ?? ""}
-        size={14}
-      />
-    )
-  }
-  return identity.agentType ? (
-    <AgentIcon agentType={identity.agentType} className="size-3" />
-  ) : (
-    <span className="size-1.5 rounded-sm bg-muted-foreground/60" />
-  )
-}
-
-function DelegationStatusWord({
-  status,
-  errorCode,
-  durationMs,
-  clock,
-}: {
-  status: DelegationCardStatus
-  errorCode?: string
-  durationMs: number | null
-  /** How long it has been running here, once that is worth showing. */
-  clock: string | null
-}) {
-  const t = useTranslations("Folder.chat.delegation.status")
-  const duration = durationMs != null ? ` · ${formatDuration(durationMs)}` : ""
-  switch (status) {
-    case "err":
-      return (
-        <span className="text-tone-danger">
-          <ErrorLabel code={errorCode} />
-          {duration}
-        </span>
-      )
-    case "waiting":
-      return <span className="text-tone-warning">{t("waiting")}</span>
-    case "ok":
-      return (
-        <>
-          {t("ok")}
-          {duration}
-        </>
-      )
-    default:
-      return (
-        <>
-          {t(status)}
-          {clock ? <span aria-hidden="true">{` ${clock}`}</span> : null}
-        </>
-      )
-  }
-}
-
 /**
  * One delegation, start to finish: `Codex  #14be49e7  Update the stale
  * snapshot…  done · 1m 34s` — the task it was handed on the title line — and,
@@ -140,6 +65,14 @@ export const DelegationRow = memo(function DelegationRow({
   const statusText = useStatusText()
   const { pinnedOnly } = useActivityRender()
   const { part } = step
+  // The newest report on its task: what its step bar and result read once it
+  // is no longer working — and, with nothing live or stored to go by, how it
+  // ended. The polls were handed over by this call's own task id.
+  const latest = useMemo(() => {
+    const rows = step.laterPolls ? buildDelegationTaskRows(step.laterPolls) : []
+    const taskId = delegateCallTaskId(part)
+    return rows.find((row) => row.taskId === taskId) ?? rows[rows.length - 1]
+  }, [step.laterPolls, part])
   const source = useMemo(
     () => ({
       parentToolUseId: part.toolCallId,
@@ -148,21 +81,14 @@ export const DelegationRow = memo(function DelegationRow({
       errorText: part.errorText ?? null,
       state: part.state,
       meta: part.meta ?? null,
+      laterReport: latest?.report ?? null,
     }),
-    [part]
+    [part, latest]
   )
   const model = useDelegationCardModel(source)
   const viewerHost = useSessionViewerHost()
   const [dialogOpen, setDialogOpen] = useState(false)
-  // The newest report on its task: what its step bar and result read once it
-  // is no longer working.
-  const latest = useMemo(() => {
-    const rows = step.laterPolls ? buildDelegationTaskRows(step.laterPolls) : []
-    return (
-      rows.find((row) => row.taskId === model.taskId) ?? rows[rows.length - 1]
-    )
-  }, [step.laterPolls, model.taskId])
-  const status = stepStatusOf(model.status)
+  const status = delegationStepStatus(model.status)
   const working = status === "running" || status === "awaiting"
   // While it works, its own connection is the freshest source; the reports
   // its checks returned cover the rest (and, once it is done, say how it
@@ -205,7 +131,7 @@ export const DelegationRow = memo(function DelegationRow({
         status={status}
         marker={
           <RailIcon
-            glyph={<IdentityGlyph identity={model.identity} />}
+            glyph={<DelegationIdentityGlyph identity={model.identity} />}
             status={status}
             label={`${t("kind.delegation")}, ${statusText(status)}`}
           />
@@ -255,7 +181,7 @@ export const DelegationRow = memo(function DelegationRow({
           />
           {model.taskId ? (
             <span
-              className="shrink-0 font-mono text-[0.8125rem] text-muted-foreground"
+              className="shrink-0 font-mono text-[0.8125rem] text-activity-secondary"
               title={model.taskId}
               dir="ltr"
             >
@@ -263,7 +189,9 @@ export const DelegationRow = memo(function DelegationRow({
             </span>
           ) : null}
           {progress && progress.steps > 0 ? (
-            <span className="min-w-0 truncate text-muted-foreground">
+            // Pulled in by the space after its dot, so the dot sits centred
+            // between the id and the count.
+            <span className="-ms-1 min-w-0 truncate text-activity-secondary">
               {`· ${t("header.steps", { count: progress.steps })}`}
             </span>
           ) : null}
@@ -271,7 +199,7 @@ export const DelegationRow = memo(function DelegationRow({
             <span
               ref={taskRef}
               dir="auto"
-              className="min-w-0 flex-1 truncate text-muted-foreground"
+              className="min-w-0 flex-1 truncate text-activity-secondary"
             >
               {taskLine}
             </span>
@@ -487,7 +415,7 @@ function PollsLi({
       data-step-key={stepKey}
       data-body={open ? "" : undefined}
     >
-      <span className="absolute start-0.5 top-1 flex size-5 items-center justify-center">
+      <span className="absolute start-0 top-1 flex size-5 items-center justify-center">
         {marker}
       </span>
       <div className="min-w-0">{body}</div>

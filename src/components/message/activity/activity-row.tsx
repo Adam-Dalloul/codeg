@@ -1,18 +1,24 @@
 "use client"
 
-import { useId, useRef, type ReactNode } from "react"
+import { useId, useLayoutEffect, useRef, useState, type ReactNode } from "react"
 import { ChevronRightIcon } from "lucide-react"
 
 import type { ToolApproval } from "@/lib/activity/approval"
 import type { StepStatus } from "@/lib/activity/types"
 import { cn } from "@/lib/utils"
+import { useActivityRender } from "./activity-context"
+import { useActivityLive } from "./activity-live-context"
 import { ApprovalChip, showsApproval } from "./approval-chip"
-import { useEndMarkLine } from "./use-end-mark-line"
+import { useFoldRow } from "./fold-back"
+import { TimelineFoot } from "./timeline-foot"
+import { useRailGrowth } from "./use-rail-growth"
 
 const MARKER_POSITION = {
   main: {
-    ring: "start-0.5 top-1 size-5",
-    dot: "start-[0.5625rem] top-[0.6875rem] size-1.5",
+    // Flush with the reply's left edge, like a group's members: the ring is
+    // the widest mark, so it starts at 0 and the rail runs through its centre.
+    ring: "start-0 top-1 size-5",
+    dot: "start-[0.4375rem] top-[0.6875rem] size-1.5",
   },
   child: {
     ring: "start-0 top-1.5 size-4",
@@ -45,6 +51,7 @@ export function ActivityRow({
   expandable = false,
   expanded = false,
   onExpandedChange,
+  slideShut = false,
   detail,
   addon,
   title,
@@ -66,7 +73,12 @@ export function ActivityRow({
   expandable?: boolean
   expanded?: boolean
   onExpandedChange?: (open: boolean) => void
-  /** The panel under the header; only called (and mounted) while open. */
+  /** Slide the panel shut as it closes rather than drop it — for a panel that
+   *  closes by itself, under no hand of the reader's (a group folding once a
+   *  reply moves past it). */
+  slideShut?: boolean
+  /** The panel under the header; only called (and mounted) while open, or
+   *  sliding shut. */
   detail?: () => ReactNode
   /** Always shown under the header, open or not (a folded group's live
    *  member, a live output tail). */
@@ -78,13 +90,51 @@ export function ActivityRow({
 }) {
   const detailId = useId()
   const open = expandable && expanded
+  // Sliding shut, the panel stays mounted until its slide ends.
+  const [shownOpen, setShownOpen] = useState(open)
+  const [closing, setClosing] = useState(false)
+  if (shownOpen !== open) {
+    setShownOpen(open)
+    setClosing(!open && slideShut)
+  }
+  const panelRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const panel = panelRef.current
+    if (!closing || !panel) return
+    const styles = getComputedStyle(panel)
+    if (!styles.animationName || styles.animationName === "none") {
+      // No slide to wait for (reduced motion, chat animations off): the panel
+      // goes in the same flush as the close, before it paints again.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setClosing(false)
+      return
+    }
+    const done = (event?: Event) => {
+      // Its members' animations bubble up here; only its own slide counts.
+      if (event && event.target !== panel) return
+      setClosing(false)
+    }
+    panel.addEventListener("animationend", done)
+    panel.addEventListener("animationcancel", done)
+    // Should neither fire — the panel stops being drawn mid-slide.
+    const timer = window.setTimeout(
+      done,
+      Number.parseFloat(styles.animationDuration) * 1000 + 100
+    )
+    return () => {
+      panel.removeEventListener("animationend", done)
+      panel.removeEventListener("animationcancel", done)
+      window.clearTimeout(timer)
+    }
+  }, [closing])
+  const panel = (open || closing) && detail
   const chip = showsApproval(approval, status) ? (
     <ApprovalChip approval={approval} />
   ) : null
 
   const header = (
     <>
-      <span className="flex min-w-0 flex-1 items-start gap-1">
+      <span className="flex min-w-0 items-start gap-1">
         <span className="min-w-0">{children}</span>
         {expandable ? <RowChevron open={open} /> : null}
       </span>
@@ -117,7 +167,7 @@ export function ActivityRow({
       data-step-key={stepKey}
       // As the last row it runs the rail beside its open panel, down to the
       // end mark (globals.css).
-      data-body={open && detail ? "" : undefined}
+      data-body={panel ? "" : undefined}
     >
       <span
         className={cn(
@@ -147,8 +197,15 @@ export function ActivityRow({
         </div>
       )}
       {addon}
-      {open && detail ? (
-        <div id={detailId} className="activity-detail mt-1 mb-1.5">
+      {panel ? (
+        <div
+          ref={panelRef}
+          id={detailId}
+          className={cn(
+            "activity-detail mt-1 mb-1.5",
+            closing && "activity-detail-shut"
+          )}
+        >
           {detail()}
         </div>
       ) : null}
@@ -165,9 +222,12 @@ export function ActivityRow({
 export function RowChevron({
   open,
   always = false,
+  className,
 }: {
   open: boolean
   always?: boolean
+  /** Placed by a line that is not a row's 1.5rem header (the turn's). */
+  className?: string
 }) {
   return (
     <ChevronRightIcon
@@ -178,38 +238,82 @@ export function RowChevron({
           ? "opacity-100"
           : "opacity-0 group-hover/row:opacity-100 group-focus-visible/row:opacity-100 group-has-[:focus-visible]/row:opacity-100",
         // Mirrored under RTL, so it turns the other way to point down.
-        open && "rotate-90 opacity-100 rtl:-rotate-90"
+        open && "rotate-90 opacity-100 rtl:-rotate-90",
+        className
       )}
     />
   )
 }
 
 /**
- * An open group's members, on their own dashed rail. `end` says whether the
- * group is done (`reached`: the members end on their mark, level with the
- * last member's last line) or still going; a folded group's live member
- * under its header has neither.
+ * Whether a group is still going, for its foot: a member runs, or the reply
+ * is still being written with the group its last row, where the next step may
+ * join it — the foot turns from the group's first command to its last rather
+ * than flickering between commands. Not while the agent waits on the user.
+ */
+export function useGroupGoing(live: boolean, followed: boolean): boolean {
+  const { isStreaming } = useActivityRender()
+  const { awaitingUser } = useActivityLive()
+  return !awaitingUser && (live || (isStreaming && !followed))
+}
+
+/** The foot an open group's members end on (see `TimelineFoot`). */
+export interface MembersFoot {
+  /** The group is still going: a member runs, or more may join it. */
+  working: boolean
+  /** The members' own marker, which sets how far down the foot sits. */
+  after: "ring" | "dot"
+  /** What the group holds, said after "Collapse": `3 commands`. */
+  what: string
+  /** Folds the group. */
+  onFold: () => void
+}
+
+/**
+ * An open group's members, on their own dashed rail, ending on a foot
+ * (`foot`): the turning ring while the group is still going, then a row that
+ * folds it; a folded group's live member under its header has none. Folded
+ * from its foot, the group's header comes back into view and takes the focus
+ * the foot had. While the reply is written, the rail grows down to each
+ * member that joins.
  */
 export function ActivityMembers({
-  end,
+  foot,
   children,
 }: {
-  end?: "pending" | "reached"
+  foot?: MembersFoot
   children: ReactNode
 }) {
+  const { isStreaming } = useActivityRender()
   const listRef = useRef<HTMLUListElement>(null)
-  useEndMarkLine(listRef, end === "reached")
+  const foldRow = useFoldRow()
+  useRailGrowth(listRef, foot !== undefined && isStreaming)
   return (
-    <ul ref={listRef} role="list" className="activity-children" data-end={end}>
+    <ul ref={listRef} role="list" className="activity-children">
       {children}
+      {foot ? (
+        <TimelineFoot
+          variant="child"
+          after={foot.after}
+          working={foot.working}
+          what={foot.what}
+          onFold={(control) => foldRow(control, foot.onFold)}
+        />
+      ) : null}
     </ul>
   )
 }
 
-/** A row header's end column: its figure, status word, time. */
+/**
+ * A row header's end column: its figure, status word, time. It takes the
+ * line's room past the label, a faint dashed line running across it up to
+ * the figure (`.activity-figure` in globals.css), so a figure at the far end
+ * of a wide row still reads as the label's. The label beside it must not
+ * grow.
+ */
 export function RowFigure({ children }: { children: ReactNode }) {
   return (
-    <span className="activity-mono ms-auto flex shrink-0 items-center gap-3 ps-3 text-xs leading-6 text-muted-foreground">
+    <span className="activity-mono activity-figure flex shrink-0 grow items-center justify-end gap-3 ps-3 text-xs leading-6 text-activity-secondary">
       {children}
     </span>
   )

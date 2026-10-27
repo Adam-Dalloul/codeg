@@ -724,8 +724,9 @@ fn agent_root_slots(agent_type: AgentType) -> &'static [RootSlot] {
             default_rel: &[".local", "share", "opencode"],
             dir_name_env: None,
         }],
+        // `cline_data_dir_for_env`: `CLINE_DATA_DIR`, else `<CLINE_DIR>/data`.
         AgentType::Cline => &[RootSlot {
-            candidates: &[("CLINE_DIR", "", VERBATIM)],
+            candidates: &[("CLINE_DATA_DIR", "", VERBATIM), ("CLINE_DIR", "data", VERBATIM)],
             trims: true,
             default_rel: &[".cline", "data"],
             dir_name_env: None,
@@ -1584,7 +1585,7 @@ mod tests {
             (AgentType::KimiCode, "KIMI_CODE_HOME"),
             (AgentType::Cursor, "CURSOR_CONFIG_DIR"),
             (AgentType::Hermes, "HERMES_HOME"),
-            (AgentType::Cline, "CLINE_DIR"),
+            (AgentType::Cline, "CLINE_DATA_DIR"),
             (AgentType::Pi, "PI_CODING_AGENT_DIR"),
         ];
 
