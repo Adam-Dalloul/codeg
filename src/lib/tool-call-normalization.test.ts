@@ -65,6 +65,54 @@ describe("aliasToolInputKeys", () => {
   })
 })
 
+describe("inferLiveToolName on OpenCode's code-mode execute frames", () => {
+  // A `session/load` replay opens a call with its input already present, so
+  // the frame carries no stamped OpenCode name — only its `execute` title.
+  const replay = (code: string) =>
+    inferLiveToolName({
+      title: "execute",
+      kind: "other",
+      rawInput: JSON.stringify({ code }),
+      meta: null,
+    })
+
+  it("keeps the execute identity when the script quotes a patch", () => {
+    // The delegated task is text; the patch marker in it is no patch call.
+    expect(
+      replay(
+        "await tools['codeg-mcp'].delegate_to_agent({agent_type:'codex',task:`Apply this patch:\n*** Begin Patch\n*** Add File: hello.txt\n+hello\n*** End Patch`})"
+      )
+    ).toBe("bash")
+    expect(replay("return 1 + 1")).toBe("bash")
+  })
+
+  it("leaves other tools to the input heuristics", () => {
+    expect(
+      inferLiveToolName({
+        title: "apply_patch",
+        rawInput: JSON.stringify({ input: "*** Begin Patch\n*** End Patch" }),
+        meta: null,
+      })
+    ).toBe("apply_patch")
+    // A script under another title is not OpenCode's code-mode tool.
+    expect(
+      inferLiveToolName({
+        title: "browser_run_code",
+        rawInput: JSON.stringify({ code: "*** Begin Patch" }),
+        meta: null,
+      })
+    ).toBe("apply_patch")
+    // Nor is an `execute` whose `code` is no script.
+    expect(
+      inferLiveToolName({
+        title: "execute",
+        rawInput: JSON.stringify({ code: 42, input: "*** Begin Patch" }),
+        meta: null,
+      })
+    ).toBe("apply_patch")
+  })
+})
+
 describe("inferLiveToolName meta.claudeCode.toolName override", () => {
   it("returns memory_recall for synthesized recall events without rawInput", () => {
     // Mirrors what claude-agent-acp >=0.37 emits for memory recall:

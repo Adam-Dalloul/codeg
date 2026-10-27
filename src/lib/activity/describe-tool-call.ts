@@ -19,7 +19,10 @@ import {
 import { isCodegMcpWorkbenchTool } from "@/lib/codeg-mcp-tool"
 import { COLLAB_AGENT_TOOL_NAME } from "@/lib/collab-tool"
 import { isContextCompactionMeta } from "@/lib/context-compaction"
-import { isDelegateToAgentToolName } from "@/lib/delegation-card"
+import {
+  isCodeModeDelegationCall,
+  isDelegateToAgentToolName,
+} from "@/lib/delegation-card"
 import {
   extractAnnouncedSessionId,
   isShellSessionToolName,
@@ -95,6 +98,14 @@ const TODO_TOOLS = new Set([
 export function toolStepKind(part: AdaptedToolCallPart): ToolStepKind {
   if (isContextCompactionMeta(part.meta)) return "compaction"
   const name = normalizeToolName(part.toolName).toLowerCase()
+  // opencode 2.x code-mode routes MCP calls through the built-in `execute`
+  // tool, which normalizes to `bash` — so the name alone would call this a
+  // command. The delegation call lives inside the `code` source string, and
+  // on that tool the input shape outranks the name (the same order the old
+  // ToolCallPart checked in, before its command card).
+  if (isCodeModeDelegationCall(name, part.input ?? null)) {
+    return part.toolCallId ? "delegation" : "generic"
+  }
   switch (name) {
     case "agent":
       return "agent"
