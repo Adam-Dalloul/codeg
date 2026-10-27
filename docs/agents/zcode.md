@@ -23,6 +23,46 @@ Images and embedded resources follow the bridge's negotiated ACP capabilities. P
 
 The bridge accepts up to 100 content blocks and 50 MiB of decoded content per prompt, with a 10 MiB limit per image. Image attachments must be PNG, JPEG, WebP, GIF, BMP or SVG. Other image formats, invalid base64 and oversized prompts return an error. Pause any native goal loop before sending binary attachments; queued goal prompts accept only text.
 
+## Skills
+
+Codeg's Skills settings can list, read, create, edit, delete and import ZCode
+directory bundles (`<id>/SKILL.md`). ZCode also appears in the custom, expert,
+science, Office and UI Render skill installation matrices.
+
+Codeg uses the folders the official ZCode runtime loads skills from. Global
+skills live in `~/.zcode/skills/` and then the shared `~/.agents/skills/`, both
+in your home directory. New global skills and Codeg installation links go into
+`~/.zcode/skills/`, which keeps them separate from the shared store. Flat `.md`
+files are not ZCode skill bundles.
+
+Project skills are created in `<session cwd>/.zcode/skills/`, where ZCode's
+own settings create them. Codeg also lists and edits the other project skills
+ZCode loads: those in `<session cwd>/.agents/skills/` and, when the session cwd
+is inside a Git repository, those in both folders of every parent folder up to
+the repository root. A skill from a parent folder is edited where it is. When
+several of these folders contain the same skill folder, Codeg lists and edits
+only the first: the one nearest the session cwd, and within one folder the
+`.zcode` copy. ZCode ranks these folders in the same order, but it picks a skill
+by the `name` in its `SKILL.md`, and prefers a global skill with the same name.
+Of these project folders, the bridge's command list includes only
+`<session cwd>/.agents/skills/`; ZCode loads skills from all of them.
+
+`ZCODE_HOME` does not move these folders. The runtime's global skill folders
+always hang off the home directory, and its project folders off the session
+cwd. The bridge's command list reads `$ZCODE_HOME/skills/` instead of
+`~/.zcode/skills/`. With `ZCODE_HOME` pointing elsewhere, it can therefore
+offer commands for skills the runtime cannot load, and leave out skills Codeg
+installed. Extra folders added with ZCode's `skills.roots` setting are not
+listed. Codeg finds the home directory the way ZCode's Node runtime does, from
+`HOME`, or `USERPROFILE` on Windows, in Codeg's own process environment. It does
+not read the agent's environment overrides.
+
+Codeg manages user-owned files and installation links; the bridge continues to
+decide which skills appear as commands. Native per-path disable flags in
+`cli/config.json` still apply. Codeg does not rewrite those flags or edit
+plugin caches. Reconnect the conversation after changing skills so the bridge
+publishes its current commands.
+
 ## Sessions and tools
 
 A new session explicitly confirms Build mode before sending its first prompt. A valid saved mode, including Yolo, takes precedence. Confirming the mode makes the bridge create the ZCode backend session when the conversation connects rather than at its first prompt. Existing sessions use the normal restore and preference flow. Model and thought selectors follow ACP configuration updates rather than a hardcoded model list.

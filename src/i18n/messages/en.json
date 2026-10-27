@@ -7734,5 +7734,16 @@
         "probeFailed": "The built-in browser couldn't confirm that it reaches the remote host through the tunnel. Try again in a moment."
       }
     }
+  },
+  "HtmlCodePreview": {
+    "code": "Code",
+    "preview": "Preview",
+    "title": "HTML preview",
+    "generating": "Generating HTML…",
+    "expand": "Show all",
+    "collapse": "Collapse",
+    "settingsTitle": "Chat HTML rendering",
+    "settingsDescription": "Display self-contained HTML/CSS cards and diagrams directly in AI replies. Model scripts and external resources are blocked.",
+    "settingsEnable": "Enable rich HTML rendering"
   }
 }
