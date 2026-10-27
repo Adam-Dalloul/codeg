@@ -279,6 +279,8 @@ pub struct SessionState {
     /// them as copied history and drop them.
     pub external_id_changed_at: Option<std::time::SystemTime>,
     pub agent_type: AgentType,
+    /// Counter semantics of the adapter definition used for this launch.
+    pub(crate) prompt_usage_mode: crate::acp::reported_usage::PromptUsageMode,
     pub working_dir: Option<PathBuf>,
     pub owner_window_label: String,
     pub folder_id: Option<i32>,
@@ -586,6 +588,16 @@ pub struct SessionState {
     /// Fixed for the connection's lifetime. Decides how the run's prompt says
     /// to hand the result in. Backend-only.
     pub result_tool_available: bool,
+
+    /// Antigravity question ids (`interaction_<hex>`) whose answered card
+    /// `try_bridge_antigravity_ask` has recorded. Antigravity closes each such
+    /// id with a `tool_call_update` of its own ("Response received" /
+    /// "Interaction cancelled") that would replace the card's answer, so the
+    /// live loop drops that frame for an id in this set, removing the id as it
+    /// does. A question left on the approval card, or abandoned before an
+    /// answer, is never recorded, so its placeholder row still settles.
+    /// Backend-only.
+    pub antigravity_answered_interactions: BTreeSet<String>,
 
     /// Whether live-feedback notes for THIS session go over the native ACP
     /// `_session/steering` push channel instead of the `check_user_feedback`
@@ -922,6 +934,7 @@ impl SessionState {
             external_id: None,
             external_id_changed_at: None,
             agent_type,
+            prompt_usage_mode: crate::acp::reported_usage::PromptUsageMode::default(),
             working_dir,
             owner_window_label,
             folder_id,
@@ -969,6 +982,7 @@ impl SessionState {
             delegation_enabled: false,
             feedback_tool_available: false,
             result_tool_available: false,
+            antigravity_answered_interactions: BTreeSet::new(),
             native_steering_available: false,
             codex_user_input_shape: None,
             neutral_goal_channel: false,
