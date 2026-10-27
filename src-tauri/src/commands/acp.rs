@@ -12723,6 +12723,15 @@ pub(crate) async fn acp_update_agent_env_core(
     // provider-edit cascade.
     let mut claude_local_cascade: Option<(String, String, BTreeMap<String, Option<String>>)> = None;
     if let Some(pid) = model_provider_id {
+        // MiniMax Code keeps its own login and providers, and launches with
+        // nothing but its explicit env (see `build_runtime_env_from_setting`).
+        // A bound provider's model would reach it anyway, as the OPENAI_MODEL
+        // that `parse_provider_model` falls back to.
+        if agent_type == AgentType::MiniMaxCode {
+            return Err(AcpError::protocol(format!(
+                "{agent_type} uses its own provider configuration; model provider {pid} cannot be bound to it"
+            )));
+        }
         let provider = crate::db::service::model_provider_service::get_by_id(&db.conn, pid)
             .await
             .map_err(|e| AcpError::protocol(e.to_string()))?
@@ -22353,6 +22362,48 @@ model = "gpt"
         );
         assert_eq!(env.get("EXPLICIT").map(String::as_str), Some("value"));
         assert!(skill_storage_spec(AgentType::MiniMaxCode).is_none());
+    }
+
+    // Model providers are not offered for MiniMax Code, but the API accepts one
+    // for any agent type; binding it would persist OPENAI_MODEL.
+    #[tokio::test]
+    async fn minimax_code_refuses_a_model_provider_binding() {
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let provider = crate::db::service::model_provider_service::create(
+            &db.conn,
+            "p".to_string(),
+            "https://example.test/v1".to_string(),
+            "k".to_string(),
+            "minimax_code".to_string(),
+            Some("unexpected-model".to_string()),
+        )
+        .await
+        .unwrap();
+        let err = acp_update_agent_env_core(
+            AgentType::MiniMaxCode,
+            true,
+            BTreeMap::new(),
+            Some(provider.id),
+            &db,
+            &EventEmitter::Noop,
+        )
+        .await
+        .expect_err("the bind is refused");
+        assert!(err.to_string().contains("cannot be bound"), "{err}");
+        let setting = agent_setting_service::get_by_agent_type(&db.conn, AgentType::MiniMaxCode)
+            .await
+            .unwrap()
+            .expect("the defaults row exists");
+        assert_eq!(setting.model_provider_id, None);
+        assert!(
+            !setting
+                .env_json
+                .as_deref()
+                .unwrap_or_default()
+                .contains("OPENAI_MODEL"),
+            "{:?}",
+            setting.env_json
+        );
     }
 
     #[test]
