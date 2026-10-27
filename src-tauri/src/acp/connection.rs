@@ -1020,6 +1020,38 @@ fn merge_antigravity_settings(
     Ok((root != before).then_some(root))
 }
 
+/// The env var codex-acp reads a JSON config from, merged into the config of
+/// every thread it starts, resumes or forks.
+const CODEX_CONFIG_ENV: &str = "CODEX_CONFIG";
+
+/// How long codex keeps a thread loaded after its last subscriber leaves, for
+/// codeg's sessions: codex's own default up to 0.163 (see
+/// [`apply_codex_env_policy`]).
+const CODEX_THREAD_UNLOAD_DELAY_SECS: u64 = 60;
+
+/// `current` (the `CODEX_CONFIG` the agent would get) with
+/// `thread_unload_delay_secs` added, or `None` to leave it as it is: when it
+/// already names a delay (the user's choice stands), or is not a JSON object
+/// (codex-acp parses it at startup, so codeg must not turn a value the user
+/// wrote into another one). A missing or blank value starts from `{}`.
+fn codex_config_with_thread_unload_delay(current: Option<&str>) -> Option<String> {
+    let mut config = match current.map(str::trim).filter(|value| !value.is_empty()) {
+        None => serde_json::Map::new(),
+        Some(text) => match serde_json::from_str::<serde_json::Value>(text) {
+            Ok(serde_json::Value::Object(config)) => config,
+            _ => return None,
+        },
+    };
+    if config.contains_key("thread_unload_delay_secs") {
+        return None;
+    }
+    config.insert(
+        "thread_unload_delay_secs".to_string(),
+        CODEX_THREAD_UNLOAD_DELAY_SECS.into(),
+    );
+    Some(serde_json::Value::Object(config).to_string())
+}
+
 /// Codex-only launch policy: force codex-acp's MCP name-conflict de-duplication
 /// OFF. codeg injects its companion server (`codeg-mcp`) over ACP
 /// `session/new.mcpServers`; codex-acp otherwise drops any ACP-passed server
@@ -1029,13 +1061,16 @@ fn merge_antigravity_settings(
 /// feedback / session_info. The late `retain` + `push` makes the override win
 /// over any user `runtime_env` twin, so the injection is guaranteed to survive.
 /// Codex launch env policy. `initial_agent_mode` is the preset resolved from
-/// `~/.codex/config.toml` by `codex_launch_initial_agent_mode` — passed in rather
-/// than read here so this stays pure (and so its tests don't depend on whatever
-/// `~/.codex/config.toml` the developer happens to have).
+/// `~/.codex/config.toml` by `codex_launch_initial_agent_mode`, and
+/// `inherited_codex_config` is codeg's own `CODEX_CONFIG`, which the agent
+/// inherits unless the runtime env sets its own — both passed in rather than
+/// read here so this stays pure (and so its tests don't depend on whatever
+/// `~/.codex/config.toml` or environment the developer happens to have).
 fn apply_codex_env_policy(
     agent_type: AgentType,
     merged: &mut Vec<(String, String)>,
     initial_agent_mode: Option<&str>,
+    inherited_codex_config: Option<&str>,
 ) {
     if agent_type != AgentType::Codex {
         return;
@@ -1043,6 +1078,28 @@ fn apply_codex_env_policy(
     let key = "DISABLE_MCP_CONFIG_FILTERING";
     merged.retain(|(k, _)| k != key);
     merged.push((key.to_string(), "true".to_string()));
+
+    // Keep a closed thread's lock as short as codeg's fork expects. When a
+    // fork closes its parent (`close_forked_parent`), codex holds the parent
+    // until `thread_unload_delay_secs` pass, and only then can the parent's
+    // own row open it again (the `session_busy` banner says so). codex 0.164
+    // raised that default from 60 s to 30 min, so 60 is set here, through the
+    // config codex-acp hands every thread it starts, resumes or forks
+    // (`CODEX_CONFIG`); codex reads the delay per thread from 0.164 on.
+    // Measured on codex-acp 2.3.0: a sibling's `session/load` of the closed
+    // parent still met the lock 65 s after the close without this, and
+    // succeeded with it. Applies to codeg's sessions only, never to the
+    // Codex CLI or app, and merges into a `CODEX_CONFIG` the user set.
+    let current = merged
+        .iter()
+        .rev()
+        .find(|(k, _)| k == CODEX_CONFIG_ENV)
+        .map(|(_, v)| v.as_str())
+        .or(inherited_codex_config);
+    if let Some(config) = codex_config_with_thread_unload_delay(current) {
+        merged.retain(|(k, _)| k != CODEX_CONFIG_ENV);
+        merged.push((CODEX_CONFIG_ENV.to_string(), config));
+    }
 
     // Make `~/.codex/config.toml`'s sandbox/approval choice mean something.
     // codex-acp re-sends its own approvalPolicy + sandboxPolicy every turn from
@@ -2092,12 +2149,20 @@ async fn build_agent(
             // Resolve the config-derived preset HERE (like Grok's
             // `grok_launch_permission_mode` below) so the policy helper stays a
             // pure function over the env list.
-            let codex_initial_mode = if agent_type == AgentType::Codex {
-                crate::commands::acp::codex_launch_initial_agent_mode()
+            let (codex_initial_mode, inherited_codex_config) = if agent_type == AgentType::Codex {
+                (
+                    crate::commands::acp::codex_launch_initial_agent_mode(),
+                    std::env::var(CODEX_CONFIG_ENV).ok(),
+                )
             } else {
-                None
+                (None, None)
             };
-            apply_codex_env_policy(agent_type, &mut merged_env, codex_initial_mode.as_deref());
+            apply_codex_env_policy(
+                agent_type,
+                &mut merged_env,
+                codex_initial_mode.as_deref(),
+                inherited_codex_config.as_deref(),
+            );
             // codex-acp 1.0.0 honors APP_SERVER_LOGS as a directory for its
             // adapter-side logs. Surface it only under CODEG_ACP_DEBUG so
             // default runs are unchanged; a directory-creation failure silently
@@ -3558,8 +3623,10 @@ async fn withdraw_permission(
 /// `session/request_permission`, so a stopped sub-agent or an interrupted tool
 /// withdraws its approval; codex-acp (1.13) wires its prompt's signal into every
 /// approval and elicitation it sends, and that signal aborts when the session
-/// closes or the `session/prompt` request itself is cancelled (a plain
-/// `session/cancel` interrupts the turn without it). claude races the answer
+/// closes or the `session/prompt` request itself is cancelled (up to 2.2.x a
+/// plain `session/cancel` interrupted the turn without it; from 2.3.0 it
+/// withdraws the open requests too, about 2 ms after the cancel, even one
+/// already answered — which finds the card settled and does nothing). claude races the answer
 /// against the abort and moves on; codex keeps waiting for one, so the
 /// `Cancelled` sent here is what releases it. Left up, such a card could only be
 /// answered after the fact — and, the queue being FIFO, every later card would
@@ -12696,8 +12763,9 @@ async fn handle_fork_or_exit(
     //     opening the sibling row fails with `session_busy`. Closing is
     //     `thread/unsubscribe`, which is also what codex's own TUI does to the
     //     thread it forks from. The app-server then unloads the thread, and
-    //     with it the lock, once it has gone `thread_unload_delay_secs` (60 by
-    //     default) without a subscriber or a running turn.
+    //     with it the lock, once it has gone `thread_unload_delay_secs` (60,
+    //     which codeg sets: codex 0.164 defaults to 30 min, see
+    //     `apply_codex_env_policy`) without a subscriber or a running turn.
     //   * claude-agent-acp runs each session in a CLI process of its own, so
     //     an open parent is one more process per fork, still able to start a
     //     turn by itself (a background task finishing does) where nothing
@@ -12932,8 +13000,8 @@ fn classify_session_load_failure(
     //    creates to keep the pre-fork history hits the lock until the forking
     //    connection lets the parent go. It closes the parent right after the
     //    step that resumes the child (`close_forked_parent`), and the
-    //    app-server unloads it `thread_unload_delay_secs` later (60 by
-    //    default).
+    //    app-server unloads it `thread_unload_delay_secs` later (60, which
+    //    codeg sets for its sessions; codex 0.164's own default is 30 min).
     // codex-acp ≤2.0.x passes codex's raw "thread <id> already has an active
     // writer" through as a -32603 `data.details`; 2.1.0 (#564) answers -32600
     // with `data.reason: "thread_active_writer"`, which
@@ -14033,7 +14101,12 @@ async fn run_conversation_loop(
                 // no boundary (codex-acp turns `turn/started`/`turn/completed`
                 // into nothing), so there such a search holds the next report
                 // once — an under-read, where resetting on Cancel instead would
-                // admit a searched report landing after the cancel.
+                // admit a searched report landing after the cancel. From 2.3.0
+                // a `session_info_update` carrying `_meta.codex.threadStatus`
+                // does mark one, but `active` is re-sent mid-turn whenever its
+                // `activeFlags` change (an approval wait), so resetting on it
+                // would need the idle→active edge tracked — not worth it to
+                // save one held ring reading.
                 cb_state.codex_context_readings.turn_started();
                 cb_state.kiro_calls.clear();
                 // Grok's context ring needs the active model's window paired
@@ -24906,6 +24979,68 @@ mod tests {
         );
     }
 
+    /// codex-acp 2.3.0's `initialize` answer to codeg's exact
+    /// `clientCapabilities`, recorded live: it adds the unstable
+    /// `sessionCapabilities.systemPrompt` (#653) and `mcpCapabilities.acp`,
+    /// neither of which this schema crate knows, and still answers a v1
+    /// request with `protocolVersion: 1` although it speaks ACP v2 to a v2
+    /// client (#620). A failed parse here would end every Codex connection at
+    /// its handshake.
+    #[test]
+    fn codex_230_initialize_response_parses_past_its_new_capabilities() {
+        let wire = serde_json::json!({
+            "protocolVersion": 1,
+            "agentInfo": {"name": "@agentclientprotocol/codex-acp", "title": "Codex", "version": "2.3.0"},
+            "agentCapabilities": {
+                "auth": {"logout": {}},
+                "providers": {},
+                "loadSession": true,
+                "promptCapabilities": {"embeddedContext": true, "image": true},
+                "sessionCapabilities": {
+                    "resume": {}, "list": {}, "close": {}, "delete": {}, "fork": {},
+                    "additionalDirectories": {}, "subagents": {}, "systemPrompt": {}
+                },
+                "mcpCapabilities": {"acp": false, "http": true, "sse": false},
+                "_meta": {"authStatus": {}}
+            },
+            "authMethods": [
+                {"id": "api-key", "name": "API Key", "description": "Use an API key to authenticate",
+                    "_meta": {"api-key": {"provider": "openai"}}},
+                {"id": "chat-gpt", "name": "ChatGPT", "description": "Use ChatGPT to authenticate"}
+            ],
+            "_meta": {
+                "steering": {"supported": true},
+                "jetbrains": {"air": {
+                    "version": 1,
+                    "goal": {"version": 1, "controlMethod": "_session/goal",
+                        "actions": ["set", "pause", "resume", "clear"]},
+                    "capabilities": ["sessionFailure", "diffPatch", "agentFileChangeReport",
+                        "customInstructions", "nativeSubagentSessions", "asyncTasks",
+                        "recommendedValue", "rawInputRendering", "planContentDelta", "codexHooks"]
+                }}
+            }
+        });
+        let response: agent_client_protocol::schema::v1::InitializeResponse =
+            serde_json::from_value(wire).expect("2.3.0 initialize parses");
+        assert_eq!(response.protocol_version, ProtocolVersion::V1);
+        let caps = &response.agent_capabilities;
+        assert!(caps.load_session);
+        assert!(caps.session_capabilities.resume.is_some());
+        assert!(caps.session_capabilities.close.is_some());
+        assert!(caps.session_capabilities.fork.is_some());
+        assert!(caps.prompt_capabilities.image);
+        assert!(caps.mcp_capabilities.http);
+        assert!(init_advertises_steering(response.meta.as_ref()));
+        assert!(init_advertises_goal(response.meta.as_ref()));
+        assert_eq!(
+            response
+                .agent_info
+                .as_ref()
+                .map(|info| info.version.as_str()),
+            Some("2.3.0")
+        );
+    }
+
     #[test]
     fn init_advertises_goal_requires_integer_version_at_least_1() {
         // The real advertisements: codex-acp 1.2.0+ / claude-agent-acp 0.66.0+.
@@ -27758,7 +27893,7 @@ mod tests {
         // Codex gets the flag injected so codex-acp never drops the injected
         // `codeg-mcp` server on a config.toml name collision.
         let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
-        apply_codex_env_policy(AgentType::Codex, &mut env, None);
+        apply_codex_env_policy(AgentType::Codex, &mut env, None, None);
         assert!(env
             .iter()
             .any(|(k, v)| k == "DISABLE_MCP_CONFIG_FILTERING" && v == "true"));
@@ -27768,7 +27903,7 @@ mod tests {
             "DISABLE_MCP_CONFIG_FILTERING".to_string(),
             "false".to_string(),
         )];
-        apply_codex_env_policy(AgentType::Codex, &mut with_twin, None);
+        apply_codex_env_policy(AgentType::Codex, &mut with_twin, None, None);
         let hits: Vec<_> = with_twin
             .iter()
             .filter(|(k, _)| k == "DISABLE_MCP_CONFIG_FILTERING")
@@ -27781,7 +27916,7 @@ mod tests {
     fn codex_env_policy_is_noop_for_other_agents() {
         for agent in [AgentType::Grok, AgentType::ClaudeCode, AgentType::Gemini] {
             let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
-            apply_codex_env_policy(agent, &mut env, Some("read-only"));
+            apply_codex_env_policy(agent, &mut env, Some("read-only"), None);
             assert!(
                 !env.iter().any(|(k, _)| k == "DISABLE_MCP_CONFIG_FILTERING"),
                 "{agent:?} must not receive the codex-only flag"
@@ -27799,7 +27934,7 @@ mod tests {
         // that approvalPolicy every turn, so the user's ~/.codex/config.toml
         // sandbox/approval choice is dead (#442).
         let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
-        apply_codex_env_policy(AgentType::Codex, &mut env, Some("read-only"));
+        apply_codex_env_policy(AgentType::Codex, &mut env, Some("read-only"), None);
         assert!(env
             .iter()
             .any(|(k, v)| k == "INITIAL_AGENT_MODE" && v == "read-only"));
@@ -27807,7 +27942,7 @@ mod tests {
         // Nothing mappable → stay out of the way entirely, leaving codex-acp's
         // own default rather than pinning a preset the user never chose.
         let mut none = vec![("PATH".to_string(), "/usr/bin".to_string())];
-        apply_codex_env_policy(AgentType::Codex, &mut none, None);
+        apply_codex_env_policy(AgentType::Codex, &mut none, None, None);
         assert!(!none.iter().any(|(k, _)| k == "INITIAL_AGENT_MODE"));
     }
 
@@ -27819,7 +27954,7 @@ mod tests {
             "INITIAL_AGENT_MODE".to_string(),
             "agent-full-access".to_string(),
         )];
-        apply_codex_env_policy(AgentType::Codex, &mut env, Some("read-only"));
+        apply_codex_env_policy(AgentType::Codex, &mut env, Some("read-only"), None);
         let hits: Vec<_> = env
             .iter()
             .filter(|(k, _)| k == "INITIAL_AGENT_MODE")
@@ -27829,13 +27964,107 @@ mod tests {
 
         // A blank twin carries no intent, so the config-derived value fills it.
         let mut blank = vec![("INITIAL_AGENT_MODE".to_string(), "  ".to_string())];
-        apply_codex_env_policy(AgentType::Codex, &mut blank, Some("read-only"));
+        apply_codex_env_policy(AgentType::Codex, &mut blank, Some("read-only"), None);
         let hits: Vec<_> = blank
             .iter()
             .filter(|(k, _)| k == "INITIAL_AGENT_MODE")
             .collect();
         assert_eq!(hits.len(), 1, "blank twin replaced, not duplicated");
         assert_eq!(hits[0].1, "read-only");
+    }
+
+    fn codex_config_of(env: &[(String, String)]) -> Vec<serde_json::Value> {
+        env.iter()
+            .filter(|(k, _)| k == "CODEX_CONFIG")
+            .map(|(_, v)| serde_json::from_str(v).expect("CODEX_CONFIG is JSON"))
+            .collect()
+    }
+
+    /// codex 0.164 holds a closed thread for 30 minutes; codeg's fork closes
+    /// its parent and tells the user the parent's row opens about a minute
+    /// later, so every codex launch asks for codex's old 60 s.
+    #[test]
+    fn codex_env_policy_keeps_a_closed_thread_for_a_minute() {
+        let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
+        apply_codex_env_policy(AgentType::Codex, &mut env, None, None);
+        assert_eq!(
+            codex_config_of(&env),
+            vec![serde_json::json!({"thread_unload_delay_secs": 60})]
+        );
+
+        for agent in [AgentType::Grok, AgentType::ClaudeCode, AgentType::OpenCode] {
+            let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
+            apply_codex_env_policy(agent, &mut env, None, Some("{}"));
+            assert!(codex_config_of(&env).is_empty(), "{agent:?}");
+        }
+    }
+
+    /// A `CODEX_CONFIG` the user gave codeg (inherited) or the agent (runtime
+    /// env) keeps every key it has; the runtime env's is the one the agent
+    /// would get, so it is the one merged into.
+    #[test]
+    fn codex_env_policy_merges_the_delay_into_the_users_codex_config() {
+        let hooks = r#"{"hooks":{"PreToolUse":[]},"model":"gpt-5.5"}"#;
+        let mut inherited = Vec::new();
+        apply_codex_env_policy(AgentType::Codex, &mut inherited, None, Some(hooks));
+        assert_eq!(
+            codex_config_of(&inherited),
+            vec![serde_json::json!({
+                "hooks": {"PreToolUse": []},
+                "model": "gpt-5.5",
+                "thread_unload_delay_secs": 60,
+            })]
+        );
+
+        let mut runtime = vec![(
+            "CODEX_CONFIG".to_string(),
+            r#"{"model":"gpt-6"}"#.to_string(),
+        )];
+        apply_codex_env_policy(AgentType::Codex, &mut runtime, None, Some(hooks));
+        assert_eq!(
+            codex_config_of(&runtime),
+            vec![serde_json::json!({"model": "gpt-6", "thread_unload_delay_secs": 60})],
+            "the runtime env's value, replaced rather than duplicated"
+        );
+    }
+
+    #[test]
+    fn codex_env_policy_leaves_a_codex_config_it_cannot_extend_alone() {
+        // The user's own delay stands, and a value that is not a JSON object
+        // is not codeg's to rewrite (codex-acp parses it as written).
+        for value in [
+            r#"{"thread_unload_delay_secs":0}"#,
+            "not json",
+            "[1,2]",
+            "42",
+        ] {
+            let mut env = vec![("CODEX_CONFIG".to_string(), value.to_string())];
+            apply_codex_env_policy(AgentType::Codex, &mut env, None, None);
+            let hits: Vec<_> = env.iter().filter(|(k, _)| k == "CODEX_CONFIG").collect();
+            assert_eq!(hits.len(), 1, "{value}");
+            assert_eq!(hits[0].1, value);
+
+            let mut inherited = Vec::new();
+            apply_codex_env_policy(AgentType::Codex, &mut inherited, None, Some(value));
+            assert!(
+                !inherited.iter().any(|(k, _)| k == "CODEX_CONFIG"),
+                "the inherited {value} reaches the agent unchanged"
+            );
+        }
+
+        // An empty runtime value removes the inherited one at launch (the
+        // spawn drops empty variables), so the agent would get none: the delay
+        // alone takes its place. A whitespace-only value, which codex-acp
+        // would fail to parse, is taken the same way.
+        for blank in ["", "  "] {
+            let mut env = vec![("CODEX_CONFIG".to_string(), blank.to_string())];
+            apply_codex_env_policy(AgentType::Codex, &mut env, None, Some(r#"{"model":"x"}"#));
+            assert_eq!(
+                codex_config_of(&env),
+                vec![serde_json::json!({"thread_unload_delay_secs": 60})],
+                "{blank:?}"
+            );
+        }
     }
 
     #[test]

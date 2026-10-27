@@ -2145,19 +2145,26 @@ const CODEX_SANDBOX_UNSET = ""
  * through the widget under this sentinel and is mapped back on change. */
 const CODEX_SANDBOX_UNSET_OPTION = "__codex_unset__"
 
-/** `approval_policy` choices. The three presets are `AskForApproval`'s plain
- * string variants; `granular` is its table variant and reveals five switches.
- * (`on-failure` is only a legacy serde alias of `on-request` upstream, so it is
- * normalized away by the backend rather than offered here.) */
+/** `approval_policy` choices. The two presets are `AskForApproval`'s plain
+ * string variants codex still accepts; `granular` is its table variant and
+ * reveals five switches. (`on-failure` is only a legacy serde alias of
+ * `on-request` upstream, so it is normalized away by the backend rather than
+ * offered here.) */
 const CODEX_APPROVAL_POLICY_VALUES = [
   "on-request",
-  "untrusted",
   "never",
   "granular",
 ] as const
+
+/** The string variant codex retired: a config.toml carrying it makes codex
+ * refuse to load its config, so no Codex session starts. Never offered; shown
+ * only when config.toml already has it, so the user can see it has to go. */
+const CODEX_RETIRED_APPROVAL_POLICY = "untrusted"
+
 type CodexApprovalPolicyChoice =
   | typeof CODEX_SANDBOX_UNSET
   | (typeof CODEX_APPROVAL_POLICY_VALUES)[number]
+  | typeof CODEX_RETIRED_APPROVAL_POLICY
 
 /** `SandboxMode`'s complete upstream vocabulary. */
 const CODEX_SANDBOX_MODE_VALUES = [
@@ -9453,15 +9460,26 @@ export function AcpAgentSettings() {
                                 {t(`codex.approvalPolicy_${value}`)}
                               </SelectItem>
                             ))}
+                            {/* Listed only so the trigger can name the value
+                                config.toml holds; it cannot be picked. */}
+                            {selectedDraft.codexApprovalPolicy ===
+                            CODEX_RETIRED_APPROVAL_POLICY ? (
+                              <SelectItem
+                                value={CODEX_RETIRED_APPROVAL_POLICY}
+                                disabled
+                              >
+                                {t("codex.approvalPolicy_untrusted")}
+                              </SelectItem>
+                            ) : null}
                           </SelectContent>
                         </Select>
-                        {/* `untrusted` has no equivalent in codex-acp's three
-                            approval presets, so an ACP session cannot honor it
-                            (#442). Say so where the user picks it, rather than
-                            letting it look effective. */}
-                        {selectedDraft.codexApprovalPolicy === "untrusted" ? (
-                          <p className="text-3xs text-yellow-500">
-                            {t("codex.approvalPolicyUntrustedAcpWarning")}
+                        {/* codex refuses to load a config carrying
+                            `untrusted`, so with it in config.toml no Codex
+                            session starts, here or in the Codex CLI. */}
+                        {selectedDraft.codexApprovalPolicy ===
+                        CODEX_RETIRED_APPROVAL_POLICY ? (
+                          <p className="text-3xs text-destructive">
+                            {t("codex.approvalPolicyUntrustedRetired")}
                           </p>
                         ) : null}
                       </div>

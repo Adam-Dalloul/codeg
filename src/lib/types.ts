@@ -3957,9 +3957,11 @@ export interface AcpAgentInfo {
  * turn from the composer's mode preset. Without them a user on
  * "Agent (full access)" still gets a workspace-write sandbox inside /goal. */
 export interface CodexSandboxSettings {
-  /** untrusted | on-request | never. The legacy `on-failure` spelling is a
-   * serde alias of on-request upstream and is normalized on read. Null when
-   * absent or when the granular table form is in use. */
+  /** on-request | never, or the retired `untrusted` (read so the panel can say
+   * it has to go: codex refuses to load a config carrying it; never written).
+   * The legacy `on-failure` spelling is a serde alias of on-request upstream
+   * and is normalized on read. Null when absent or when the granular table
+   * form is in use. */
   approval_policy: string | null
   /** approval_policy = { granular = { … } } — mutually exclusive with the
    * string form (the upstream enum is externally tagged). */
