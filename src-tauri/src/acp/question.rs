@@ -701,6 +701,110 @@ pub fn is_codeg_ask_tool_name(name: &str) -> bool {
     crate::acp::delegation::is_codeg_mcp_tool(name, "ask_user_question")
 }
 
+/// The id prefix antigravity-acp gives the synthetic tool call of one of its
+/// own questions: `server.py::_ask_user_handler` mints
+/// `interaction_<8 hex>` for each question it asks (the model's `ask_question`,
+/// asked one question at a time, and the workspace-trust prompt alike). It is
+/// the only producer of that prefix in 1.4.1.
+pub const ANTIGRAVITY_INTERACTION_ID_PREFIX: &str = "interaction_";
+
+/// True when `id` has the shape of an antigravity-acp question's tool call id
+/// (see [`ANTIGRAVITY_INTERACTION_ID_PREFIX`]). The prefix alone says nothing
+/// about the agent, so callers must also check that the connection is
+/// Antigravity's.
+pub fn is_antigravity_interaction_id(id: &str) -> bool {
+    id.strip_prefix(ANTIGRAVITY_INTERACTION_ID_PREFIX)
+        .is_some_and(|rest| !rest.is_empty())
+}
+
+/// Antigravity 原生交互通过权限选项承载答案，保留文字到 optionId 的映射。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AntigravityAsk {
+    pub spec: QuestionSpec,
+    pub option_ids: Vec<(String, String)>,
+}
+
+/// 识别 antigravity-acp 1.4.1 的交互请求，而非模型调用 ask_question 的参数。
+/// 实测 title 是问题正文、rawInput 为空，选项位于请求外层。
+/// 调用方还必须校验 AgentType::Antigravity，避免接管其他代理的权限请求。
+pub fn parse_antigravity_ask(
+    tool_call: &Value,
+    options: &[(String, String)],
+) -> Option<AntigravityAsk> {
+    let id = tool_call.get("toolCallId")?.as_str()?;
+    if !is_antigravity_interaction_id(id) || !(MIN_OPTIONS..=MAX_OPTIONS).contains(&options.len()) {
+        return None;
+    }
+    if let Some(kind) = tool_call.get("kind").and_then(Value::as_str) {
+        if kind != "other" {
+            return None;
+        }
+    }
+    if let Some(status) = tool_call.get("status").and_then(Value::as_str) {
+        if status != "pending" {
+            return None;
+        }
+    }
+    if let Some(raw_input) = tool_call.get("rawInput") {
+        let is_empty_or_null = raw_input.is_null()
+            || raw_input.as_object().is_some_and(serde_json::Map::is_empty);
+        if !is_empty_or_null {
+            return None;
+        }
+    }
+    let question = tool_call.get("title")?.as_str()?.trim();
+    if question.is_empty() || question.chars().count() > MAX_QUESTION_TEXT_CHARS {
+        return None;
+    }
+    let mut choices = Vec::with_capacity(options.len());
+    let mut option_ids = Vec::with_capacity(options.len());
+    let mut labels = std::collections::HashSet::new();
+    let mut ids = std::collections::HashSet::new();
+    for (id, name) in options {
+        let label = name.trim();
+        if id.trim().is_empty()
+            || label.is_empty()
+            || label.chars().count() > MAX_QUESTION_TEXT_CHARS
+            || !labels.insert(label)
+            || !ids.insert(id)
+        {
+            return None;
+        }
+        choices.push(QuestionOption {
+            label: label.to_string(),
+            description: String::new(),
+        });
+        option_ids.push((label.to_string(), id.clone()));
+    }
+    Some(AntigravityAsk {
+        spec: QuestionSpec {
+            id: uuid::Uuid::new_v4().to_string(),
+            question: question.to_string(),
+            header: synthesize_header(question),
+            // ACP 权限响应只接受一个 optionId，原生代理逐题发送交互请求。
+            multi_select: false,
+            options: choices,
+            is_secret: false,
+        },
+        option_ids,
+    })
+}
+
+/// 只回传本题的一个原生选项；取消或无法表达的自由文本不伪装为首项。
+pub fn antigravity_option_id(outcome: &QuestionOutcome, ask: &AntigravityAsk) -> Option<String> {
+    if outcome.declined || outcome.answers.len() != 1 {
+        return None;
+    }
+    let answer = &outcome.answers[0];
+    if answer.question != ask.spec.question || answer.selected.len() != 1 {
+        return None;
+    }
+    ask.option_ids
+        .iter()
+        .find(|(label, _)| label == &answer.selected[0])
+        .map(|(_, id)| id.clone())
+}
+
 /// Serialize a resolved [`QuestionOutcome`] into grok's `AskUserQuestionExtResponse`
 /// — the reply to a `_x.ai/ask_user_question` ext request. Verified against grok
 /// 0.2.101 on a real run: the response is internally tagged by `outcome`; the
@@ -3614,5 +3718,96 @@ mod tests {
         let output = grok_result_card_output(&outcome);
         assert_eq!(input["questions"][0]["question"], output["answers"][0]["question"]);
         assert_eq!(output["answers"][0]["header"], "");
+    }
+    fn antigravity_interaction() -> Value {
+        json!({
+            "toolCallId": "interaction_396e46cc",
+            "status": "pending",
+            "title": "关于接下来的开发工作，您希望优先聚焦于哪个核心方向？",
+            "rawInput": {},
+            "kind": "other"
+        })
+    }
+
+    fn antigravity_choices() -> Vec<(String, String)> {
+        vec![
+            ("opaque-first".into(), "后端开发".into()),
+            ("opaque-second".into(), "前端开发".into()),
+        ]
+    }
+
+    #[test]
+    fn antigravity_live_interaction_is_recognized() {
+        let ask = parse_antigravity_ask(&antigravity_interaction(), &antigravity_choices())
+            .expect("实测交互格式应转换为问题卡片");
+        assert_eq!(ask.spec.options[1].label, "前端开发");
+        assert!(!ask.spec.multi_select);
+        assert_eq!(ask.option_ids[1].1, "opaque-second");
+
+        let mut no_kind = antigravity_interaction();
+        no_kind.as_object_mut().unwrap().remove("kind");
+        let ask_no_kind = parse_antigravity_ask(&no_kind, &antigravity_choices())
+            .expect("实测 antigravity-acp 1.4.1 省略 kind 字段亦应正确识别为问题卡片");
+        assert_eq!(ask_no_kind.spec.options[1].label, "前端开发");
+    }
+
+    #[test]
+    fn antigravity_answer_preserves_second_option_and_decline() {
+        let ask =
+            parse_antigravity_ask(&antigravity_interaction(), &antigravity_choices()).unwrap();
+        let mut outcome = QuestionOutcome {
+            answers: vec![QuestionAnsweredItem {
+                question: ask.spec.question.clone(),
+                header: ask.spec.header.clone(),
+                multi_select: false,
+                selected: vec!["前端开发".into()],
+            }],
+            declined: false,
+        };
+        assert_eq!(
+            antigravity_option_id(&outcome, &ask).as_deref(),
+            Some("opaque-second")
+        );
+        outcome.declined = true;
+        assert_eq!(antigravity_option_id(&outcome, &ask), None);
+        outcome.declined = false;
+        outcome.answers[0].selected = vec!["自由文本".into()];
+        assert_eq!(antigravity_option_id(&outcome, &ask), None);
+        outcome.answers[0].selected = vec!["后端开发".into(), "前端开发".into()];
+        assert_eq!(antigravity_option_id(&outcome, &ask), None);
+        outcome.answers.clear();
+        assert_eq!(antigravity_option_id(&outcome, &ask), None);
+    }
+
+    #[test]
+    fn antigravity_parser_preserves_ordinary_permissions_and_invalid_choices() {
+        for (field, value) in [
+            ("toolCallId", json!("tool-1")),
+            ("toolCallId", json!("interaction_")),
+            ("title", json!(" ")),
+            ("kind", json!("execute")),
+            ("status", json!("completed")),
+            ("rawInput", json!({"command":"cargo build"})),
+        ] {
+            let mut call = antigravity_interaction();
+            call[field] = value;
+            assert!(
+                parse_antigravity_ask(&call, &antigravity_choices()).is_none(),
+                "{call}"
+            );
+        }
+        for choices in [
+            vec![],
+            vec![("1".into(), "仅一项".into())],
+            vec![("1".into(), "重复".into()), ("2".into(), "重复".into())],
+            vec![("1".into(), "A".into()), ("1".into(), "B".into())],
+            vec![("".into(), "A".into()), ("2".into(), "B".into())],
+            vec![("1".into(), " ".into()), ("2".into(), "B".into())],
+            (0..5)
+                .map(|i| (i.to_string(), format!("选项{i}")))
+                .collect(),
+        ] {
+            assert!(parse_antigravity_ask(&antigravity_interaction(), &choices).is_none());
+        }
     }
 }

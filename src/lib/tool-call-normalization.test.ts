@@ -638,6 +638,23 @@ describe("normalizeToolName collapses ask_user_question across hosts", () => {
   })
 })
 
+describe("normalizeToolName maps Antigravity's native ask_question", () => {
+  it("collapses the bare name its history parser keeps", () => {
+    expect(normalizeToolName("ask_question")).toBe("question")
+  })
+
+  // A host-prefixed `ask_question` is a third-party MCP tool — DeepWiki's takes
+  // `{repoName, question}` — which the question card cannot render.
+  it.each([
+    "mcp__deepwiki__ask_question",
+    "deepwiki/ask_question",
+    "deepwiki_ask_question",
+    "deepwiki: ask_question",
+  ])("leaves %s to its own card", (input) => {
+    expect(normalizeToolName(input)).not.toBe("question")
+  })
+})
+
 describe("normalizeToolName collapses check_user_feedback across hosts", () => {
   it.each([
     "check_user_feedback",
