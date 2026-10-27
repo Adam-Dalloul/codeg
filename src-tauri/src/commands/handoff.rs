@@ -615,7 +615,7 @@ async fn rollback(
 ) -> Result<(), AppCommandError> {
     if let Some(transfer) = transfer {
         manager
-            .wait_for_account_session_writers(target.unwrap(), sid)
+            .wait_for_account_session_writers(target.unwrap(), sid, None)
             .await
             .map_err(failure)?;
         transfer.rollback().map_err(failure)?;

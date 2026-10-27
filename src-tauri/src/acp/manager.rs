@@ -420,12 +420,14 @@ impl DrainingChild {
 
     /// Whether this child may still be writing native session `sid` stored
     /// under `root`.
-    fn may_write(&self, root: &std::path::Path, sid: &str) -> bool {
+    fn may_write(&self, root: &std::path::Path, sid: &str, conversation_id: Option<i32>) -> bool {
         let Some((family, child_root, session)) = &self.session_identity else {
             return false;
         };
         *family == AgentType::ClaudeCode
-            && (session == sid || self.session_aliases.contains(sid) || matches!(self.agent, AgentType::Custom(_)))
+            && (session == sid || self.session_aliases.contains(sid)
+                || conversation_id.is_some_and(|id| self.conversation_id == Some(id))
+                || matches!(self.agent, AgentType::Custom(_)))
             && same_storage_root(child_root, root)
             && (self.pid.load(std::sync::atomic::Ordering::SeqCst) != 0 || self.spawn_pending)
     }
@@ -3172,7 +3174,7 @@ impl ConnectionManager {
         // the map but its process may still be appending to the transcript
         // that is about to be copied (source) or replaced (target).
         for root in [source, target] {
-            self.wait_for_account_session_writers(root, sid).await?;
+            self.wait_for_account_session_writers(root, sid, Some(conversation_id)).await?;
         }
         Ok(guards)
     }
@@ -3221,10 +3223,11 @@ impl ConnectionManager {
         &self,
         root: &std::path::Path,
         sid: &str,
+        conversation_id: Option<i32>,
     ) -> Result<(), AcpError> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         loop {
-            if !self.account_session_has_writer(root, sid).await {
+            if !self.account_session_has_writer(root, sid, conversation_id).await {
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {
@@ -3236,12 +3239,14 @@ impl ConnectionManager {
         }
     }
 
-    async fn account_session_has_writer(&self, root: &std::path::Path, sid: &str) -> bool {
+    async fn account_session_has_writer(&self, root: &std::path::Path, sid: &str, conversation_id: Option<i32>) -> bool {
         // Same order as `park_draining`'s callers: connections, then draining.
         let connections = self.connections.lock().await;
         for connection in connections.values() {
             let state = connection.state.read().await;
-            if !state.names_native_session(sid) && !matches!(state.agent_type, AgentType::Custom(_))
+            if !state.names_native_session(sid)
+                && !conversation_id.is_some_and(|id| state.conversation_id == Some(id))
+                && !matches!(state.agent_type, AgentType::Custom(_))
             {
                 continue;
             }
@@ -3253,7 +3258,7 @@ impl ConnectionManager {
         }
         let mut draining = self.draining.lock().await;
         prune_reaped(&mut draining);
-        draining.iter().any(|child| child.may_write(root, sid))
+        draining.iter().any(|child| child.may_write(root, sid, conversation_id))
     }
 
     /// Remember a connection's child until it is provably finished. Call while
@@ -9308,8 +9313,8 @@ mod tests {
         let error = mgr.quiesce_account_session(&barrier, source.path(), target.path(), "native-file-id", 1).await.unwrap_err();
         assert!(error.to_string().contains("custom-agent sessions"));
         assert!(matches!(commands.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
-        assert!(mgr.account_session_has_writer(source.path(), "native-file-id").await);
-        assert!(!mgr.account_session_has_writer(target.path(), "native-file-id").await);
+        assert!(mgr.account_session_has_writer(source.path(), "native-file-id", None).await);
+        assert!(!mgr.account_session_has_writer(target.path(), "native-file-id", None).await);
     }
 
     /// A connection whose task ends on its own (the agent failed to load, or
@@ -9342,10 +9347,10 @@ mod tests {
         );
         assert!(mgr.list_connections().await.is_empty());
         assert_eq!(mgr.live_or_draining_agent_names().await, vec!["Claude Code".to_string()]);
-        assert!(mgr.account_session_has_writer(root.path(), "sid").await);
-        assert!(mgr.account_session_has_writer(root.path(), "private-sid").await);
-        assert!(!mgr.account_session_has_writer(other.path(), "sid").await);
-        assert!(!mgr.account_session_has_writer(root.path(), "another").await);
+        assert!(mgr.account_session_has_writer(root.path(), "sid", None).await);
+        assert!(mgr.account_session_has_writer(root.path(), "private-sid", None).await);
+        assert!(!mgr.account_session_has_writer(other.path(), "sid", None).await);
+        assert!(!mgr.account_session_has_writer(root.path(), "another", None).await);
 
         let reaper = tokio::spawn({
             let pid = pid.clone();
@@ -9354,11 +9359,43 @@ mod tests {
                 pid.store(0, SeqCst);
             }
         });
-        mgr.wait_for_account_session_writers(root.path(), "private-sid").await.unwrap();
+        mgr.wait_for_account_session_writers(root.path(), "private-sid", None).await.unwrap();
         reaper.await.unwrap();
         // Its spawn was over, so a zero pid is a reap, not a spawn in flight:
         // it leaves at once instead of after the grace an explicit teardown gets.
         assert!(mgr.live_or_draining_agent_names().await.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn account_writer_wait_keeps_conversation_identity_when_no_private_alias_was_seen() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let mgr = ConnectionManager::new();
+        let root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        insert_fake_connection(&mgr, "rebound", AgentType::ClaudeCode, None, EventEmitter::Noop).await;
+        {
+            let state = mgr.get_state("rebound").await.unwrap();
+            let mut state = state.write().await;
+            state.storage_identity = Some((AgentType::ClaudeCode, root.path().into()));
+            state.external_id = Some("old-public".into());
+            state.conversation_id = Some(42);
+        }
+        let pid = mgr.connections.lock().await.get("rebound").unwrap().child_pid.clone();
+        pid.store(4242, SeqCst);
+        assert!(mgr.account_session_has_writer(root.path(), "new-private", Some(42)).await);
+        assert!(!mgr.account_session_has_writer(root.path(), "new-private", Some(43)).await);
+        crate::acp::connection::end_connection_task_for_test(
+            mgr.connections.clone(), "rebound", mgr.draining.clone(),
+            tokio::runtime::Handle::current(),
+        );
+        assert!(mgr.list_connections().await.is_empty());
+        assert!(mgr.account_session_has_writer(root.path(), "new-private", Some(42)).await);
+        assert!(!mgr.account_session_has_writer(other.path(), "new-private", Some(42)).await);
+        assert!(tokio::time::timeout(Duration::from_millis(100),
+            mgr.wait_for_account_session_writers(root.path(), "new-private", Some(42)),
+        ).await.is_err());
+        pid.store(0, SeqCst);
+        mgr.wait_for_account_session_writers(root.path(), "new-private", Some(42)).await.unwrap();
     }
 
     /// The guard drops on the connection's own thread after `block_on` has
