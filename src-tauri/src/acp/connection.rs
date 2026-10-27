@@ -184,9 +184,9 @@ pub(crate) fn is_launch_only_key(key: &str) -> bool {
 }
 
 /// `scratch` is the per-launch temp directory from
-/// [`crate::acp::scratch_dir`], or `None` when isolation is off or the
-/// directory could not be created (then the child inherits the ambient temp
-/// dir, exactly as it did before).
+/// [`crate::acp::scratch_dir`], or `None` when isolation is off, is not applied
+/// to this agent on this platform, or the directory could not be created (then
+/// the child inherits the ambient temp dir, exactly as it did before).
 fn merge_agent_env(
     env: &[(&'static str, &'static str)],
     runtime_env: &BTreeMap<String, String>,
@@ -1020,6 +1020,38 @@ fn merge_antigravity_settings(
     Ok((root != before).then_some(root))
 }
 
+/// The env var codex-acp reads a JSON config from, merged into the config of
+/// every thread it starts, resumes or forks.
+const CODEX_CONFIG_ENV: &str = "CODEX_CONFIG";
+
+/// How long codex keeps a thread loaded after its last subscriber leaves, for
+/// codeg's sessions: codex's own default up to 0.163 (see
+/// [`apply_codex_env_policy`]).
+const CODEX_THREAD_UNLOAD_DELAY_SECS: u64 = 60;
+
+/// `current` (the `CODEX_CONFIG` the agent would get) with
+/// `thread_unload_delay_secs` added, or `None` to leave it as it is: when it
+/// already names a delay (the user's choice stands), or is not a JSON object
+/// (codex-acp parses it at startup, so codeg must not turn a value the user
+/// wrote into another one). A missing or blank value starts from `{}`.
+fn codex_config_with_thread_unload_delay(current: Option<&str>) -> Option<String> {
+    let mut config = match current.map(str::trim).filter(|value| !value.is_empty()) {
+        None => serde_json::Map::new(),
+        Some(text) => match serde_json::from_str::<serde_json::Value>(text) {
+            Ok(serde_json::Value::Object(config)) => config,
+            _ => return None,
+        },
+    };
+    if config.contains_key("thread_unload_delay_secs") {
+        return None;
+    }
+    config.insert(
+        "thread_unload_delay_secs".to_string(),
+        CODEX_THREAD_UNLOAD_DELAY_SECS.into(),
+    );
+    Some(serde_json::Value::Object(config).to_string())
+}
+
 /// Codex-only launch policy: force codex-acp's MCP name-conflict de-duplication
 /// OFF. codeg injects its companion server (`codeg-mcp`) over ACP
 /// `session/new.mcpServers`; codex-acp otherwise drops any ACP-passed server
@@ -1029,13 +1061,16 @@ fn merge_antigravity_settings(
 /// feedback / session_info. The late `retain` + `push` makes the override win
 /// over any user `runtime_env` twin, so the injection is guaranteed to survive.
 /// Codex launch env policy. `initial_agent_mode` is the preset resolved from
-/// `~/.codex/config.toml` by `codex_launch_initial_agent_mode` — passed in rather
-/// than read here so this stays pure (and so its tests don't depend on whatever
-/// `~/.codex/config.toml` the developer happens to have).
+/// `~/.codex/config.toml` by `codex_launch_initial_agent_mode`, and
+/// `inherited_codex_config` is codeg's own `CODEX_CONFIG`, which the agent
+/// inherits unless the runtime env sets its own — both passed in rather than
+/// read here so this stays pure (and so its tests don't depend on whatever
+/// `~/.codex/config.toml` or environment the developer happens to have).
 fn apply_codex_env_policy(
     agent_type: AgentType,
     merged: &mut Vec<(String, String)>,
     initial_agent_mode: Option<&str>,
+    inherited_codex_config: Option<&str>,
 ) {
     if agent_type != AgentType::Codex {
         return;
@@ -1043,6 +1078,28 @@ fn apply_codex_env_policy(
     let key = "DISABLE_MCP_CONFIG_FILTERING";
     merged.retain(|(k, _)| k != key);
     merged.push((key.to_string(), "true".to_string()));
+
+    // Keep a closed thread's lock as short as codeg's fork expects. When a
+    // fork closes its parent (`close_forked_parent`), codex holds the parent
+    // until `thread_unload_delay_secs` pass, and only then can the parent's
+    // own row open it again (the `session_busy` banner says so). codex 0.164
+    // raised that default from 60 s to 30 min, so 60 is set here, through the
+    // config codex-acp hands every thread it starts, resumes or forks
+    // (`CODEX_CONFIG`); codex reads the delay per thread from 0.164 on.
+    // Measured on codex-acp 2.3.0: a sibling's `session/load` of the closed
+    // parent still met the lock 65 s after the close without this, and
+    // succeeded with it. Applies to codeg's sessions only, never to the
+    // Codex CLI or app, and merges into a `CODEX_CONFIG` the user set.
+    let current = merged
+        .iter()
+        .rev()
+        .find(|(k, _)| k == CODEX_CONFIG_ENV)
+        .map(|(_, v)| v.as_str())
+        .or(inherited_codex_config);
+    if let Some(config) = codex_config_with_thread_unload_delay(current) {
+        merged.retain(|(k, _)| k != CODEX_CONFIG_ENV);
+        merged.push((CODEX_CONFIG_ENV.to_string(), config));
+    }
 
     // Make `~/.codex/config.toml`'s sandbox/approval choice mean something.
     // codex-acp re-sends its own approvalPolicy + sandboxPolicy every turn from
@@ -1880,6 +1937,7 @@ async fn record_turn_end(
     stop_reason: &str,
     started_at_ms: u64,
     model: Option<String>,
+    usage: Option<&agent_client_protocol::schema::v1::Usage>,
     metrics: Option<&crate::acp::zcode_turn::TurnMetrics>,
 ) {
     let Some(dir) = transcript_dir_for(agent_type) else {
@@ -1890,6 +1948,9 @@ async fn record_turn_end(
         "stopReason": stop_reason,
         "durationMs": now.saturating_sub(started_at_ms),
     });
+    if let Some(usage) = usage.and_then(|usage| serde_json::to_value(usage).ok()) {
+        payload["usage"] = usage;
+    }
     if let Some(metrics) = metrics {
         metrics.apply_to(&mut payload);
     }
@@ -2086,7 +2147,7 @@ async fn build_agent(
     stderr_tail: &Arc<StderrTail>,
     scratch: Option<&Path>,
     account_home: Option<&Path>,
-) -> Result<AcpAgent, AcpError> {
+) -> Result<(AcpAgent, crate::acp::reported_usage::PromptUsageMode), AcpError> {
     // A conversation can outlive the custom-agent definition it was started
     // with (the user deleted it in settings). `get_agent_meta` cannot report
     // that — it is infallible — so it hands back a placeholder with an empty
@@ -2101,6 +2162,10 @@ async fn build_agent(
     }
     let meta = registry::get_agent_meta(agent_type);
     debug_assert_eq!(meta.agent_type, agent_type);
+    let prompt_usage_mode = crate::acp::reported_usage::PromptUsageMode::for_distribution(
+        agent_type,
+        &meta.distribution,
+    );
 
     let agent = match meta.distribution {
         AgentDistribution::Npx { cmd, args, env, .. } => {
@@ -2149,12 +2214,20 @@ async fn build_agent(
             // Resolve the config-derived preset HERE (like Grok's
             // `grok_launch_permission_mode` below) so the policy helper stays a
             // pure function over the env list.
-            let codex_initial_mode = if agent_type == AgentType::Codex {
-                crate::commands::acp::codex_launch_initial_agent_mode(runtime_env)
+            let (codex_initial_mode, inherited_codex_config) = if agent_type == AgentType::Codex {
+                (
+                    crate::commands::acp::codex_launch_initial_agent_mode(runtime_env),
+                    account_home.is_none().then(|| std::env::var(CODEX_CONFIG_ENV).ok()).flatten(),
+                )
             } else {
-                None
+                (None, None)
             };
-            apply_codex_env_policy(agent_type, &mut merged_env, codex_initial_mode.as_deref());
+            apply_codex_env_policy(
+                agent_type,
+                &mut merged_env,
+                codex_initial_mode.as_deref(),
+                inherited_codex_config.as_deref(),
+            );
             // codex-acp 1.0.0 honors APP_SERVER_LOGS as a directory for its
             // adapter-side logs. Surface it only under CODEG_ACP_DEBUG so
             // default runs are unchanged; a directory-creation failure silently
@@ -2591,11 +2664,12 @@ async fn build_agent(
     // alignment (process cwd == session cwd). Guard on an existing directory
     // so a not-yet-created working_dir (e.g. a worktree path) can't make the
     // spawn fail.
-    Ok(if cwd.is_dir() {
+    let agent = if cwd.is_dir() {
         agent.with_current_dir(cwd)
     } else {
         agent
-    })
+    };
+    Ok((agent, prompt_usage_mode))
 }
 
 /// Stack size for the dedicated OS thread that drives each ACP connection's
@@ -2724,10 +2798,11 @@ pub(crate) async fn spawn_agent_connection(
     // exist by the time the child looks: a self-extracting agent binary creates
     // only its own leaf under whatever `TMP` names, so pointing at a directory
     // that is not there yet is a failed launch rather than a graceful fallback.
-    // `None` (isolation off, or the directory could not be created) means the
-    // child inherits the ambient temp dir exactly as it did before.
-    let scratch = crate::acp::scratch_dir::create();
-    let agent = match build_agent(
+    // `None` (isolation off, not applied to this agent on this platform, or the
+    // directory could not be created) means the child inherits the ambient
+    // temp dir exactly as it did before.
+    let scratch = crate::acp::scratch_dir::create(agent_type);
+    let (agent, prompt_usage_mode) = match build_agent(
         agent_type,
         &runtime_env,
         &launch_cwd,
@@ -2747,6 +2822,7 @@ pub(crate) async fn spawn_agent_connection(
             return Err(e);
         }
     };
+    session_state.write().await.prompt_usage_mode = prompt_usage_mode;
     let agent = agent
         .on_spawn({
             let child_pid = Arc::clone(&child_pid);
@@ -3623,8 +3699,10 @@ async fn withdraw_permission(
 /// `session/request_permission`, so a stopped sub-agent or an interrupted tool
 /// withdraws its approval; codex-acp (1.13) wires its prompt's signal into every
 /// approval and elicitation it sends, and that signal aborts when the session
-/// closes or the `session/prompt` request itself is cancelled (a plain
-/// `session/cancel` interrupts the turn without it). claude races the answer
+/// closes or the `session/prompt` request itself is cancelled (up to 2.2.x a
+/// plain `session/cancel` interrupted the turn without it; from 2.3.0 it
+/// withdraws the open requests too, about 2 ms after the cancel, even one
+/// already answered — which finds the card settled and does nothing). claude races the answer
 /// against the abort and moves on; codex keeps waiting for one, so the
 /// `Cancelled` sent here is what releases it. Left up, such a card could only be
 /// answered after the fact — and, the queue being FIFO, every later card would
@@ -8242,6 +8320,23 @@ async fn run_connection(
                         Ok(()) => return Ok(()),
                         Err(responder) => responder,
                     };
+                    // Antigravity / Gemini asks the user a question through native
+                    // `ask_question` / `default_api:ask_question` (#1024). Route it
+                    // to the interactive question card instead of an approval card.
+                    let responder = match try_bridge_antigravity_ask(
+                        &perm_ask_access,
+                        &perm_conn_id,
+                        &state_inner,
+                        &emitter_inner,
+                        &perms,
+                        &req,
+                        responder,
+                    )
+                    .await
+                    {
+                        Ok(()) => return Ok(()),
+                        Err(responder) => responder,
+                    };
                     handle_permission_request(
                         &cx,
                         &state_inner,
@@ -10141,6 +10236,142 @@ async fn try_bridge_pi_select_ask(
             }
         }
     });
+    Ok(())
+}
+
+/// 将 Antigravity 原生 interaction_* 问答接入共享卡片，回传选中的原始 optionId。
+///
+/// antigravity-acp asks each question of the model's `ask_question` (and its
+/// workspace-trust prompt) as one `session/request_permission` whose tool call
+/// is `{toolCallId: "interaction_<hex>", title: <question>, rawInput: {}}` and
+/// whose options are the choices (see
+/// [`crate::acp::question::parse_antigravity_ask`]). The bridge mirrors
+/// [`try_bridge_pi_select_ask`]: the card replaces the approval card, the pick
+/// goes back as the chosen `optionId`, and the answered card is recorded under
+/// the interaction's id, on the placeholder row Antigravity opened for it (see
+/// [`record_antigravity_answer_card`]); Antigravity's closing "Response
+/// received" update for that id is then dropped so it cannot overwrite the
+/// answer.
+///
+/// `Err(responder)` hands the request back for the ordinary permission path:
+/// every other request, an interaction the card cannot show faithfully, the
+/// ask feature switched off, or an ask already pending on the connection.
+// Same `Err` hand-back as `try_auto_allow_codeg_ask`; see its allow note.
+#[allow(clippy::result_large_err)]
+async fn try_bridge_antigravity_ask(
+    access: &Option<(
+        Arc<dyn crate::acp::question::SessionQuestionAccess>,
+        crate::acp::question::QuestionRuntimeConfig,
+    )>,
+    connection_id: &str,
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    perms: &PendingPermissions,
+    req: &RequestPermissionRequest,
+    responder: Responder<RequestPermissionResponse>,
+) -> Result<(), Responder<RequestPermissionResponse>> {
+    let tool_call_id = req.tool_call.tool_call_id.to_string();
+    if !crate::acp::question::is_antigravity_interaction_id(&tool_call_id)
+        || state.read().await.agent_type != AgentType::Antigravity
+    {
+        return Err(responder);
+    }
+    let Some((questions, ask_cfg)) = access else {
+        return Err(responder);
+    };
+    // Same kill switch as the codeg-mcp ask tool and every other native ask
+    // bridge (grok, cursor, codex elicitation, pi): when the feature is off,
+    // the approval card stays the way to answer.
+    if !ask_cfg.is_enabled().await {
+        return Err(responder);
+    }
+
+    let tool_call = serde_json::to_value(&req.tool_call).unwrap_or_default();
+    let options: Vec<_> = req
+        .options
+        .iter()
+        .map(|opt| (opt.option_id.to_string(), opt.name.clone()))
+        .collect();
+    let Some(ask) = crate::acp::question::parse_antigravity_ask(&tool_call, &options) else {
+        tracing::warn!(
+            "[ACP] Antigravity interaction kept on the approval card; the question card \
+             cannot show it faithfully conn={} tool_call_id={} option_count={}",
+            connection_id,
+            tool_call_id,
+            options.len()
+        );
+        return Err(responder);
+    };
+
+    let (abort_tx, abort_rx) = oneshot::channel();
+    perms.lock().await.park_detached(abort_tx);
+
+    let Some(registered) = questions
+        .register_question(connection_id, vec![ask.spec.clone()])
+        .await
+    else {
+        tracing::warn!(
+            "[ACP] Antigravity interaction bridge could not register question conn={} tool_call_id={}",
+            connection_id,
+            tool_call_id
+        );
+        return Err(responder);
+    };
+
+    tracing::info!(
+        "[ACP] Antigravity interaction bridged conn={} tool_call_id={} option_count={}",
+        connection_id,
+        tool_call_id,
+        ask.spec.options.len()
+    );
+
+    let state = Arc::clone(state);
+    let emitter = emitter.clone();
+    let questions = Arc::clone(questions);
+    let connection_id = connection_id.to_string();
+    let question_id = registered.question_id;
+
+    tokio::spawn(async move {
+        let answer = tokio::select! {
+            biased;
+            answered = registered.answer_rx => answered.ok(),
+            _ = abort_rx => None,
+        };
+        match answer {
+            Some(outcome) => {
+                let option_id = crate::acp::question::antigravity_option_id(&outcome, &ask);
+                let recorded = if option_id.is_some() {
+                    outcome
+                } else {
+                    crate::acp::question::QuestionOutcome {
+                        answers: Vec::new(),
+                        declined: true,
+                    }
+                };
+                // Before answering: Antigravity's closing frame for this id
+                // follows the answer and must find the card recorded.
+                record_antigravity_answer_card(&state, &emitter, tool_call_id, &ask.spec, &recorded)
+                    .await;
+
+                let response_outcome = match option_id {
+                    Some(id) => {
+                        RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id))
+                    }
+                    None => RequestPermissionOutcome::Cancelled,
+                };
+                let _ = responder.respond(RequestPermissionResponse::new(response_outcome));
+            }
+            None => {
+                questions
+                    .cancel_question(&connection_id, &question_id)
+                    .await;
+                let _ = responder.respond(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Cancelled,
+                ));
+            }
+        }
+    });
+
     Ok(())
 }
 
@@ -12763,8 +12994,9 @@ async fn handle_fork_or_exit(
     //     opening the sibling row fails with `session_busy`. Closing is
     //     `thread/unsubscribe`, which is also what codex's own TUI does to the
     //     thread it forks from. The app-server then unloads the thread, and
-    //     with it the lock, once it has gone `thread_unload_delay_secs` (60 by
-    //     default) without a subscriber or a running turn.
+    //     with it the lock, once it has gone `thread_unload_delay_secs` (60,
+    //     which codeg sets: codex 0.164 defaults to 30 min, see
+    //     `apply_codex_env_policy`) without a subscriber or a running turn.
     //   * claude-agent-acp runs each session in a CLI process of its own, so
     //     an open parent is one more process per fork, still able to start a
     //     turn by itself (a background task finishing does) where nothing
@@ -12999,8 +13231,8 @@ fn classify_session_load_failure(
     //    creates to keep the pre-fork history hits the lock until the forking
     //    connection lets the parent go. It closes the parent right after the
     //    step that resumes the child (`close_forked_parent`), and the
-    //    app-server unloads it `thread_unload_delay_secs` later (60 by
-    //    default).
+    //    app-server unloads it `thread_unload_delay_secs` later (60, which
+    //    codeg sets for its sessions; codex 0.164's own default is 30 min).
     // codex-acp ≤2.0.x passes codex's raw "thread <id> already has an active
     // writer" through as a -32603 `data.details`; 2.1.0 (#564) answers -32600
     // with `data.reason: "thread_active_writer"`, which
@@ -14100,7 +14332,12 @@ async fn run_conversation_loop(
                 // no boundary (codex-acp turns `turn/started`/`turn/completed`
                 // into nothing), so there such a search holds the next report
                 // once — an under-read, where resetting on Cancel instead would
-                // admit a searched report landing after the cancel.
+                // admit a searched report landing after the cancel. From 2.3.0
+                // a `session_info_update` carrying `_meta.codex.threadStatus`
+                // does mark one, but `active` is re-sent mid-turn whenever its
+                // `activeFlags` change (an approval wait), so resetting on it
+                // would need the idle→active edge tracked — not worth it to
+                // save one held ring reading.
                 cb_state.codex_context_readings.turn_started();
                 cb_state.kiro_calls.clear();
                 // Grok's context ring needs the active model's window paired
@@ -14420,6 +14657,7 @@ async fn run_conversation_loop(
                                         reason_str,
                                         turn_started_at_ms,
                                         current_session_model_id(state).await,
+                                        None,
                                         zcode_turn.metrics(),
                                     )
                                     .await;
@@ -14530,12 +14768,18 @@ async fn run_conversation_loop(
                             // streamed chunks this one is bound-awaited: a
                             // conversation reopened right after a turn must not
                             // miss its tail.
+                            let prompt_usage_mode = state.read().await.prompt_usage_mode;
+                            let model = match prompt_usage_mode.reported_model(response.meta.as_ref()) {
+                                Some(model) => Some(model),
+                                None => current_session_model_id(state).await,
+                            };
                             record_turn_end(
                                 agent_type,
                                 &sid.0,
                                 reason_str,
                                 turn_started_at_ms,
-                                current_session_model_id(state).await,
+                                model,
+                                prompt_usage_mode.select(response.usage.as_ref()),
                                 zcode_turn.metrics(),
                             )
                             .await;
@@ -18551,6 +18795,78 @@ fn grok_meta_marks_ask_user(
             .and_then(|t| t.get("kind"))
             .and_then(|k| k.as_str())
             == Some("ask_user")
+}
+
+/// Whether this `tool_call_update` is Antigravity closing a question whose
+/// answered card the bridge recorded, and so must be dropped. Consumes the
+/// record.
+///
+/// Measured against antigravity-acp 1.4.1: each question opens a `tool_call`
+/// (`interaction_<hex>`, titled with the question, `rawInput: {}`, `pending`),
+/// is asked through `session/request_permission` under the same id, and is
+/// closed by a `tool_call_update` carrying only `status` and a fixed `rawOutput`
+/// ("Response received" / "Interaction cancelled"). The server emits no frame
+/// for the model's `ask_question` call itself.
+///
+/// The opening frame is kept: it is the row the answered card lands on, and the
+/// row an approval card's answer settles. The closing frame is dropped only
+/// after [`record_antigravity_answer_card`], like grok's redundant ask frames
+/// (see [`grok_meta_marks_ask_user`]): both reducers replace a call's output
+/// with any update that carries one, so it would turn the recorded answer into
+/// "no selection" (and a declined card into a failed one). Without a recorded
+/// card (the bridge left the question on the approval card, or a drain
+/// abandoned it) the frame settles the placeholder as usual.
+async fn take_antigravity_answered_close(
+    agent_type: AgentType,
+    state: &Arc<RwLock<SessionState>>,
+    tool_call_id: &str,
+) -> bool {
+    agent_type == AgentType::Antigravity
+        && crate::acp::question::is_antigravity_interaction_id(tool_call_id)
+        && state
+            .write()
+            .await
+            .antigravity_answered_interactions
+            .remove(tool_call_id)
+}
+
+/// Record the answered card for one Antigravity question under the
+/// interaction's own id (the placeholder row Antigravity opened for it), and
+/// mark the id so the closing frame Antigravity sends next cannot overwrite it
+/// (see [`take_antigravity_answered_close`]). Must run before the permission
+/// request is answered: Antigravity sends that frame only afterwards.
+async fn record_antigravity_answer_card(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    tool_call_id: String,
+    spec: &crate::acp::question::QuestionSpec,
+    recorded: &crate::acp::question::QuestionOutcome,
+) {
+    state
+        .write()
+        .await
+        .antigravity_answered_interactions
+        .insert(tool_call_id.clone());
+    emit_with_state(
+        state,
+        emitter,
+        AcpEvent::ToolCall {
+            tool_call_id,
+            title: "ask_user_question".to_string(),
+            kind: "other".to_string(),
+            status: "completed".to_string(),
+            content: None,
+            raw_input: Some(
+                crate::acp::question::grok_result_card_input(std::slice::from_ref(spec))
+                    .to_string(),
+            ),
+            raw_output: Some(crate::acp::question::grok_result_card_output(recorded).to_string()),
+            locations: None,
+            meta: None,
+            images: None,
+        },
+    )
+    .await;
 }
 
 /// The questions of the Qoder `AskUserQuestion` call this opening `tool_call`
@@ -22625,6 +22941,12 @@ async fn emit_conversation_update(
         }
         SessionUpdate::ToolCallUpdate(mut tcu) => {
             let tool_call_id = tcu.tool_call_id.to_string();
+            // The closing "Response received" frame of an Antigravity question
+            // would overwrite the answered card the bridge recorded (see
+            // `take_antigravity_answered_close`).
+            if take_antigravity_answered_close(agent_type, state, &tool_call_id).await {
+                return;
+            }
             // A fork's copy of its own launch result: dropped before the `_meta`
             // ledger reads it, and the real result is taken off the raw SDK
             // stream instead (see `claude_fork_inherited_result`).
@@ -25001,6 +25323,68 @@ mod tests {
         assert_eq!(
             response.agent_info.as_ref().map(|info| info.name.as_str()),
             Some(crate::acp::registry::CLAUDE_AGENT_ACP_PACKAGE)
+        );
+    }
+
+    /// codex-acp 2.3.0's `initialize` answer to codeg's exact
+    /// `clientCapabilities`, recorded live: it adds the unstable
+    /// `sessionCapabilities.systemPrompt` (#653) and `mcpCapabilities.acp`,
+    /// neither of which this schema crate knows, and still answers a v1
+    /// request with `protocolVersion: 1` although it speaks ACP v2 to a v2
+    /// client (#620). A failed parse here would end every Codex connection at
+    /// its handshake.
+    #[test]
+    fn codex_230_initialize_response_parses_past_its_new_capabilities() {
+        let wire = serde_json::json!({
+            "protocolVersion": 1,
+            "agentInfo": {"name": "@agentclientprotocol/codex-acp", "title": "Codex", "version": "2.3.0"},
+            "agentCapabilities": {
+                "auth": {"logout": {}},
+                "providers": {},
+                "loadSession": true,
+                "promptCapabilities": {"embeddedContext": true, "image": true},
+                "sessionCapabilities": {
+                    "resume": {}, "list": {}, "close": {}, "delete": {}, "fork": {},
+                    "additionalDirectories": {}, "subagents": {}, "systemPrompt": {}
+                },
+                "mcpCapabilities": {"acp": false, "http": true, "sse": false},
+                "_meta": {"authStatus": {}}
+            },
+            "authMethods": [
+                {"id": "api-key", "name": "API Key", "description": "Use an API key to authenticate",
+                    "_meta": {"api-key": {"provider": "openai"}}},
+                {"id": "chat-gpt", "name": "ChatGPT", "description": "Use ChatGPT to authenticate"}
+            ],
+            "_meta": {
+                "steering": {"supported": true},
+                "jetbrains": {"air": {
+                    "version": 1,
+                    "goal": {"version": 1, "controlMethod": "_session/goal",
+                        "actions": ["set", "pause", "resume", "clear"]},
+                    "capabilities": ["sessionFailure", "diffPatch", "agentFileChangeReport",
+                        "customInstructions", "nativeSubagentSessions", "asyncTasks",
+                        "recommendedValue", "rawInputRendering", "planContentDelta", "codexHooks"]
+                }}
+            }
+        });
+        let response: agent_client_protocol::schema::v1::InitializeResponse =
+            serde_json::from_value(wire).expect("2.3.0 initialize parses");
+        assert_eq!(response.protocol_version, ProtocolVersion::V1);
+        let caps = &response.agent_capabilities;
+        assert!(caps.load_session);
+        assert!(caps.session_capabilities.resume.is_some());
+        assert!(caps.session_capabilities.close.is_some());
+        assert!(caps.session_capabilities.fork.is_some());
+        assert!(caps.prompt_capabilities.image);
+        assert!(caps.mcp_capabilities.http);
+        assert!(init_advertises_steering(response.meta.as_ref()));
+        assert!(init_advertises_goal(response.meta.as_ref()));
+        assert_eq!(
+            response
+                .agent_info
+                .as_ref()
+                .map(|info| info.version.as_str()),
+            Some("2.3.0")
         );
     }
 
@@ -27856,7 +28240,7 @@ mod tests {
         // Codex gets the flag injected so codex-acp never drops the injected
         // `codeg-mcp` server on a config.toml name collision.
         let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
-        apply_codex_env_policy(AgentType::Codex, &mut env, None);
+        apply_codex_env_policy(AgentType::Codex, &mut env, None, None);
         assert!(env
             .iter()
             .any(|(k, v)| k == "DISABLE_MCP_CONFIG_FILTERING" && v == "true"));
@@ -27866,7 +28250,7 @@ mod tests {
             "DISABLE_MCP_CONFIG_FILTERING".to_string(),
             "false".to_string(),
         )];
-        apply_codex_env_policy(AgentType::Codex, &mut with_twin, None);
+        apply_codex_env_policy(AgentType::Codex, &mut with_twin, None, None);
         let hits: Vec<_> = with_twin
             .iter()
             .filter(|(k, _)| k == "DISABLE_MCP_CONFIG_FILTERING")
@@ -27879,7 +28263,7 @@ mod tests {
     fn codex_env_policy_is_noop_for_other_agents() {
         for agent in [AgentType::Grok, AgentType::ClaudeCode, AgentType::Gemini] {
             let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
-            apply_codex_env_policy(agent, &mut env, Some("read-only"));
+            apply_codex_env_policy(agent, &mut env, Some("read-only"), None);
             assert!(
                 !env.iter().any(|(k, _)| k == "DISABLE_MCP_CONFIG_FILTERING"),
                 "{agent:?} must not receive the codex-only flag"
@@ -27897,7 +28281,7 @@ mod tests {
         // that approvalPolicy every turn, so the user's ~/.codex/config.toml
         // sandbox/approval choice is dead (#442).
         let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
-        apply_codex_env_policy(AgentType::Codex, &mut env, Some("read-only"));
+        apply_codex_env_policy(AgentType::Codex, &mut env, Some("read-only"), None);
         assert!(env
             .iter()
             .any(|(k, v)| k == "INITIAL_AGENT_MODE" && v == "read-only"));
@@ -27905,7 +28289,7 @@ mod tests {
         // Nothing mappable → stay out of the way entirely, leaving codex-acp's
         // own default rather than pinning a preset the user never chose.
         let mut none = vec![("PATH".to_string(), "/usr/bin".to_string())];
-        apply_codex_env_policy(AgentType::Codex, &mut none, None);
+        apply_codex_env_policy(AgentType::Codex, &mut none, None, None);
         assert!(!none.iter().any(|(k, _)| k == "INITIAL_AGENT_MODE"));
     }
 
@@ -27917,7 +28301,7 @@ mod tests {
             "INITIAL_AGENT_MODE".to_string(),
             "agent-full-access".to_string(),
         )];
-        apply_codex_env_policy(AgentType::Codex, &mut env, Some("read-only"));
+        apply_codex_env_policy(AgentType::Codex, &mut env, Some("read-only"), None);
         let hits: Vec<_> = env
             .iter()
             .filter(|(k, _)| k == "INITIAL_AGENT_MODE")
@@ -27927,13 +28311,107 @@ mod tests {
 
         // A blank twin carries no intent, so the config-derived value fills it.
         let mut blank = vec![("INITIAL_AGENT_MODE".to_string(), "  ".to_string())];
-        apply_codex_env_policy(AgentType::Codex, &mut blank, Some("read-only"));
+        apply_codex_env_policy(AgentType::Codex, &mut blank, Some("read-only"), None);
         let hits: Vec<_> = blank
             .iter()
             .filter(|(k, _)| k == "INITIAL_AGENT_MODE")
             .collect();
         assert_eq!(hits.len(), 1, "blank twin replaced, not duplicated");
         assert_eq!(hits[0].1, "read-only");
+    }
+
+    fn codex_config_of(env: &[(String, String)]) -> Vec<serde_json::Value> {
+        env.iter()
+            .filter(|(k, _)| k == "CODEX_CONFIG")
+            .map(|(_, v)| serde_json::from_str(v).expect("CODEX_CONFIG is JSON"))
+            .collect()
+    }
+
+    /// codex 0.164 holds a closed thread for 30 minutes; codeg's fork closes
+    /// its parent and tells the user the parent's row opens about a minute
+    /// later, so every codex launch asks for codex's old 60 s.
+    #[test]
+    fn codex_env_policy_keeps_a_closed_thread_for_a_minute() {
+        let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
+        apply_codex_env_policy(AgentType::Codex, &mut env, None, None);
+        assert_eq!(
+            codex_config_of(&env),
+            vec![serde_json::json!({"thread_unload_delay_secs": 60})]
+        );
+
+        for agent in [AgentType::Grok, AgentType::ClaudeCode, AgentType::OpenCode] {
+            let mut env = vec![("PATH".to_string(), "/usr/bin".to_string())];
+            apply_codex_env_policy(agent, &mut env, None, Some("{}"));
+            assert!(codex_config_of(&env).is_empty(), "{agent:?}");
+        }
+    }
+
+    /// A `CODEX_CONFIG` the user gave codeg (inherited) or the agent (runtime
+    /// env) keeps every key it has; the runtime env's is the one the agent
+    /// would get, so it is the one merged into.
+    #[test]
+    fn codex_env_policy_merges_the_delay_into_the_users_codex_config() {
+        let hooks = r#"{"hooks":{"PreToolUse":[]},"model":"gpt-5.5"}"#;
+        let mut inherited = Vec::new();
+        apply_codex_env_policy(AgentType::Codex, &mut inherited, None, Some(hooks));
+        assert_eq!(
+            codex_config_of(&inherited),
+            vec![serde_json::json!({
+                "hooks": {"PreToolUse": []},
+                "model": "gpt-5.5",
+                "thread_unload_delay_secs": 60,
+            })]
+        );
+
+        let mut runtime = vec![(
+            "CODEX_CONFIG".to_string(),
+            r#"{"model":"gpt-6"}"#.to_string(),
+        )];
+        apply_codex_env_policy(AgentType::Codex, &mut runtime, None, Some(hooks));
+        assert_eq!(
+            codex_config_of(&runtime),
+            vec![serde_json::json!({"model": "gpt-6", "thread_unload_delay_secs": 60})],
+            "the runtime env's value, replaced rather than duplicated"
+        );
+    }
+
+    #[test]
+    fn codex_env_policy_leaves_a_codex_config_it_cannot_extend_alone() {
+        // The user's own delay stands, and a value that is not a JSON object
+        // is not codeg's to rewrite (codex-acp parses it as written).
+        for value in [
+            r#"{"thread_unload_delay_secs":0}"#,
+            "not json",
+            "[1,2]",
+            "42",
+        ] {
+            let mut env = vec![("CODEX_CONFIG".to_string(), value.to_string())];
+            apply_codex_env_policy(AgentType::Codex, &mut env, None, None);
+            let hits: Vec<_> = env.iter().filter(|(k, _)| k == "CODEX_CONFIG").collect();
+            assert_eq!(hits.len(), 1, "{value}");
+            assert_eq!(hits[0].1, value);
+
+            let mut inherited = Vec::new();
+            apply_codex_env_policy(AgentType::Codex, &mut inherited, None, Some(value));
+            assert!(
+                !inherited.iter().any(|(k, _)| k == "CODEX_CONFIG"),
+                "the inherited {value} reaches the agent unchanged"
+            );
+        }
+
+        // An empty runtime value removes the inherited one at launch (the
+        // spawn drops empty variables), so the agent would get none: the delay
+        // alone takes its place. A whitespace-only value, which codex-acp
+        // would fail to parse, is taken the same way.
+        for blank in ["", "  "] {
+            let mut env = vec![("CODEX_CONFIG".to_string(), blank.to_string())];
+            apply_codex_env_policy(AgentType::Codex, &mut env, None, Some(r#"{"model":"x"}"#));
+            assert_eq!(
+                codex_config_of(&env),
+                vec![serde_json::json!({"thread_unload_delay_secs": 60})],
+                "{blank:?}"
+            );
+        }
     }
 
     #[test]
@@ -42487,8 +42965,37 @@ mod tests {
         }
 
         async fn start_for(agent_type: AgentType, turns: Vec<Vec<GrokFrame>>) -> Self {
+            Self::start_with_usages(agent_type, turns, Vec::new()).await
+        }
+
+        async fn start_with_usages(
+            agent_type: AgentType,
+            turns: Vec<Vec<GrokFrame>>,
+            usages: Vec<Option<agent_client_protocol::schema::v1::Usage>>,
+        ) -> Self {
+            let responses = usages
+                .into_iter()
+                .map(|usage| {
+                    let mut response = agent_client_protocol::schema::v1::PromptResponse::new(
+                        StopReason::EndTurn,
+                    );
+                    response.usage = usage;
+                    response
+                })
+                .collect();
+            Self::start_with_responses(agent_type, turns, responses).await
+        }
+
+        /// Each prompt is answered with the next of `responses`, or with a bare
+        /// `end_turn` once they run out.
+        async fn start_with_responses(
+            agent_type: AgentType,
+            turns: Vec<Vec<GrokFrame>>,
+            responses: Vec<agent_client_protocol::schema::v1::PromptResponse>,
+        ) -> Self {
             use agent_client_protocol::schema::v1::PromptResponse;
             let turns = Arc::new(std::sync::Mutex::new(VecDeque::from(turns)));
+            let responses = Arc::new(std::sync::Mutex::new(VecDeque::from(responses)));
             let respond = Arc::new(tokio::sync::Notify::new());
             let agent_respond = Arc::clone(&respond);
             let steer_outcomes = Arc::new(std::sync::Mutex::new(VecDeque::new()));
@@ -42513,13 +43020,18 @@ mod tests {
                                     responder: Responder<PromptResponse>,
                                     cx: ConnectionTo<Client>| {
                             let frames = turns.lock().unwrap().pop_front().unwrap_or_default();
+                            let response = responses
+                                .lock()
+                                .unwrap()
+                                .pop_front()
+                                .unwrap_or_else(|| PromptResponse::new(StopReason::EndTurn));
                             send_grok_frames(&cx, &frames)?;
                             let respond = Arc::clone(&agent_respond);
                             // Off the handler, so a held response doesn't hold
                             // up the agent's other incoming messages.
                             tokio::spawn(async move {
                                 respond.notified().await;
-                                responder.respond(PromptResponse::new(StopReason::EndTurn))
+                                responder.respond(response)
                             });
                             Ok(())
                         },
@@ -42734,6 +43246,148 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn custom_prompt_response_usage_reaches_history_without_counting_context_occupancy() {
+        use crate::parsers::AgentParser as _;
+        let home = tempfile::tempdir().unwrap();
+        let home_str = home.path().to_string_lossy().into_owned();
+        temp_env::async_with_vars([("CODEG_HOME", Some(home_str.as_str()))], async {
+            let agent_type = AgentType::custom("usage-fixture").unwrap();
+            let usage = serde_json::from_value(serde_json::json!({
+                "inputTokens":11,"outputTokens":7,"cachedReadTokens":101,
+                "cachedWriteTokens":17,"thoughtTokens":5,"totalTokens":136
+            })).unwrap();
+            let mut lp = CustomLoop::start_with_usages(agent_type, vec![
+                vec![custom_update(serde_json::json!({"sessionUpdate":"usage_update","used":9000,"size":131072})), custom_text("first")],
+                vec![custom_text("without counters")],
+            ], vec![Some(usage), None]).await;
+            let source = AgentDistribution::Npx {
+                version: "0.97.0",
+                package: "@agentclientprotocol/claude-agent-acp",
+                cmd: "claude-agent-acp",
+                args: &[], env: &[], node_required: None,
+            };
+            lp.state.write().await.prompt_usage_mode =
+                crate::acp::reported_usage::PromptUsageMode::for_distribution(agent_type, &source);
+            lp.run_turn("one", "first").await;
+            let parser = || crate::parsers::acp_native::AcpNativeParser::new_in(
+                agent_type, crate::paths::codeg_acp_transcripts_root(),
+            );
+            let first = parser().get_conversation("s1").unwrap();
+            let usage = first.turns[1].usage.as_ref().unwrap();
+            assert_eq!((usage.input_tokens, usage.output_tokens, usage.cache_read_input_tokens, usage.cache_creation_input_tokens), (11, 7, 101, 17));
+            assert_eq!(first.session_stats.as_ref().unwrap().total_tokens, Some(136));
+            assert_eq!(first.session_stats.as_ref().unwrap().context_window_used_tokens, Some(9000));
+            lp.run_turn("two", "without counters").await;
+            let second = parser().get_conversation("s1").unwrap();
+            assert!(second.turns[3].usage.is_none());
+            assert_eq!(second.session_stats.unwrap().total_tokens, Some(136));
+            lp.shutdown().await;
+        }).await;
+    }
+
+    /// claude-agent-acp's model selector values are aliases (`opus`). A turn
+    /// whose response attributes all of its counters to one model id is named
+    /// by that id; when the response lists several, the selector value stands.
+    #[tokio::test]
+    async fn a_recorded_turn_is_named_by_the_one_model_its_response_reports() {
+        use crate::parsers::AgentParser as _;
+        let home = tempfile::tempdir().unwrap();
+        let home_str = home.path().to_string_lossy().into_owned();
+        temp_env::async_with_vars([("CODEG_HOME", Some(home_str.as_str()))], async {
+            let agent_type = AgentType::custom("model-fixture").unwrap();
+            let response = |models: &[&str]| {
+                let mut response =
+                    agent_client_protocol::schema::v1::PromptResponse::new(StopReason::EndTurn);
+                response.usage = Some(
+                    serde_json::from_value(serde_json::json!({
+                        "inputTokens": 40, "outputTokens": 10, "totalTokens": 50
+                    }))
+                    .unwrap(),
+                );
+                let rows: Vec<_> = models
+                    .iter()
+                    .map(|model| {
+                        serde_json::json!({"model": model, "token_count": {"totalTokens": 50}})
+                    })
+                    .collect();
+                response.meta = Some(
+                    serde_json::from_value(serde_json::json!({"quota": {"model_usage": rows}}))
+                        .unwrap(),
+                );
+                response
+            };
+            let mut lp = CustomLoop::start_with_responses(
+                agent_type,
+                vec![vec![custom_text("first")], vec![custom_text("second")]],
+                vec![
+                    response(&["claude-opus-5-5"]),
+                    response(&["claude-opus-5-5", "claude-haiku-5-5"]),
+                ],
+            )
+            .await;
+            {
+                let mut st = lp.state.write().await;
+                st.prompt_usage_mode =
+                    crate::acp::reported_usage::PromptUsageMode::PerPromptCacheExclusive;
+                st.config_options = Some(vec![SessionConfigOptionInfo {
+                    id: "model".to_string(),
+                    name: "Model".to_string(),
+                    description: None,
+                    category: Some("model".to_string()),
+                    kind: SessionConfigKindInfo::Select(SessionConfigSelectInfo {
+                        current_value: "opus".to_string(),
+                        options: vec![SessionConfigSelectOptionInfo {
+                            value: "opus".to_string(),
+                            name: "Opus".to_string(),
+                            description: None,
+                        }],
+                        groups: Vec::new(),
+                    }),
+                    recommended_value: None,
+                }]);
+            }
+            lp.run_turn("one", "first").await;
+            lp.run_turn("two", "second").await;
+            let detail = crate::parsers::acp_native::AcpNativeParser::new_in(
+                agent_type,
+                crate::paths::codeg_acp_transcripts_root(),
+            )
+            .get_conversation("s1")
+            .unwrap();
+            assert_eq!(detail.turns[1].model.as_deref(), Some("claude-opus-5-5"));
+            assert_eq!(detail.turns[1].usage.as_ref().map(|u| u.input_tokens), Some(40));
+            assert_eq!(detail.turns[3].model.as_deref(), Some("opus"));
+            lp.shutdown().await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn unsupported_prompt_response_usage_is_not_recorded_as_per_turn_spend() {
+        let home = tempfile::tempdir().unwrap();
+        let home_str = home.path().to_string_lossy().into_owned();
+        temp_env::async_with_vars([("CODEG_HOME", Some(home_str.as_str()))], async {
+            for agent_type in [AgentType::CommandCode, AgentType::Trae, AgentType::Custom("unknown-usage")]
+            {
+                let usage = |tokens| serde_json::from_value(serde_json::json!({
+                    "inputTokens":tokens,"outputTokens":0,"cachedReadTokens":100,"totalTokens":tokens,
+                })).unwrap();
+                let mut lp = CustomLoop::start_with_usages(agent_type, vec![
+                    vec![custom_text("first")], vec![custom_text("second")], vec![custom_text("third")],
+                ], vec![Some(usage(1000)), Some(usage(2000)), Some(usage(3000))]).await;
+                lp.run_turn("one", "first").await;
+                lp.run_turn("two", "second").await;
+                lp.run_turn("three", "third").await;
+                let raw = crate::acp_transcript::read_transcript(registry::registry_id_for(agent_type), "s1");
+                let ends: Vec<_> = raw.entries.iter().filter(|e| e.k == crate::acp_transcript::EntryKind::TurnEnd).collect();
+                assert_eq!(ends.len(), 3, "{agent_type}");
+                assert!(ends.iter().all(|e| e.p.get("usage").is_none()), "{agent_type}");
+                lp.shutdown().await;
+            }
+        }).await;
+    }
+
+    #[tokio::test]
     async fn zcode_terminal_metrics_reach_history_once_before_turn_complete() {
         use crate::parsers::AgentParser as _;
         let home = tempfile::tempdir().unwrap();
@@ -42744,7 +43398,7 @@ mod tests {
                 "sessionId":"s1","running":false,"turnMs":ms,
                 "usage":{"inputTokens":input,"outputTokens":350,"cachedReadTokens":900,"cachedWriteTokens":120,"totalTokens":input+1370}
             });
-            let mut lp = CustomLoop::start_for(AgentType::ZCode, vec![
+            let mut lp = CustomLoop::start_with_usages(AgentType::ZCode, vec![
                 vec![start(),
                     custom_update(serde_json::json!({"sessionUpdate":"usage_update","used":9999,"size":131072})),
                     ("_zcode/turnState",end(180,4200)),
@@ -42754,7 +43408,9 @@ mod tests {
                 // A late prior-turn end and idle/replay data have no opening
                 // marker in this prompt, so they cannot seed its metadata.
                 vec![("_zcode/turnState",end(9999,9999)),custom_text("third")],
-            ]).await;
+            ], vec![Some(serde_json::from_value(serde_json::json!({
+                "inputTokens":9999,"outputTokens":1,"totalTokens":10000
+            })).unwrap()), None, None]).await;
             lp.agent_sends(vec![start(),("_zcode/turnState",end(9999,9999)),grok_barrier()]);
             lp.until_barrier().await;
             let parser = || crate::parsers::acp_native::AcpNativeParser::new_in(
@@ -43342,6 +43998,330 @@ mod tests {
             steers[0]["p"],
             serde_json::json!([{"type": "text", "text": "make it blue"}])
         );
+    }
+
+    struct AntigravityTestAnswer {
+        decline: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::acp::question::SessionQuestionAccess for AntigravityTestAnswer {
+        async fn register_question(
+            &self,
+            _connection_id: &str,
+            specs: Vec<crate::acp::question::QuestionSpec>,
+        ) -> Option<crate::acp::question::RegisteredQuestion> {
+            assert_eq!(specs.len(), 1);
+            let q = &specs[0];
+            let (tx, rx) = oneshot::channel();
+            let _ = tx.send(crate::acp::question::QuestionOutcome {
+                declined: self.decline,
+                answers: vec![crate::acp::question::QuestionAnsweredItem {
+                    question: q.question.clone(),
+                    header: q.header.clone(),
+                    multi_select: false,
+                    selected: vec![q.options[1].label.clone()],
+                }],
+            });
+            Some(crate::acp::question::RegisteredQuestion {
+                question_id: q.id.clone(),
+                answer_rx: rx,
+            })
+        }
+        async fn cancel_question(&self, _connection_id: &str, _question_id: &str) {}
+        async fn cancel_questions_by_parent(&self, _connection_id: &str) {}
+    }
+
+    #[tokio::test]
+    async fn antigravity_interaction_round_trip_preserves_choice_and_gates() {
+        use agent_client_protocol::Channel;
+        for (agent_type, enabled, decline, bridged) in [
+            (AgentType::Antigravity, true, false, true),
+            (AgentType::Antigravity, true, true, true),
+            // The ask feature's kill switch keeps the approval card, as it does
+            // for every other native ask bridge.
+            (AgentType::Antigravity, false, false, false),
+            (AgentType::Codex, true, false, false),
+        ] {
+            let (client_end, agent_end) = Channel::duplex();
+            let state = Arc::new(RwLock::new(SessionState::new(
+                "conn-test".into(),
+                agent_type,
+                None,
+                "win".into(),
+                None,
+            )));
+            let config = crate::acp::question::QuestionRuntimeConfig::new();
+            config
+                .set(crate::acp::question::QuestionConfig { enabled })
+                .await;
+            let access: Option<(Arc<dyn crate::acp::question::SessionQuestionAccess>, _)> =
+                Some((Arc::new(AntigravityTestAnswer { decline }), config));
+            let agent = tokio::spawn(Agent.builder().connect_with(
+                agent_end,
+                async move |cx: ConnectionTo<Client>| {
+                    // Two native questions arrive separately on the same connection.
+                    for i in 0..2 {
+                        let mut tool_call_json = serde_json::json!({
+                            "toolCallId": format!("interaction_{i}"),
+                            "title": format!("Question {i}?"),
+                            "status": "pending",
+                            "rawInput": {},
+                        });
+                        if i == 1 {
+                            tool_call_json["kind"] = serde_json::json!("other");
+                        }
+                        let request: RequestPermissionRequest = serde_json::from_value(
+                            serde_json::json!({
+                                "sessionId": "s1",
+                                "toolCall": tool_call_json,
+                                "options": [
+                                    {"optionId": "opaque-first", "name": "Backend", "kind": "allow_once"},
+                                    {"optionId": "opaque-second", "name": "Frontend", "kind": "allow_once"},
+                                ],
+                            })
+                        ).unwrap();
+                        let reply = cx.send_request_to(Client, request).block_task().await?;
+                        if bridged && !decline {
+                            assert!(matches!(reply.outcome,
+                                RequestPermissionOutcome::Selected(ref selected)
+                                    if selected.option_id.to_string() == "opaque-second"));
+                        } else {
+                            assert!(matches!(reply.outcome, RequestPermissionOutcome::Cancelled));
+                        }
+                    }
+                    Ok::<(), agent_client_protocol::Error>(())
+                },
+            ));
+            let client = tokio::spawn({
+                let state = Arc::clone(&state);
+                let perms = PendingPermissions::default();
+                Client
+                    .builder()
+                    .on_receive_request(
+                        async move |req: RequestPermissionRequest,
+                                    responder: Responder<RequestPermissionResponse>,
+                                    _cx: ConnectionTo<Agent>| {
+                            if let Err(responder) = try_bridge_antigravity_ask(
+                                &access,
+                                "conn-test",
+                                &state,
+                                &EventEmitter::Noop,
+                                &perms,
+                                &req,
+                                responder,
+                            )
+                            .await
+                            {
+                                assert!(!bridged, "native interaction unexpectedly fell through");
+                                responder.respond(RequestPermissionResponse::new(
+                                    RequestPermissionOutcome::Cancelled,
+                                ))?;
+                            } else {
+                                assert!(bridged, "ordinary permission unexpectedly bridged");
+                            }
+                            Ok(())
+                        },
+                        on_receive_request!(),
+                    )
+                    .connect_with(client_end, async |_cx: ConnectionTo<Agent>| {
+                        std::future::pending::<Result<(), agent_client_protocol::Error>>().await
+                    })
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), agent)
+                .await
+                .expect("native request must receive its answer")
+                .unwrap()
+                .unwrap();
+            client.abort();
+            let state = state.read().await;
+            let events = state.recent_events_after(0).unwrap_or_default();
+            let cards: Vec<_> = events
+                .iter()
+                .filter_map(|event| match &event.payload {
+                    AcpEvent::ToolCall {
+                        title, raw_output, ..
+                    } if title == "ask_user_question" => Some(raw_output.as_ref().unwrap()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(cards.len(), if bridged { 2 } else { 0 });
+            for card in cards {
+                let output: serde_json::Value = serde_json::from_str(card).unwrap();
+                assert_eq!(output["declined"], decline);
+            }
+        }
+    }
+
+    /// The frames antigravity-acp 1.4.1 sends around one question, recorded on a
+    /// live run, with what the bridge does in between. When the bridge recorded
+    /// an answered (or declined) card, the closing "Response received" update is
+    /// dropped and the card survives (it used to replace the answer and leave the
+    /// card reading "no selection"). Without a recorded card (the question went
+    /// to the approval card, or was abandoned) the closing frame settles the
+    /// placeholder row as before. Another agent's look-alike id is left alone.
+    #[tokio::test]
+    async fn antigravity_interaction_frames_do_not_overwrite_the_bridged_card() {
+        use crate::acp::session_state::{ToolCallOutput, ToolCallStatus};
+        let id = "interaction_6fc001b5";
+        let opening = || -> SessionUpdate {
+            serde_json::from_value(serde_json::json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": id,
+                "title": "Which area first?",
+                "status": "pending",
+                "rawInput": {},
+            }))
+            .expect("1.4.1 opening frame")
+        };
+        let closing = |status: &str, raw_output: &str| -> SessionUpdate {
+            serde_json::from_value(serde_json::json!({
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": id,
+                "status": status,
+                "rawOutput": raw_output,
+            }))
+            .expect("1.4.1 closing frame")
+        };
+        let spec = crate::acp::question::QuestionSpec {
+            id: "q1".into(),
+            question: "Which area first?".into(),
+            header: "Which area".into(),
+            multi_select: false,
+            options: ["(Recommended) Backend API", "Frontend UI"]
+                .into_iter()
+                .map(|label| crate::acp::question::QuestionOption {
+                    label: label.into(),
+                    description: String::new(),
+                })
+                .collect(),
+            is_secret: false,
+        };
+        let answered = crate::acp::question::QuestionOutcome {
+            answers: vec![crate::acp::question::QuestionAnsweredItem {
+                question: spec.question.clone(),
+                header: spec.header.clone(),
+                multi_select: false,
+                selected: vec!["Frontend UI".into()],
+            }],
+            declined: false,
+        };
+        let declined = crate::acp::question::QuestionOutcome {
+            answers: Vec::new(),
+            declined: true,
+        };
+        // (agent, the card the bridge recorded, closing frame, frames for the id
+        // that reach the reducers)
+        for (agent_type, card, (closing_status, closing_output), frames_expected) in [
+            (
+                AgentType::Antigravity,
+                Some(&answered),
+                ("completed", "Response received"),
+                2,
+            ),
+            (
+                AgentType::Antigravity,
+                Some(&declined),
+                ("failed", "Interaction cancelled"),
+                2,
+            ),
+            (
+                AgentType::Antigravity,
+                None,
+                ("failed", "Interaction cancelled"),
+                2,
+            ),
+            (
+                AgentType::Codex,
+                Some(&answered),
+                ("completed", "Response received"),
+                3,
+            ),
+        ] {
+            let state = Arc::new(RwLock::new(SessionState::new(
+                "conn-agy-frames".into(),
+                agent_type,
+                None,
+                "win".into(),
+                None,
+            )));
+            let mut cache = ToolCallOutputCache::default();
+            let mut cb = CodeBuddyLiveState::default();
+            emit_conversation_update(
+                &state,
+                &EventEmitter::Noop,
+                agent_type,
+                opening(),
+                None,
+                &mut cache,
+                &mut cb,
+            )
+            .await;
+            if let Some(outcome) = card {
+                record_antigravity_answer_card(
+                    &state,
+                    &EventEmitter::Noop,
+                    id.into(),
+                    &spec,
+                    outcome,
+                )
+                .await;
+            }
+            emit_conversation_update(
+                &state,
+                &EventEmitter::Noop,
+                agent_type,
+                closing(closing_status, closing_output),
+                None,
+                &mut cache,
+                &mut cb,
+            )
+            .await;
+
+            let guard = state.read().await;
+            let frames = guard
+                .recent_events_after(0)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|event| {
+                    matches!(
+                        &event.payload,
+                        AcpEvent::ToolCall { tool_call_id, .. }
+                            | AcpEvent::ToolCallUpdate { tool_call_id, .. }
+                            if tool_call_id == id
+                    )
+                })
+                .count();
+            let case = format!("{agent_type:?} card={}", card.is_some());
+            assert_eq!(frames, frames_expected, "{case}");
+            let call = guard
+                .active_tool_calls
+                .get(id)
+                .expect("the row is tracked");
+            let output = match call.output.as_ref() {
+                Some(ToolCallOutput::Json { value }) => value.to_string(),
+                Some(ToolCallOutput::Text { content }) => content.clone(),
+                other => panic!("unexpected output {other:?} ({case})"),
+            };
+            match (agent_type, card) {
+                (AgentType::Antigravity, Some(outcome)) => {
+                    let expected = crate::acp::question::grok_result_card_output(outcome);
+                    assert_eq!(output, expected.to_string(), "{case}");
+                    assert_eq!(call.label, "ask_user_question", "{case}");
+                    assert!(matches!(call.status, ToolCallStatus::Completed), "{case}");
+                }
+                (AgentType::Antigravity, None) => {
+                    assert_eq!(call.label, "Which area first?", "{case}");
+                    assert!(matches!(call.status, ToolCallStatus::Failed), "{case}");
+                    assert!(output.contains("Interaction cancelled"), "{output}");
+                }
+                _ => assert!(output.contains("Response received"), "{output}"),
+            }
+            // Each record is consumed by the frame it was waiting for.
+            if agent_type == AgentType::Antigravity {
+                assert!(guard.antigravity_answered_interactions.is_empty(), "{case}");
+            }
+        }
     }
 
     /// Answers every question with its first option the moment it is asked.

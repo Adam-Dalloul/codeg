@@ -1,5 +1,6 @@
 "use client"
 
+import { useFolderTabsStore } from "@/stores/folder-tabs-store"
 import {
   memo,
   useCallback,
@@ -207,6 +208,21 @@ const EMPTY_CHILD_TO_PARENT: ReadonlyMap<number, number> = new Map()
 const EMPTY_CONTAINER_CHILDREN: ReadonlyMap<number, readonly number[]> =
   new Map()
 
+function FolderDisclosureChevron({ expanded }: { expanded: boolean }) {
+  return (
+    <ChevronRight
+      aria-hidden
+      className={cn(
+        "h-3 w-3 shrink-0 text-muted-foreground/60",
+        "transition-[transform,opacity] duration-200 ease-out",
+        "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
+        "[@media(hover:none)]:opacity-100",
+        expanded && "rotate-90"
+      )}
+    />
+  )
+}
+
 const FolderHeader = memo(function FolderHeader({
   folderId,
   folderName,
@@ -348,6 +364,10 @@ const FolderHeader = memo(function FolderHeader({
   // returns a fresh `t` on every parent render, so passing it down would defeat
   // this component's memo and re-render every header on each status event.
   const t = useTranslations("Folder.sidebar")
+  const tabsFollowFolder = useFolderTabsStore((s) => s.enabled)
+  const scopeSelected = useFolderTabsStore(
+    (s) => s.enabled && s.scope === folderId
+  )
   const tTags = useTranslations("ConversationTags")
   const ime = useImeGuard()
   // Only flag a stale default once the live list is known; before fresh,
@@ -408,20 +428,32 @@ const FolderHeader = memo(function FolderHeader({
           >
             <div
               onPointerDown={(e) => onGripPointerDown?.(folderId, e)}
+              // While tabs follow the folder, the folder on screen wears the
+              // selected-row tint the conversation cards use.
+              data-scope-selected={scopeSelected || undefined}
               className={cn(
                 "group flex h-[1.9375rem] w-full items-center",
                 "rounded-full",
                 "transition-colors duration-150",
-                isDragging
-                  ? "cursor-grabbing"
-                  : "cursor-grab hover:bg-[color-mix(in_oklab,var(--sidebar-accent),var(--sidebar-foreground)_2%)]"
+                isDragging ? "cursor-grabbing" : "cursor-grab",
+                scopeSelected
+                  ? "bg-sidebar-primary/8"
+                  : !isDragging &&
+                      "hover:bg-[color-mix(in_oklab,var(--sidebar-accent),var(--sidebar-foreground)_2%)]"
               )}
             >
               <button
                 data-folder-id={folderId}
-                onClick={() => onToggle(folderId)}
+                onClick={() => {
+                  if (tabsFollowFolder) {
+                    useFolderTabsStore.getState().activateScope(folderId)
+                  } else onToggle(folderId)
+                }}
+                aria-current={scopeSelected ? "true" : undefined}
                 title={folderPath}
-                aria-expanded={expanded}
+                // While tabs follow the folder this button selects the folder;
+                // the separate chevron button below is the disclosure control.
+                aria-expanded={tabsFollowFolder ? undefined : expanded}
                 className={cn(
                   "relative flex h-full min-w-0 flex-1 items-center pr-[0.5rem] outline-none",
                   "rounded-full focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
@@ -542,19 +574,27 @@ const FolderHeader = memo(function FolderHeader({
                     row wrapper and focus lands on a child (the toggle button or the
                     sibling ⋯ menu button), so the reveal must react to focus
                     anywhere inside the row. The section header's `group` IS its
-                    button, so it uses `group-focus-visible`. Don't "normalize". */}
-                  <ChevronRight
-                    aria-hidden
-                    className={cn(
-                      "h-3 w-3 shrink-0 text-muted-foreground/60",
-                      "transition-[transform,opacity] duration-200 ease-out",
-                      "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100",
-                      "[@media(hover:none)]:opacity-100",
-                      expanded && "rotate-90"
-                    )}
-                  />
+                    button, so it uses `group-focus-visible`. Don't "normalize".
+                    While tabs follow the folder the row button selects the
+                    folder, so the chevron becomes its own disclosure button
+                    after it. */}
+                  {!tabsFollowFolder && (
+                    <FolderDisclosureChevron expanded={expanded} />
+                  )}
                 </div>
               </button>
+              {tabsFollowFolder && (
+                <button
+                  type="button"
+                  aria-label={t("toggleFolderExpanded")}
+                  aria-expanded={expanded}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={() => onToggle(folderId)}
+                  className="flex size-6 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <FolderDisclosureChevron expanded={expanded} />
+                </button>
+              )}
               <button
                 type="button"
                 onClick={(e) => {

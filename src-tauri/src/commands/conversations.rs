@@ -824,7 +824,7 @@ pub async fn scan_importable_sessions_core(
     )
     .await;
 
-    let mut result = scan_importable_sessions_from_summaries(conn, emitter, chat_channel_manager, summaries).await?;
+    let mut result = scan_importable_sessions_from_summaries(conn, emitter, chat_channel_manager, summaries, &crate::paths::codeg_acp_transcripts_root()).await?;
     for account in crate::db::service::agent_account_service::list_all(conn).await.map_err(AppCommandError::from)? {
         // One unavailable account folder must not hide every other account's
         // sessions, the Default ones included. Importing from that account
@@ -836,7 +836,7 @@ pub async fn scan_importable_sessions_core(
                 continue;
             }
         };
-        let mut additional = scan_importable_account_summaries(conn, emitter, chat_channel_manager, summaries, Some(&account.id)).await?;
+        let mut additional = scan_importable_account_summaries(conn, emitter, chat_channel_manager, summaries, Some(&account.id), &crate::paths::codeg_acp_transcripts_root()).await?;
         result.no_folder_count += additional.no_folder_count;
         result.total_sessions += additional.total_sessions;
         result.importable_count += additional.importable_count;
@@ -859,14 +859,16 @@ pub async fn scan_importable_sessions_core(
 
 /// Reconcile summaries already collected by the filesystem scan. Keeping this
 /// boundary separate makes the DB refresh and notification behavior testable
-/// without reading the developer's real agent session directories.
+/// without reading the developer's real agent session directories — or codeg's
+/// own ACP transcripts, read from `transcripts_root`.
 async fn scan_importable_sessions_from_summaries(
     conn: &sea_orm::DatabaseConnection,
     emitter: &EventEmitter,
     chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
     summaries: Vec<(AgentType, ConversationSummary)>,
+    transcripts_root: &std::path::Path,
 ) -> Result<ScanResult, AppCommandError> {
-    scan_importable_account_summaries(conn, emitter, chat_channel_manager, summaries, None).await
+    scan_importable_account_summaries(conn, emitter, chat_channel_manager, summaries, None, transcripts_root).await
 }
 
 async fn scan_importable_account_summaries(
@@ -875,6 +877,7 @@ async fn scan_importable_account_summaries(
     chat_channel_manager: &crate::chat_channel::manager::ChatChannelManager,
     summaries: Vec<(AgentType, ConversationSummary)>,
     account_id: Option<&str>,
+    transcripts_root: &std::path::Path,
 ) -> Result<ScanResult, AppCommandError> {
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
@@ -914,6 +917,13 @@ async fn scan_importable_account_summaries(
         }
         Err(e) => tracing::warn!("[import] could not check for switched-away session copies: {e}"),
     }
+    // The Claude Code sessions other conversations already count are in codeg
+    // already, and the import skips them (see
+    // `import_service::claude_sessions_counted_in`).
+    let claude = agent_type_db_str(&AgentType::ClaudeCode);
+    for session in import_service::claude_sessions_counted_elsewhere(conn, transcripts_root).await.map_err(AppCommandError::from)? {
+        imported_index.insert((claude.clone(), session), true);
+    }
 
     // Refresh the already-imported rows in place before answering, then
     // broadcast each one so open sidebars re-sort without a refetch. The
@@ -944,15 +954,17 @@ pub async fn scan_importable_sessions(
 
 /// Batch-import the selected sessions, creating (or reopening) each target
 /// folder as needed. Test seam for [`import_selected_sessions_core`]: takes the
-/// scanned summaries as input instead of walking the filesystem.
+/// scanned summaries as input instead of walking the filesystem, and reads
+/// codeg's own ACP transcripts from `transcripts_root`.
 #[cfg(test)]
 pub(crate) async fn import_selected_from_summaries(
     conn: &sea_orm::DatabaseConnection,
     emitter: &EventEmitter,
     summaries: Vec<(AgentType, ConversationSummary)>,
     selections: Vec<SelectedSessionKey>,
+    transcripts_root: &std::path::Path,
 ) -> Result<ImportSelectedResult, AppCommandError> {
-    import_selected_from_account_summaries(conn, emitter, summaries, selections, None).await
+    import_selected_from_account_summaries(conn, emitter, summaries, selections, None, transcripts_root).await
 }
 
 async fn import_selected_from_account_summaries(
@@ -961,6 +973,7 @@ async fn import_selected_from_account_summaries(
     summaries: Vec<(AgentType, ConversationSummary)>,
     selections: Vec<SelectedSessionKey>,
     account_id: Option<&str>,
+    transcripts_root: &std::path::Path,
 ) -> Result<ImportSelectedResult, AppCommandError> {
     const MAX_ERRORS: usize = 10;
 
@@ -1020,6 +1033,10 @@ async fn import_selected_from_account_summaries(
 
     let folder_rows = load_folder_rows(conn).await?;
     let folder_index = index_folder_rows(&folder_rows);
+    let counted_elsewhere =
+        import_service::claude_sessions_counted_elsewhere(conn, transcripts_root)
+            .await
+            .map_err(AppCommandError::from)?;
 
     let mut result = ImportSelectedResult {
         imported: 0,
@@ -1197,6 +1214,7 @@ async fn import_selected_from_account_summaries(
                         &items,
                         import_service::DeletedPolicy::Restore,
                         account_id,
+                        &counted_elsewhere,
                     )
                     .await;
                 result.imported += tally.imported;
@@ -1295,7 +1313,7 @@ pub async fn import_selected_sessions_core(
             }
             None => import_service::collect_local_summaries(&envs, |_, _, _, _| {}).await,
         };
-        let part = import_selected_from_account_summaries(conn, emitter, summaries, selections, account_id.as_deref()).await?;
+        let part = import_selected_from_account_summaries(conn, emitter, summaries, selections, account_id.as_deref(), &crate::paths::codeg_acp_transcripts_root()).await?;
         result.imported += part.imported;
         result.updated += part.updated;
         result.skipped += part.skipped;
@@ -5152,6 +5170,7 @@ mod tests {
             &emitter,
             &chat_channel_manager,
             vec![summary],
+            no_transcripts(),
         )
         .await
         .expect("scan summaries");
@@ -5178,6 +5197,167 @@ mod tests {
             [format!("#{} Codex index title", row.id)],
             "scan-discovered titles must propagate to a bound chat thread"
         );
+    }
+
+    /// A custom agent on `package`, saved the way the add form saves one.
+    fn npx_agent_def(id: &str, package: &str) -> crate::acp::custom_registry::CustomAgentDef {
+        use crate::acp::custom_registry::{
+            CustomAgentDef, CustomAgentSpec, CustomDistributionKind, NpxSpec,
+        };
+        CustomAgentDef {
+            registry_id: id.into(),
+            name: id.into(),
+            description: String::new(),
+            version: String::new(),
+            distribution_kind: CustomDistributionKind::Npx,
+            spec: CustomAgentSpec {
+                npx: Some(NpxSpec {
+                    package: package.into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            icon_url: None,
+            skills_shared_store: false,
+            skills_dir: None,
+            source: Default::default(),
+            version_probe: None,
+            supports_mcp: true,
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn named_account_scan_and_import_keep_custom_usage_deduplicated() {
+        use crate::acp::custom_registry::{hydrate, hydrate_test_guard};
+        use crate::db::service::agent_account_service;
+        use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+        let _guard = hydrate_test_guard();
+        hydrate(&[npx_agent_def("named-counted", "@agentclientprotocol/claude-agent-acp")]);
+        let data = tempfile::tempdir().unwrap();
+        let db = fresh_in_memory_db().await;
+        let cwd = data.path().join("project").to_string_lossy().into_owned();
+        let folder = seed_folder(&db, &cwd).await;
+        let account = agent_account_service::create(&db.conn, data.path(), AgentType::ClaudeCode, "Named", None).await.unwrap();
+        let custom = conversation_service::create(&db.conn, folder, AgentType::custom("named-counted").unwrap(), None, None).await.unwrap();
+        conversation_service::bind_external_id(&db.conn, custom.id, "counted", &[]).await.unwrap();
+        let found = || vec![
+            scan_summary("counted", AgentType::ClaudeCode, Some(&cwd), at(0)),
+            scan_summary("fresh", AgentType::ClaudeCode, Some(&cwd), at(1)),
+        ];
+        let manager = crate::chat_channel::manager::ChatChannelManager::new();
+        let scan = scan_importable_account_summaries(&db.conn, &EventEmitter::Noop, &manager,
+            found(), Some(&account.id), data.path()).await.unwrap();
+        assert_eq!(scan.importable_count, 1);
+        assert_eq!(scan.folders[0].sessions.iter().find(|s| s.external_id == "counted").unwrap().status, ScanSessionStatus::Imported);
+        let key = |sid: &str| {
+            let mut key = key_of(AgentType::ClaudeCode, sid);
+            key.agent_account_id = Some(account.id.clone());
+            key
+        };
+        let imported = import_selected_from_account_summaries(&db.conn, &EventEmitter::Noop,
+            found(), vec![key("counted"), key("fresh")], Some(&account.id), data.path()).await.unwrap();
+        assert_eq!((imported.imported, imported.skipped), (1, 1));
+        let native = conversation::Entity::find()
+            .filter(conversation::Column::AgentType.eq("claude_code"))
+            .all(&db.conn).await.unwrap();
+        assert_eq!(native.len(), 1);
+        assert_eq!(native[0].agent_account_id.as_deref(), Some(account.id.as_str()));
+        assert_eq!(native[0].external_id.as_deref(), Some("fresh"));
+
+        // A deleted native copy remains deleted even when explicitly selected.
+        let duplicate = conversation_service::create_inner(&db.conn, folder, AgentType::ClaudeCode,
+            None, None, None, crate::db::entities::conversation::ConversationKind::Regular,
+            Some(account.id.clone())).await.unwrap();
+        conversation_service::bind_external_id(&db.conn, duplicate.id, "counted", &[]).await.unwrap();
+        conversation_service::soft_delete(&db.conn, duplicate.id).await.unwrap();
+        let restored = import_selected_from_account_summaries(&db.conn, &EventEmitter::Noop,
+            found(), vec![key("counted")], Some(&account.id), data.path()).await.unwrap();
+        assert_eq!((restored.imported, restored.restored, restored.skipped), (0, 0, 1));
+        assert!(conversation::Entity::find_by_id(duplicate.id).one(&db.conn).await.unwrap().unwrap().deleted_at.is_some());
+        hydrate(&[]);
+    }
+
+    /// The import skips a Claude Code session whose usage a custom agent's
+    /// conversation counts, so the picker must not offer it as new.
+    #[tokio::test]
+    // `hydrate` replaces a process-global map; the lock is held throughout.
+    #[allow(clippy::await_holding_lock)]
+    async fn scan_shows_a_claude_session_a_custom_agent_counts_as_imported() {
+        use crate::acp::custom_registry::{hydrate, hydrate_test_guard};
+        let _guard = hydrate_test_guard();
+        hydrate(&[
+            npx_agent_def(
+                "scan-claude-adapter",
+                "@agentclientprotocol/claude-agent-acp",
+            ),
+            npx_agent_def("scan-other-adapter", "@zed-industries/claude-code-acp"),
+        ]);
+        let db = fresh_in_memory_db().await;
+        let cwd = "/tmp/codeg-scan-counted-elsewhere";
+        let folder_id = seed_folder(&db, cwd).await;
+        for (agent, session) in [
+            ("scan-claude-adapter", "counted"),
+            ("scan-other-adapter", "uncounted"),
+            ("scan-claude-adapter", "deleted"),
+            ("scan-claude-adapter", "carried-on"),
+        ] {
+            let agent = AgentType::custom(agent).unwrap();
+            let row = conversation_service::create(&db.conn, folder_id, agent, None, None)
+                .await
+                .expect("create");
+            conversation_service::bind_external_id(&db.conn, row.id, session, &[])
+                .await
+                .expect("bind");
+            if session == "deleted" {
+                conversation_service::soft_delete(&db.conn, row.id)
+                    .await
+                    .expect("soft delete");
+            }
+        }
+        // The adapter could not load `carried-from` again, so its conversation
+        // went on in `carried-on`, whose transcript continues the first one.
+        let transcripts = tempfile::tempdir().expect("transcripts root");
+        let carried = AgentType::custom("scan-claude-adapter").unwrap();
+        let header =
+            crate::acp_transcript::TranscriptHeader::new(&carried.as_wire(), "carried-on", cwd, 0)
+                .continuing("carried-from");
+        crate::acp_transcript::record_header_in(
+            transcripts.path(),
+            crate::acp::registry::registry_id_for(carried),
+            &header,
+        )
+        .await
+        .expect("record header");
+        let (_broadcaster, emitter) = sync_test_emitter();
+
+        let result = scan_importable_sessions_from_summaries(
+            &db.conn,
+            &emitter,
+            &crate::chat_channel::manager::ChatChannelManager::new(),
+            vec![
+                scan_summary("counted", AgentType::ClaudeCode, Some(cwd), at(0)),
+                scan_summary("uncounted", AgentType::ClaudeCode, Some(cwd), at(1)),
+                scan_summary("deleted", AgentType::ClaudeCode, Some(cwd), at(2)),
+                scan_summary("carried-from", AgentType::ClaudeCode, Some(cwd), at(3)),
+            ],
+            transcripts.path(),
+        )
+        .await
+        .expect("scan summaries");
+        hydrate(&[]);
+
+        let by_id: HashMap<&str, ScanSessionStatus> = result.folders[0]
+            .sessions
+            .iter()
+            .map(|s| (s.external_id.as_str(), s.status))
+            .collect();
+        assert_eq!(by_id["counted"], ScanSessionStatus::Imported);
+        assert_eq!(by_id["carried-from"], ScanSessionStatus::Imported);
+        assert_eq!(by_id["uncounted"], ScanSessionStatus::New);
+        // A deleted conversation counts nothing, so the session imports.
+        assert_eq!(by_id["deleted"], ScanSessionStatus::New);
+        assert_eq!(result.importable_count, 2);
     }
 
     /// The channel half of a title notification must not be on the caller's
@@ -5865,6 +6045,13 @@ mod tests {
     // directly against a test broadcaster and assert the emitted JSON.
     // ──────────────────────────────────────────────────────────────────────
 
+    /// The ACP transcripts root for import tests with no transcript to read:
+    /// one is read only for a conversation of a custom agent on the official
+    /// Claude adapter.
+    fn no_transcripts() -> &'static std::path::Path {
+        std::path::Path::new("/nonexistent/codeg-test-acp-transcripts")
+    }
+
     fn sync_test_emitter() -> (
         std::sync::Arc<crate::web::event_bridge::WebEventBroadcaster>,
         EventEmitter,
@@ -6376,12 +6563,12 @@ mod tests {
         let mut key = key_of(AgentType::ClaudeCode, "switched");
         key.agent_account_id = Some(a.id.clone());
 
-        let scan = scan_importable_account_summaries(&db.conn, &EventEmitter::Noop, &manager, found(), Some(&a.id))
+        let scan = scan_importable_account_summaries(&db.conn, &EventEmitter::Noop, &manager, found(), Some(&a.id), &data.path().join("acp-transcripts"))
             .await
             .unwrap();
         assert_eq!(scan.importable_count, 0);
         assert_eq!(scan.folders[0].sessions[0].status, ScanSessionStatus::Imported);
-        let result = import_selected_from_account_summaries(&db.conn, &EventEmitter::Noop, found(), vec![key.clone()], Some(&a.id))
+        let result = import_selected_from_account_summaries(&db.conn, &EventEmitter::Noop, found(), vec![key.clone()], Some(&a.id), &data.path().join("acp-transcripts"))
             .await
             .unwrap();
         assert_eq!((result.imported, result.skipped), (0, 1));
@@ -6389,11 +6576,11 @@ mod tests {
 
         // Continued in A's own CLI, the copy holds turns codeg does not have.
         transcript(&a.home_dir, "first\nmine\n");
-        let scan = scan_importable_account_summaries(&db.conn, &EventEmitter::Noop, &manager, found(), Some(&a.id))
+        let scan = scan_importable_account_summaries(&db.conn, &EventEmitter::Noop, &manager, found(), Some(&a.id), &data.path().join("acp-transcripts"))
             .await
             .unwrap();
         assert_eq!(scan.folders[0].sessions[0].status, ScanSessionStatus::New);
-        let result = import_selected_from_account_summaries(&db.conn, &EventEmitter::Noop, found(), vec![key], Some(&a.id))
+        let result = import_selected_from_account_summaries(&db.conn, &EventEmitter::Noop, found(), vec![key], Some(&a.id), &data.path().join("acp-transcripts"))
             .await
             .unwrap();
         assert_eq!(result.imported, 1);
@@ -6558,6 +6745,7 @@ mod tests {
                 key_of(AgentType::ClaudeCode, "s1"),
                 key_of(AgentType::Codex, "s2"),
             ],
+            no_transcripts(),
         )
         .await
         .expect("batch import");
@@ -6579,6 +6767,57 @@ mod tests {
         let convs = conversation::Entity::find().all(&db.conn).await.unwrap();
         assert_eq!(convs.len(), 2);
         assert!(convs.iter().all(|c| c.folder_id == folder_rows[0].id));
+    }
+
+    /// A Claude Code session whose usage a custom agent's conversation already
+    /// counts stays out even when a request names it.
+    #[tokio::test]
+    // `hydrate` replaces a process-global map; the lock is held throughout.
+    #[allow(clippy::await_holding_lock)]
+    async fn batch_import_skips_a_claude_session_a_custom_agent_counts() {
+        use crate::acp::custom_registry::{hydrate, hydrate_test_guard};
+        use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+        let _guard = hydrate_test_guard();
+        hydrate(&[npx_agent_def(
+            "batch-claude-adapter",
+            "@agentclientprotocol/claude-agent-acp",
+        )]);
+        let db = fresh_in_memory_db().await;
+        let cwd = "/tmp/proj-counted";
+        let folder_id = seed_folder(&db, cwd).await;
+        let agent = AgentType::custom("batch-claude-adapter").unwrap();
+        let row = conversation_service::create(&db.conn, folder_id, agent, None, None)
+            .await
+            .expect("create");
+        conversation_service::bind_external_id(&db.conn, row.id, "counted", &[])
+            .await
+            .expect("bind");
+
+        let result = import_selected_from_summaries(
+            &db.conn,
+            &EventEmitter::Noop,
+            vec![
+                scan_summary("counted", AgentType::ClaudeCode, Some(cwd), at(0)),
+                scan_summary("fresh", AgentType::ClaudeCode, Some(cwd), at(1)),
+            ],
+            vec![
+                key_of(AgentType::ClaudeCode, "counted"),
+                key_of(AgentType::ClaudeCode, "fresh"),
+            ],
+            no_transcripts(),
+        )
+        .await
+        .expect("batch import");
+        hydrate(&[]);
+
+        assert_eq!((result.imported, result.skipped), (1, 1));
+        let claude_rows = conversation::Entity::find()
+            .filter(conversation::Column::AgentType.eq("claude_code"))
+            .all(&db.conn)
+            .await
+            .unwrap();
+        assert_eq!(claude_rows.len(), 1);
+        assert_eq!(claude_rows[0].external_id.as_deref(), Some("fresh"));
     }
 
     // A session whose cwd is a linked git worktree of an open repo belongs
@@ -6605,6 +6844,7 @@ mod tests {
             &EventEmitter::Noop,
             summaries,
             vec![key_of(AgentType::Codex, "s1")],
+            no_transcripts(),
         )
         .await
         .expect("batch import");
@@ -6654,6 +6894,7 @@ mod tests {
                 key_of(AgentType::Codex, "s0"),
                 key_of(AgentType::Codex, "s1"),
             ],
+            no_transcripts(),
         )
         .await
         .expect("batch import");
@@ -6712,6 +6953,7 @@ mod tests {
             &EventEmitter::Noop,
             summaries,
             vec![key_of(AgentType::Codex, "s1")],
+            no_transcripts(),
         )
         .await
         .expect("batch import");
@@ -6761,6 +7003,7 @@ mod tests {
             &EventEmitter::Noop,
             summaries,
             vec![key_of(AgentType::Codex, "s1")],
+            no_transcripts(),
         )
         .await
         .expect("batch import");
@@ -6820,6 +7063,7 @@ mod tests {
             &EventEmitter::Noop,
             summaries,
             vec![key_of(AgentType::Codex, "s1")],
+            no_transcripts(),
         )
         .await
         .expect("batch import");
@@ -6877,6 +7121,7 @@ mod tests {
             &EventEmitter::Noop,
             summaries,
             vec![key_of(AgentType::Codex, "s1")],
+            no_transcripts(),
         )
         .await
         .expect("batch import");
@@ -6922,6 +7167,7 @@ mod tests {
             &EventEmitter::Noop,
             summaries,
             vec![key_of(AgentType::Codex, "s1")],
+            no_transcripts(),
         )
         .await
         .expect("batch import");
@@ -6966,6 +7212,7 @@ mod tests {
             &EventEmitter::Noop,
             summaries,
             vec![key_of(AgentType::Codex, "s1")],
+            no_transcripts(),
         )
         .await
         .expect("batch import");
@@ -7004,6 +7251,7 @@ mod tests {
             &EventEmitter::Noop,
             summaries,
             vec![key_of(AgentType::Codex, "s1")],
+            no_transcripts(),
         )
         .await
         .expect("batch import");
@@ -7036,6 +7284,7 @@ mod tests {
             &EventEmitter::Noop,
             summaries,
             vec![key_of(AgentType::ClaudeCode, "s1")],
+            no_transcripts(),
         )
         .await
         .expect("batch import");
@@ -7083,6 +7332,7 @@ mod tests {
             &EventEmitter::Noop,
             summaries,
             vec![key_of(AgentType::ClaudeCode, "s1")],
+            no_transcripts(),
         )
         .await
         .expect("batch import");
@@ -7119,6 +7369,7 @@ mod tests {
             &EventEmitter::Noop,
             make(),
             vec![key_of(AgentType::ClaudeCode, "s1")],
+            no_transcripts(),
         )
         .await
         .unwrap();
@@ -7132,6 +7383,7 @@ mod tests {
                 key_of(AgentType::ClaudeCode, "s1"),
                 key_of(AgentType::Codex, "does-not-exist"),
             ],
+            no_transcripts(),
         )
         .await
         .unwrap();
@@ -7159,6 +7411,7 @@ mod tests {
             &EventEmitter::Noop,
             make(),
             vec![key_of(AgentType::ClaudeCode, "s1")],
+            no_transcripts(),
         )
         .await
         .unwrap();
@@ -7183,6 +7436,7 @@ mod tests {
             &EventEmitter::Noop,
             make(),
             vec![key_of(AgentType::ClaudeCode, "s1")],
+            no_transcripts(),
         )
         .await
         .unwrap();
@@ -7215,6 +7469,7 @@ mod tests {
             folder_id,
             &items,
             import_service::DeletedPolicy::Skip,
+            &HashSet::new(),
         )
         .await
         .unwrap();
@@ -7236,6 +7491,7 @@ mod tests {
             folder_id,
             &items,
             import_service::DeletedPolicy::Skip,
+            &HashSet::new(),
         )
         .await
         .unwrap();
@@ -7259,6 +7515,7 @@ mod tests {
             &EventEmitter::Noop,
             vec![(agent, child)],
             vec![key_of(AgentType::Hermes, "child")],
+            no_transcripts(),
         )
         .await
         .unwrap();
@@ -7294,6 +7551,7 @@ mod tests {
                 key_of(AgentType::ClaudeCode, "s1"),
                 key_of(AgentType::Codex, "s2"),
             ],
+            no_transcripts(),
         )
         .await
         .unwrap();
@@ -7386,6 +7644,7 @@ mod tests {
                 999_999,
                 &items,
                 import_service::DeletedPolicy::Skip,
+                &HashSet::new(),
             )
             .await;
         assert_eq!(failed, 2, "both rows fail the folder FK and are counted");
@@ -7402,6 +7661,7 @@ mod tests {
                 folder_id,
                 &items,
                 import_service::DeletedPolicy::Skip,
+                &HashSet::new(),
             )
             .await;
         assert_eq!(failed2, 0);
@@ -7426,7 +7686,8 @@ mod tests {
                 &db.conn,
                 999_999,
                 &items,
-                import_service::DeletedPolicy::Skip
+                import_service::DeletedPolicy::Skip,
+                &HashSet::new()
             )
             .await
             .is_err(),

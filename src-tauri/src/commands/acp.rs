@@ -3837,10 +3837,18 @@ fn load_codex_local_config_json() -> Option<String> {
     serde_json::to_string_pretty(&serde_json::Value::Object(merged)).ok()
 }
 
-/// The plain-string `approval_policy` values codex 0.145 accepts.
+/// The plain-string `approval_policy` values codex accepts.
 /// `AskForApproval` also has a `Granular(GranularApprovalConfig)` variant, which
 /// is a TOML *table* rather than a string and is handled separately.
-const CODEX_APPROVAL_POLICIES: &[&str] = &["untrusted", "on-request", "never"];
+const CODEX_APPROVAL_POLICIES: &[&str] = &["on-request", "never"];
+
+/// The string `approval_policy` codex retired: from 0.160 at the latest, a
+/// config.toml carrying it makes codex refuse to load the config at all
+/// ("approval_policy = \"untrusted\" is no longer supported; remove this
+/// setting"), so no Codex session starts — in codeg or in the Codex CLI.
+/// Still READ, so the panel can show the value it found and say it has to go;
+/// never written.
+const CODEX_RETIRED_APPROVAL_POLICY: &str = "untrusted";
 
 /// `SandboxMode` — the complete upstream vocabulary.
 const CODEX_SANDBOX_MODES: &[&str] = &["read-only", "workspace-write", "danger-full-access"];
@@ -3867,7 +3875,9 @@ fn parse_codex_sandbox_settings(raw_toml: &str) -> CodexSandboxSettings {
             "on-failure" => "on-request",
             other => other,
         })
-        .filter(|value| CODEX_APPROVAL_POLICIES.contains(value))
+        .filter(|value| {
+            CODEX_APPROVAL_POLICIES.contains(value) || *value == CODEX_RETIRED_APPROVAL_POLICY
+        })
         .map(str::to_string);
     let granular = approval_item
         .and_then(toml::Value::as_table)
@@ -3992,9 +4002,15 @@ pub(crate) fn apply_codex_sandbox_config(
             (Some(policy), _) => {
                 let policy = policy.trim();
                 if !CODEX_APPROVAL_POLICIES.contains(&policy) {
-                    return Err(AcpError::protocol(format!(
-                        "unsupported codex approval_policy: {policy}"
-                    )));
+                    return Err(AcpError::protocol(
+                        if policy == CODEX_RETIRED_APPROVAL_POLICY {
+                            "codex no longer accepts approval_policy = \"untrusted\": \
+                             it refuses to start with it"
+                                .to_string()
+                        } else {
+                            format!("unsupported codex approval_policy: {policy}")
+                        },
+                    ));
                 }
                 // Assigning a value over an existing `[approval_policy.granular]`
                 // table replaces the whole item, which is what switching away
@@ -4452,8 +4468,10 @@ pub(crate) fn grok_launch_permission_mode(runtime_env: &BTreeMap<String, String>
 /// The loss is inherent to the three presets and is NOT introduced here —
 /// injecting nothing (the previous behavior) yields `agent`, i.e. the same
 /// `on-request` PLUS a widened sandbox. Mapping is therefore strictly better on
-/// the sandbox axis and neutral on the approval axis; the panel discloses the
-/// approval loss to the user rather than pretending it away.
+/// the sandbox axis and neutral on the approval axis. It is also moot on the
+/// codex codeg pins: codex retired `untrusted` and refuses a config carrying it
+/// ([`CODEX_RETIRED_APPROVAL_POLICY`]), so no session starts with it at all,
+/// and the panel says the value has to go rather than describing a fallback.
 ///
 /// **The read-only sandbox, on codex-acp 1.7.0–1.13.x.** No preset carries one
 /// there, and the adapter re-sends the selected preset's `sandboxPolicy` on
@@ -4485,7 +4503,8 @@ fn codex_initial_agent_mode(settings: &CodexSandboxSettings) -> Option<&'static 
         return None;
     }
     // `parse_codex_sandbox_settings` has already folded `on-failure` into
-    // `on-request` and dropped anything outside `CODEX_APPROVAL_POLICIES`.
+    // `on-request` and dropped anything outside `CODEX_APPROVAL_POLICIES` and
+    // the retired `untrusted`.
     let never = settings.approval_policy.as_deref() == Some("never");
     match settings.sandbox_mode.as_deref() {
         // The tightest preset on EVERY adapter generation: a real read-only
@@ -11773,6 +11792,28 @@ mod native_account_launch_tests {
     }
 
     #[tokio::test]
+    async fn native_codex_account_drops_default_json_config_overrides() {
+        use crate::db::service::agent_setting_service::{AgentDefaultInput, AgentSettingsUpdate};
+        let db = crate::db::test_helpers::fresh_in_memory_db().await;
+        let data = tempfile::tempdir().unwrap();
+        let named = data.path().join("named");
+        fs::create_dir_all(&named).unwrap();
+        agent_setting_service::ensure_defaults(&db.conn, &[AgentDefaultInput {
+            agent_type: AgentType::Codex, registry_id: "codex".into(), default_sort_order: 0,
+        }]).await.unwrap();
+        let default_config = r#"{"model_provider":"default-only","thread_unload_delay_secs":900}"#;
+        agent_setting_service::update(&db.conn, AgentType::Codex, AgentSettingsUpdate {
+            enabled: true,
+            env_json: Some(serde_json::json!({"CODEX_CONFIG":default_config}).to_string()),
+            model_provider_id: None,
+        }).await.unwrap();
+        let default_env = build_runtime_env_for_agent(&db, AgentType::Codex, None, data.path(), false, None).await.unwrap();
+        assert_eq!(default_env.get("CODEX_CONFIG").map(String::as_str), Some(default_config));
+        let named_env = build_runtime_env_for_agent(&db, AgentType::Codex, None, data.path(), false, Some(&named)).await.unwrap();
+        assert_eq!(named_env.get("CODEX_CONFIG").map(String::as_str), Some(""));
+    }
+
+    #[tokio::test]
     async fn native_claude_accounts_do_not_inherit_the_default_gateway_picker() {
         use crate::acp::claude_model_picker::{decode, LAUNCH_KEY};
         use crate::db::service::agent_setting_service::{AgentDefaultInput, AgentSettingsUpdate};
@@ -16487,6 +16528,57 @@ mod tests {
     /// the base has it: `None` (the struct default).
     fn set<T>(value: T) -> Option<Option<T>> {
         Some(Some(value))
+    }
+
+    /// codex refuses to load a config.toml holding `approval_policy =
+    /// "untrusted"` (0.160.1 and 0.164.0, measured: "is no longer supported;
+    /// remove this setting"), so no Codex session starts with it. The panel
+    /// still reads it, to show what is there and that it has to go, but codeg
+    /// never writes it; replacing or clearing it works as for any value.
+    #[test]
+    fn the_retired_untrusted_policy_is_read_but_never_written() {
+        let base = "approval_policy = \"untrusted\"\nmodel = \"gpt-5\"\n";
+        assert_eq!(
+            parse_codex_sandbox_settings(base)
+                .approval_policy
+                .as_deref(),
+            Some("untrusted")
+        );
+
+        let refused = apply_codex_sandbox_config(
+            "model = \"gpt-5\"\n",
+            &CodexSandboxStructuredConfig {
+                approval_policy: set("untrusted".into()),
+                ..Default::default()
+            },
+        )
+        .expect_err("codeg must not write a policy codex refuses");
+        assert!(
+            refused.to_string().contains("no longer accepts"),
+            "{refused}"
+        );
+
+        for (patch, want) in [
+            (set("on-request".to_string()), Some("on-request")),
+            (Some(None), None),
+        ] {
+            let merged = apply_codex_sandbox_config(
+                base,
+                &CodexSandboxStructuredConfig {
+                    approval_policy: patch,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!(!merged.contains("untrusted"), "{merged}");
+            assert_eq!(
+                parse_codex_sandbox_settings(&merged)
+                    .approval_policy
+                    .as_deref(),
+                want
+            );
+            assert!(merged.contains("model = \"gpt-5\""));
+        }
     }
 
     #[test]

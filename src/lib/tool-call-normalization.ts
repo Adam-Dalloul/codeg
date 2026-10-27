@@ -160,6 +160,11 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   question: "question",
   ask_user_question: "question",
   askuserquestion: "question",
+  // Google Antigravity's native ask tool, as its history parser names the call.
+  // Bare name only, on purpose: a host-prefixed `*ask_question` is someone
+  // else's MCP tool (DeepWiki's `ask_question` takes `{repoName, question}`),
+  // which the question card cannot render.
+  ask_question: "question",
   // codeg-mcp ask-user-question companion tool (server prefix varies by host;
   // the suffix rule in `normalizeToolName` covers the other separators)
   "mcp__codeg-mcp__ask_user_question": "question",
