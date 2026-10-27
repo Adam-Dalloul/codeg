@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -3289,14 +3289,6 @@ impl<R: PermissionResponder> PermissionQueue<R> {
     /// How many cards are waiting BEHIND the one on screen.
     fn waiting_len(&self) -> usize {
         self.waiting.len()
-    }
-
-    /// The tool calls the unanswered cards (on screen or waiting) are about.
-    fn tool_call_ids(&self) -> impl Iterator<Item = &str> {
-        self.responders
-            .values()
-            .map(|parked| parked.tool_call_id.as_str())
-            .filter(|id| !id.is_empty())
     }
 }
 
@@ -10624,18 +10616,19 @@ async fn handle_elicitation_request(
 ///
 /// Only a single unsettled call whose input equals the request's counts. The
 /// `_start_line` codeg adds to a live edit's input is ignored. A call in
-/// `claimed` (one a card was already raised for) is never a candidate: an agent
-/// asks about a call once, so a second request with the same input is about a
-/// newer call, whose announcement may still be queued behind the earlier one's
-/// completion. `None` (keep the agent's id) when nothing matches, or when two
-/// identical calls are in flight and there is no telling which one is asking.
+/// `matched` (one an earlier card this turn was already matched to) is never a
+/// candidate: an agent asks about a call once, so a second request with the
+/// same input is about a newer call, whose announcement may still be queued
+/// behind the earlier one's completion. `None` (keep the agent's id) when
+/// nothing matches, or when two identical calls are in flight and there is no
+/// telling which one is asking.
 ///
 /// Still a heuristic: two identical calls run in parallel, asked about in the
 /// reverse of their announcement order while only the first is applied, swap
 /// cards. Their rows show the same input, so only the approval chips swap.
 fn minimax_gated_tool_call_id(
     active: &BTreeMap<String, crate::acp::session_state::ToolCallState>,
-    claimed: &HashSet<&str>,
+    matched: &BTreeSet<String>,
     raw_input: Option<&serde_json::Value>,
 ) -> Option<String> {
     use crate::acp::session_state::ToolCallStatus;
@@ -10653,7 +10646,7 @@ fn minimax_gated_tool_call_id(
         matches!(
             call.status,
             ToolCallStatus::Pending | ToolCallStatus::InProgress
-        ) && !claimed.contains(call.id.as_str())
+        ) && !matched.contains(&call.id)
             && call
                 .input
                 .as_ref()
@@ -10672,33 +10665,35 @@ fn minimax_gated_tool_call_id(
 const MINIMAX_GATED_CALL_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// [`minimax_gated_tool_call_id`] against the live session state, waiting up
-/// to [`MINIMAX_GATED_CALL_WAIT`] for the call to be applied. A request with no
-/// `rawInput` (a question MiniMax Code asks through a permission card) gates
-/// no call and does not wait.
+/// to [`MINIMAX_GATED_CALL_WAIT`] for the call to be applied, and recording
+/// the match in `SessionState::permission_matched_calls`. The record outlives
+/// the card: withdrawn, drained or answered, the call was asked about. A
+/// request with no `rawInput` (a question MiniMax Code asks through a
+/// permission card) gates no call and does not wait.
 ///
-/// The claimed calls are the unanswered cards' plus the recorded approvals',
-/// read under the queue lock: `resolve_permission` retires a card and records
-/// its approval under that same lock, so a call is never in neither.
-async fn await_minimax_gated_tool_call_id(
-    perms: &PendingPermissions,
+/// Lookup and record share one write lock, so two requests are never matched
+/// to the same call.
+async fn claim_minimax_gated_tool_call_id(
     state: &Arc<RwLock<SessionState>>,
     raw_input: Option<&serde_json::Value>,
 ) -> Option<String> {
     raw_input?;
     let deadline = tokio::time::Instant::now() + MINIMAX_GATED_CALL_WAIT;
     loop {
-        let gated = {
-            // Queue before state: the lock order `PermissionQueue` documents.
-            let queue = perms.lock().await;
-            let state = state.read().await;
-            let claimed: HashSet<&str> = queue
-                .tool_call_ids()
-                .chain(state.tool_approvals.iter().map(|a| a.tool_call_id.as_str()))
-                .collect();
-            minimax_gated_tool_call_id(&state.active_tool_calls, &claimed, raw_input)
-        };
-        if gated.is_some() || tokio::time::Instant::now() >= deadline {
-            return gated;
+        {
+            let mut state = state.write().await;
+            let gated = minimax_gated_tool_call_id(
+                &state.active_tool_calls,
+                &state.permission_matched_calls,
+                raw_input,
+            );
+            if let Some(id) = gated {
+                state.permission_matched_calls.insert(id.clone());
+                return Some(id);
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return None;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
@@ -10776,8 +10771,7 @@ async fn handle_permission_request(
     // permission id (see `minimax_gated_tool_call_id`).
     if agent_type == AgentType::MiniMaxCode {
         let gated =
-            await_minimax_gated_tool_call_id(perms, state, req.tool_call.fields.raw_input.as_ref())
-                .await;
+            claim_minimax_gated_tool_call_id(state, req.tool_call.fields.raw_input.as_ref()).await;
         if let (Some(id), Some(obj)) = (gated, tool_call_value.as_object_mut()) {
             obj.insert("toolCallId".to_string(), serde_json::Value::String(id));
         }
@@ -24069,10 +24063,11 @@ mod tests {
             "in_progress",
             r#"{"file_path":"/w/b.txt","old_string":"o","new_string":"n","_start_line":4}"#,
         ));
-        let unclaimed = HashSet::new();
+        let unmatched = BTreeSet::new();
+        let call_2_matched = BTreeSet::from(["call_2".to_string()]);
         let gated =
-            |st: &SessionState, claimed: &HashSet<&str>, input: Option<&serde_json::Value>| {
-                minimax_gated_tool_call_id(&st.active_tool_calls, claimed, input)
+            |st: &SessionState, matched: &BTreeSet<String>, input: Option<&serde_json::Value>| {
+                minimax_gated_tool_call_id(&st.active_tool_calls, matched, input)
             };
         let write_input = serde_json::json!({"path": "/w/a.txt", "content": "x\n"});
         let edit_input =
@@ -24081,36 +24076,33 @@ mod tests {
 
         // The settled call with the same input is not the one asking.
         assert_eq!(
-            gated(&st, &unclaimed, Some(&write_input)).as_deref(),
+            gated(&st, &unmatched, Some(&write_input)).as_deref(),
             Some("call_2")
         );
         // The `_start_line` codeg adds to a live edit does not hide it.
         assert_eq!(
-            gated(&st, &unclaimed, Some(&edit_input)).as_deref(),
+            gated(&st, &unmatched, Some(&edit_input)).as_deref(),
             Some("call_3")
         );
         // Nothing in flight with that input, or no input at all: keep the
         // agent's own id.
-        assert_eq!(gated(&st, &unclaimed, Some(&other_input)), None);
-        assert_eq!(gated(&st, &unclaimed, None), None);
-        // A call a card was already raised for is not asked about again.
-        assert_eq!(
-            gated(&st, &HashSet::from(["call_2"]), Some(&write_input)),
-            None
-        );
+        assert_eq!(gated(&st, &unmatched, Some(&other_input)), None);
+        assert_eq!(gated(&st, &unmatched, None), None);
+        // A call an earlier card was matched to is not asked about again.
+        assert_eq!(gated(&st, &call_2_matched, Some(&write_input)), None);
         // Two identical calls in flight: no telling which one is asking,
         // unless one of them already had its card.
         st.apply_event(&minimax_tool_call("call_4", "in_progress", write));
-        assert_eq!(gated(&st, &unclaimed, Some(&write_input)), None);
+        assert_eq!(gated(&st, &unmatched, Some(&write_input)), None);
         assert_eq!(
-            gated(&st, &HashSet::from(["call_2"]), Some(&write_input)).as_deref(),
+            gated(&st, &call_2_matched, Some(&write_input)).as_deref(),
             Some("call_4")
         );
     }
 
     /// The request can get here before the turn loop has applied the update
     /// that announces the call it gates; the lookup waits for that call (even
-    /// past an earlier, already-asked-about call with the same input that still
+    /// past an earlier, already-matched call with the same input that still
     /// reads as in progress), and gives up, keeping the agent's id, when none
     /// ever shows up.
     #[tokio::test(start_paused = true)]
@@ -24122,7 +24114,6 @@ mod tests {
             "win".to_string(),
             None,
         )));
-        let perms = PendingPermissions::default();
         let raw = r#"{"path":"/outside/w.txt","content":"x\n"}"#;
         let input = serde_json::json!({"path": "/outside/w.txt", "content": "x\n"});
         let apply_later = |events: Vec<AcpEvent>| {
@@ -24138,32 +24129,23 @@ mod tests {
 
         let late = apply_later(vec![minimax_tool_call("call_9", "in_progress", raw)]);
         assert_eq!(
-            await_minimax_gated_tool_call_id(&perms, &state, Some(&input))
+            claim_minimax_gated_tool_call_id(&state, Some(&input))
                 .await
                 .as_deref(),
             Some("call_9")
         );
         late.await.unwrap();
 
-        // The same input again, for a newer call: call_9 was asked about and
-        // answered, its completion and the newer call's announcement are both
-        // still queued. call_9 still reads as in progress, but it is not the
-        // one asking.
-        state.write().await.apply_event(&AcpEvent::ToolApproval {
-            approval: ToolApprovalInfo {
-                tool_call_id: "call_9".to_string(),
-                option_kind: "allow_once".to_string(),
-                option_name: "Allow once".to_string(),
-                origin: "user".to_string(),
-                decided_at: chrono::Utc::now(),
-            },
-        });
+        // The same input again, for a newer call. call_9's card may have been
+        // answered, withdrawn or drained, so no approval need be on record; its
+        // completion and the newer call's announcement are both still queued.
+        // call_9 still reads as in progress, but it is not the one asking.
         let late = apply_later(vec![
             minimax_tool_call("call_9", "completed", raw),
             minimax_tool_call("call_10", "in_progress", raw),
         ]);
         assert_eq!(
-            await_minimax_gated_tool_call_id(&perms, &state, Some(&input))
+            claim_minimax_gated_tool_call_id(&state, Some(&input))
                 .await
                 .as_deref(),
             Some("call_10")
@@ -24172,16 +24154,26 @@ mod tests {
 
         let started = tokio::time::Instant::now();
         let other = serde_json::json!({"path": "/elsewhere.txt", "content": "y\n"});
-        let gated = await_minimax_gated_tool_call_id(&perms, &state, Some(&other)).await;
+        let gated = claim_minimax_gated_tool_call_id(&state, Some(&other)).await;
         assert_eq!(gated, None);
         assert!(started.elapsed() >= MINIMAX_GATED_CALL_WAIT);
         // A question asked through a permission card has no input to match.
         let started = tokio::time::Instant::now();
-        assert_eq!(
-            await_minimax_gated_tool_call_id(&perms, &state, None).await,
-            None
-        );
+        assert_eq!(claim_minimax_gated_tool_call_id(&state, None).await, None);
         assert_eq!(started.elapsed(), std::time::Duration::ZERO);
+
+        // The matches are per turn, like the calls they name.
+        let mut guard = state.write().await;
+        assert_eq!(
+            guard.permission_matched_calls,
+            BTreeSet::from(["call_9".to_string(), "call_10".to_string()])
+        );
+        guard.apply_event(&AcpEvent::TurnComplete {
+            session_id: "s1".to_string(),
+            stop_reason: "end_turn".to_string(),
+            agent_type: "minimax_code".to_string(),
+        });
+        assert!(guard.permission_matched_calls.is_empty());
     }
 
     /// The card a MiniMax Code permission request raises, and the approval
