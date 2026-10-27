@@ -1404,7 +1404,7 @@ pub struct DelegationMatchKey {
 /// matching MCP round-trip.
 struct PendingToolCall {
     tool_call_id: String,
-    /// The `(agent_type, task, working_dir)` correlation key parsed from the ACP
+    /// The `(target, account, task, working_dir)` key parsed from the ACP
     /// tool_call's `raw_input`. Matched against the MCP round-trip's own
     /// key so parallel `delegate_to_agent` calls each bind to their own
     /// `tool_call_id` regardless of arrival order — pure arrival-order FIFO
