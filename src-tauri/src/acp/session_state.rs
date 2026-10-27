@@ -297,6 +297,12 @@ pub struct SessionState {
     /// the elicitation handler before it replies, taken by the update that
     /// settles the call; per-turn, like `active_tool_calls`.
     pub qoder_ask_replies: BTreeMap<String, serde_json::Map<String, serde_json::Value>>,
+    /// The tool calls codeg matched a permission card to itself, because the
+    /// agent's request named its own id instead of the call's (MiniMax Code,
+    /// see `connection::minimax_gated_tool_call_id`). An agent asks about a
+    /// call once, so a later request with the same input is about a newer call,
+    /// whatever became of the earlier card. Per-turn, like `active_tool_calls`.
+    pub permission_matched_calls: BTreeSet<String>,
     pub pending_permission: Option<PendingPermissionState>,
 
     /// The agent's in-flight `ask_user_question` (one set of multiple-choice
@@ -923,6 +929,7 @@ impl SessionState {
             live_message: None,
             active_tool_calls: BTreeMap::new(),
             qoder_ask_replies: BTreeMap::new(),
+            permission_matched_calls: BTreeSet::new(),
             pending_permission: None,
             pending_question: None,
             pending_plan_approval: None,
@@ -1445,6 +1452,7 @@ impl SessionState {
                 self.live_message = None;
                 self.active_tool_calls.clear();
                 self.qoder_ask_replies.clear();
+                self.permission_matched_calls.clear();
                 // The turn's user prompt is no longer "in flight" — the
                 // assistant reply is done and the transcript is the source of
                 // truth. Clear it so a post-turn snapshot doesn't carry a stale
@@ -1870,6 +1878,7 @@ impl SessionState {
         self.live_message = None;
         self.active_tool_calls.clear();
         self.qoder_ask_replies.clear();
+        self.permission_matched_calls.clear();
         true
     }
 

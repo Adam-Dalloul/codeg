@@ -31,7 +31,7 @@ the account binding.
 Named accounts are available for Claude Code, Codex, Gemini, OpenCode, Grok,
 Hermes, CodeBuddy, Cline, Kimi Code, Pi, DeepSeek, Qoder and Antigravity. Cursor
 supports named accounts on Windows and Linux; use Default on macOS. Kiro,
-ZCode, TRAE CLI and Command Code do not yet support named accounts. OpenClaw
+ZCode, TRAE CLI, Command Code and MiniMax Code do not yet support named accounts. OpenClaw
 uses its configured gateway's account.
 
 OpenCode and Cursor keep the usual home folder and GitHub CLI configuration.
