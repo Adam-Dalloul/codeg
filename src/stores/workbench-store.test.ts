@@ -290,3 +290,218 @@ describe("Workbench conversation scope", () => {
     set.mockRestore()
   })
 })
+
+describe("Workbench scope repairs", () => {
+  function setFolders(
+    list: Array<{ id: number; parent_id?: number; kind?: string }>
+  ) {
+    const all = list.map(({ id, parent_id = null, kind = "folder" }) => ({
+      id,
+      path: `/repo${id}`,
+      name: `repo${id}`,
+      parent_id,
+      kind,
+    })) as unknown as FolderDetail[]
+    useAppWorkspaceStore.setState({
+      folders: all.filter((f) => f.kind !== "chat"),
+      allFolders: all,
+      foldersHydrated: true,
+    })
+  }
+  // TabProvider re-syncs the active folder after every tab write.
+  function sync() {
+    useTabStore.getState().syncActiveFolderId()
+  }
+
+  it("turning the mode back on keeps the tab the user is on", () => {
+    const a1 = open(1, 11)
+    const a2 = open(1, 12)
+    open(2, 21)
+    useTabStore.getState().switchTab(a1)
+    sync()
+    useWorkbenchStore.getState().setEnabled(true)
+    useWorkbenchStore.getState().activateScope(2)
+    useWorkbenchStore.getState().setEnabled(false)
+    useTabStore.getState().switchTab(a2)
+    sync()
+    useWorkbenchStore.getState().setEnabled(true)
+    expect(useWorkbenchStore.getState().scope).toBe(1)
+    expect(useTabStore.getState().activeTabId).toBe(a2)
+  })
+
+  it("turning the mode on keeps each split group's pick", () => {
+    const a1 = open(1, 11)
+    const a2 = open(1, 12)
+    const a3 = open(1, 13)
+    useTabStore.setState({
+      groupLayout: {
+        type: "split",
+        id: "split",
+        orientation: "horizontal",
+        ratios: [0.5, 0.5],
+        children: [
+          { type: "group", id: "g1" },
+          { type: "group", id: "g2" },
+        ],
+      },
+      groupOf: { [a1]: "g1", [a2]: "g2", [a3]: "g2" },
+      groupSelection: { g1: a1, g2: a3 },
+      activeTabId: a1,
+    })
+    sync()
+    useWorkbenchStore.getState().setEnabled(true)
+    expect(useTabStore.getState().activeTabId).toBe(a1)
+    expect(useTabStore.getState().groupSelection).toEqual({ g1: a1, g2: a3 })
+  })
+
+  it("keeps a chat conversation's hidden chat folder active in the global scope", () => {
+    setFolders([{ id: 1 }, { id: 9, kind: "chat" }])
+    open(1, 11)
+    useWorkbenchStore.getState().setEnabled(true)
+    open(9, 91)
+    sync()
+    expect(useWorkbenchStore.getState().scope).toBe("global")
+    expect(useAppWorkspaceStore.getState().activeFolderId).toBe(9)
+    // Re-selecting the already-active chat changes no tab, so nothing would
+    // re-sync a wrong value: the scope switch itself must not clear it.
+    open(9, 91)
+    expect(useAppWorkspaceStore.getState().activeFolderId).toBe(9)
+    useWorkbenchStore.getState().activateScope(1)
+    expect(useAppWorkspaceStore.getState().activeFolderId).toBe(1)
+  })
+
+  it("an empty scope still owns the folder chrome", () => {
+    open(1, 11)
+    useWorkbenchStore.getState().setEnabled(true)
+    useWorkbenchStore.getState().activateScope(2)
+    expect(useTabStore.getState().activeTabId).toBeNull()
+    expect(useAppWorkspaceStore.getState().activeFolderId).toBe(2)
+  })
+
+  it("closing the active tab focuses its neighbour in the scope", () => {
+    open(1, 11)
+    open(2, 21)
+    const a2 = open(1, 12)
+    open(2, 22)
+    const a3 = open(1, 13)
+    useWorkbenchStore.getState().setEnabled(true)
+    useWorkbenchStore.getState().activateScope(1)
+    useTabStore.getState().switchTab(a3)
+    useTabStore.getState().closeTab(a3)
+    expect(useTabStore.getState().activeTabId).toBe(a2)
+  })
+
+  it("an emptied group falls to the nearest group shown in the scope", () => {
+    const a1 = open(1, 11)
+    const a2 = open(1, 12)
+    const b1 = open(2, 21)
+    const a3 = open(1, 13)
+    useTabStore.setState({
+      groupLayout: {
+        type: "split",
+        id: "split",
+        orientation: "horizontal",
+        ratios: [1 / 3, 1 / 3, 1 / 3],
+        children: [
+          { type: "group", id: "g1" },
+          { type: "group", id: "g2" },
+          { type: "group", id: "g3" },
+        ],
+      },
+      groupOf: { [a1]: "g1", [a2]: "g1", [b1]: "g2", [a3]: "g3" },
+      groupSelection: { g1: a2, g2: b1, g3: a3 },
+      activeTabId: a3,
+    })
+    useWorkbenchStore.getState().setEnabled(true)
+    useWorkbenchStore.getState().activateScope(1)
+    useTabStore.getState().switchTab(a2)
+    useTabStore.getState().switchTab(a3)
+    expect(useTabStore.getState().groupSelection.g1).toBe(a2)
+    useTabStore.getState().closeTab(a3)
+    // g2 sits between, but holds only the other worktree's tab.
+    expect(useTabStore.getState().activeTabId).toBe(a2)
+  })
+
+  it("removing the scoped worktree moves to its parent repo", () => {
+    setFolders([{ id: 1 }, { id: 2 }, { id: 3, parent_id: 1 }])
+    open(2, 21)
+    open(3, 31)
+    useWorkbenchStore.getState().setEnabled(true)
+    useWorkbenchStore.getState().activateScope(3)
+    useTabStore.getState().closeTabsByFolder(3)
+    useAppWorkspaceStore.getState().applyFolderRemove(3)
+    expect(useWorkbenchStore.getState().scope).toBe(1)
+    expect(useAppWorkspaceStore.getState().activeFolderId).toBe(1)
+  })
+
+  it("removing a scoped folder without tabs or parent moves to a remaining tab's scope", () => {
+    setFolders([{ id: 1 }, { id: 2 }, { id: 3 }])
+    const b1 = open(2, 21)
+    useWorkbenchStore.getState().setEnabled(true)
+    useWorkbenchStore.getState().activateScope(3)
+    useAppWorkspaceStore.setState({
+      folders: useAppWorkspaceStore
+        .getState()
+        .folders.filter((folder) => folder.id !== 3),
+    })
+    expect(useWorkbenchStore.getState().scope).toBe(2)
+    expect(useTabStore.getState().activeTabId).toBe(b1)
+  })
+
+  it("falls back to the first open folder when no tab is left", () => {
+    setFolders([{ id: 1 }, { id: 2 }])
+    useWorkbenchStore.getState().setEnabled(true)
+    useWorkbenchStore.getState().activateScope(2)
+    useAppWorkspaceStore.getState().applyFolderRemove(2)
+    expect(useWorkbenchStore.getState().scope).toBe(1)
+  })
+
+  it("inherits the agent of the tab the user is on, not the target scope's", () => {
+    useTabStore.getState().openTab(2, 21, "claude_code", true)
+    useTabStore.getState().openTab(1, 11, "codex", true)
+    useWorkbenchStore.getState().setEnabled(true)
+    useWorkbenchStore.getState().activateScope(1)
+    const draft = useTabStore
+      .getState()
+      .openNewConversationTab(2, "/repo2", { inheritFromActive: true })
+    expect(useWorkbenchStore.getState().scope).toBe(2)
+    expect(draft.agentType).toBe("codex")
+  })
+
+  it("the folder picker moves its own draft, and the scope follows it", async () => {
+    useWorkbenchStore.getState().setEnabled(true)
+    useWorkbenchStore.getState().activateScope(2)
+    const draftB = useTabStore
+      .getState()
+      .openNewConversationTab(2, "/repo2").tabId
+    useWorkbenchStore.getState().activateScope(1)
+    const draftA = useTabStore
+      .getState()
+      .openNewConversationTab(1, "/repo1").tabId
+    expect(draftA).not.toBe(draftB)
+
+    useTabStore.getState().openNewConversationTab(2, "/repo2", {
+      inheritFromActive: true,
+      retargetTabId: draftA,
+    })
+    // Still on screen in its own worktree while the retarget is queued.
+    expect(useWorkbenchStore.getState().scope).toBe(1)
+    expect(useTabStore.getState().activeTabId).toBe(draftA)
+    expect(useTabStore.getState().draftRetargetRequests).toMatchObject([
+      { tabId: draftA, folderId: 2 },
+    ])
+
+    useTabStore.getState().consumeDraftRetargets()
+    await vi.waitFor(() =>
+      expect(
+        useTabStore.getState().rawTabs.find((tab) => tab.id === draftA)
+          ?.folderId
+      ).toBe(2)
+    )
+    expect(useWorkbenchStore.getState().scope).toBe(2)
+    expect(useTabStore.getState().activeTabId).toBe(draftA)
+    expect(
+      useTabStore.getState().rawTabs.some((tab) => tab.id === draftB)
+    ).toBe(true)
+  })
+})

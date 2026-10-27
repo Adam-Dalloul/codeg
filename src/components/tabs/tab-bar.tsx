@@ -15,7 +15,11 @@ import {
   useWorkspaceView,
 } from "@/contexts/workspace-context"
 import { useIsMobile } from "@/hooks/use-mobile"
-import { groupOfTab, useVisibleConversationTabs } from "@/stores/tab-store"
+import {
+  groupOfTab,
+  useVisibleConversationLayout,
+  useVisibleConversationTabs,
+} from "@/stores/tab-store"
 import {
   firstLeafId,
   leafIds,
@@ -109,8 +113,12 @@ export function TabBar({ groupId, maximizeControl = false }: TabBarProps) {
     [toggleGroupTile, stripGroupId]
   )
 
-  // Split-group context-menu wiring, shared by every tab in this strip.
-  const orderedLeaves = useMemo(() => leafIds(groupLayout), [groupLayout])
+  // Split-group context-menu wiring, shared by every tab in this strip. Only
+  // groups shown in this view are split targets: in Workbench mode a group
+  // holding just other worktrees' tabs is not on screen (group assignment
+  // still resolves against the full layout).
+  const visibleLayout = useVisibleConversationLayout()
+  const orderedLeaves = useMemo(() => leafIds(visibleLayout), [visibleLayout])
   const isSplit = orderedLeaves.length > 1
   const canSplitMove = groupTabs.length >= 2
   const moveTargets = useMemo<TabMoveTarget[]>(() => {

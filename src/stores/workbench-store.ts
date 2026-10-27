@@ -83,17 +83,16 @@ export const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
       // Storage is optional (private windows, SSR, quota failures).
     }
   },
+  // The active folder is NOT written here: the tab store's subscriber runs
+  // synchronously inside `set` and syncs it from the scope's restored active
+  // tab (a chat conversation keeps its hidden chat folder), which a write
+  // after `set` would overwrite.
   setEnabled: (enabled) => {
     if (enabled === get().enabled) return
     const scope = enabled
       ? folderScope(useAppWorkspaceStore.getState().activeFolderId)
       : get().scope
     set({ enabled, scope })
-    if (enabled) {
-      useAppWorkspaceStore
-        .getState()
-        .setActiveFolderId(scope === "global" ? null : scope)
-    }
     try {
       localStorage.setItem(preferenceKey(), String(enabled))
     } catch {
@@ -103,9 +102,6 @@ export const useWorkbenchStore = create<WorkbenchState>()((set, get) => ({
   activateScope: (scope) => {
     if (!get().enabled) return
     set({ scope })
-    useAppWorkspaceStore
-      .getState()
-      .setActiveFolderId(scope === "global" ? null : scope)
   },
   addFile: (id, scope, select = true) => {
     const state = get()

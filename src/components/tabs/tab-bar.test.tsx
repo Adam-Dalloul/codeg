@@ -17,6 +17,8 @@ const h = vi.hoisted(() => ({
   toggleConversationMaximized: vi.fn(),
   tabs: [] as TabItemData[],
   groupOf: {} as Record<string, string>,
+  visibleLayout: { type: "group", id: "g-main" } as unknown,
+  groupLayout: { type: "group", id: "g-main" } as unknown,
   toggleGroupTile: vi.fn(),
   allFolders: [] as never[],
   branches: new Map<number, string>(),
@@ -77,6 +79,7 @@ vi.mock("@/stores/tab-store", () => ({
   groupOfTab: (_groups: unknown, _layout: unknown, tabId: string) =>
     h.groupOf[tabId] ?? "g-main",
   useVisibleConversationTabs: () => h.tabs,
+  useVisibleConversationLayout: () => h.visibleLayout,
 }))
 vi.mock("@/contexts/tab-context", () => {
   const store = {
@@ -108,7 +111,7 @@ vi.mock("@/contexts/tab-context", () => {
       openChatModeTab: vi.fn(),
     }),
     useTabStore: <T,>(selector: (s: Record<string, unknown>) => T) =>
-      selector({ ...store, tabs: h.tabs }),
+      selector({ ...store, groupLayout: h.groupLayout, tabs: h.tabs }),
   }
 })
 // The tab itself is not what these tests are about.
@@ -116,11 +119,19 @@ vi.mock("./tab-item", () => ({
   TabItem: ({
     tab,
     onToggleTile,
+    isSplit,
+    moveTargets,
   }: {
     tab: TabItemData
     onToggleTile: () => void
+    isSplit: boolean
+    moveTargets: { groupId: string }[]
   }) => (
-    <div data-tab-id={tab.id}>
+    <div
+      data-tab-id={tab.id}
+      data-split={String(isSplit)}
+      data-move-targets={moveTargets.map((target) => target.groupId).join(",")}
+    >
       {tab.title}
       <button onClick={onToggleTile}>Tile</button>
     </div>
@@ -161,6 +172,8 @@ beforeEach(() => {
   }
   h.isMobile = false
   h.groupOf = {}
+  h.visibleLayout = { type: "group", id: "g-main" }
+  h.groupLayout = { type: "group", id: "g-main" }
   h.toggleGroupTile.mockClear()
   h.tabs = [conversationTab("conv-1")]
   h.toggleConversationMaximized.mockClear()
@@ -235,4 +248,42 @@ it("targets the actual visible group when the projected strip is unsplit", () =>
   renderStrip()
   fireEvent.click(screen.getByRole("button", { name: "Tile" }))
   expect(h.toggleGroupTile).toHaveBeenCalledWith("g-second")
+})
+
+// Workbench: the full layout may be split by another worktree's tabs while
+// this worktree's tabs all sit in one group. Groups that are not on screen
+// are no move targets, and the strip offers no split-only actions.
+it("offers only on-screen groups as split targets", () => {
+  h.groupLayout = {
+    type: "split",
+    id: "s",
+    orientation: "horizontal",
+    ratios: [0.5, 0.5],
+    children: [
+      { type: "group", id: "g-main" },
+      { type: "group", id: "g-other-worktree" },
+    ],
+  }
+  h.visibleLayout = { type: "group", id: "g-main" }
+  renderStrip()
+  const tab = document.querySelector('[data-tab-id="conv-1"]')!
+  expect(tab).toHaveAttribute("data-split", "false")
+  expect(tab).toHaveAttribute("data-move-targets", "")
+})
+
+it("lists every on-screen group while the visible layout is split", () => {
+  h.visibleLayout = {
+    type: "split",
+    id: "s",
+    orientation: "horizontal",
+    ratios: [0.5, 0.5],
+    children: [
+      { type: "group", id: "g-main" },
+      { type: "group", id: "g-second" },
+    ],
+  }
+  renderStrip({ groupId: "g-main" })
+  const tab = document.querySelector('[data-tab-id="conv-1"]')!
+  expect(tab).toHaveAttribute("data-split", "true")
+  expect(tab).toHaveAttribute("data-move-targets", "g-second")
 })

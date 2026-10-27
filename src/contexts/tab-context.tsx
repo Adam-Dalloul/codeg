@@ -260,6 +260,8 @@ export interface TabContextValue {
       folderDefaultAgent?: TabItem["agentType"] | null
       targetGroup?: string
       forceAgent?: TabItem["agentType"]
+      /** See the tab store's `openNewConversationTab`. */
+      retargetTabId?: string
     }
   ) => OpenedDraftTarget
   openChatModeTab: (options?: {

@@ -191,8 +191,13 @@ export const ConversationHeaderFolderPicker = memo(
             // default agent is applied; the existing-draft branch reuses ownTab
             // via the singleton invariant. `inheritFromActive: true` keeps the
             // user's current agent when the target folder has no pinned default.
+            // `retargetTabId` names ownTab outright: in Workbench mode the
+            // target worktree may hold a draft of its own.
             openNewConversationTab(target.id, target.path, {
               inheritFromActive: true,
+              ...(ownTab.conversationId == null
+                ? { retargetTabId: ownTab.id }
+                : {}),
             })
             toast.success(t("toasts.folderChanged", { name: target.name }))
           } catch (err) {
@@ -347,9 +352,14 @@ export const ConversationFolderBranchPicker = memo(
               // runs the disconnect-then-patch dance for folder+agent
               // changes. `inheritFromActive: true` preserves the user's
               // current agent when the target folder has no pinned default
-              // — "I'm switching folders, keep my workflow".
+              // — "I'm switching folders, keep my workflow". `retargetTabId`
+              // names ownTab outright: in Workbench mode the target worktree
+              // may hold a draft of its own.
               openNewConversationTab(target.id, target.path, {
                 inheritFromActive: true,
+                ...(ownTab!.conversationId == null
+                  ? { retargetTabId: ownTab!.id }
+                  : {}),
               })
               toast.success(t("toasts.folderChanged", { name: target.name }))
             } catch (err) {
