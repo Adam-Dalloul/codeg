@@ -3261,4 +3261,33 @@ describe("MessageInput live content for draft tidying", () => {
     view.unmount()
     expect(hasLiveComposerContent(draftKey)).toBe(false)
   })
+
+  // A dropped image is read before it shows: from the drop on, the draft
+  // already counts as holding content, not only once the thumbnail commits.
+  it("reports a file intake the moment it starts, before its content commits", async () => {
+    const { container } = render(tree({}))
+    await waitFor(
+      () => expect(composerHandle.current?.getEditor()).toBeTruthy(),
+      { timeout: 5000 }
+    )
+    const host = container.firstElementChild as HTMLElement
+    const image = new File([new Uint8Array([137, 80, 78, 71])], "shot.png", {
+      type: "image/png",
+    })
+    expect(hasLiveComposerContent(draftKey)).toBe(false)
+
+    // Dispatched outside act(): React must not get to commit (and run the
+    // composer's effects) before the assertion, as it would not in a browser.
+    const drop = new Event("drop", { bubbles: true, cancelable: true })
+    Object.defineProperty(drop, "dataTransfer", {
+      value: { files: [image], types: ["Files"], items: [] },
+    })
+    host.dispatchEvent(drop)
+    // Synchronously, with the file still being read.
+    expect(screen.queryByAltText("shot.png")).toBeNull()
+    expect(hasLiveComposerContent(draftKey)).toBe(true)
+
+    expect(await screen.findByAltText("shot.png")).toBeInTheDocument()
+    await waitFor(() => expect(hasLiveComposerContent(draftKey)).toBe(true))
+  })
 })

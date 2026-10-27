@@ -459,6 +459,21 @@ export function MessageInput({
     setComposerEmpty(ed ? isComposerEmpty(ed) : true)
   }, [])
 
+  // What this composer holds that its saved draft may not show yet — typing
+  // inside the save debounce, image attachments (never saved), a file still
+  // being read or uploaded — reported per draft key for the tab store, which
+  // reads it before tidying a "blank" draft tab away. An intake is reported
+  // the moment it starts; the rest once React has committed it (below).
+  const composerId = useId()
+  const reportIntakeStart = useCallback(() => {
+    if (!effectiveDraftStorageKey) return
+    setLiveComposerContent(
+      effectiveDraftStorageKey,
+      `${composerId}:intake`,
+      true
+    )
+  }, [composerId, effectiveDraftStorageKey])
+
   // Attachments (images → thumbnail strip, files → inline badges) and the "+"
   // menu's insertable shortcuts. Both are shared with the to-do task composers,
   // so paste/drop/pick and the skill/quick-message entries behave identically
@@ -471,6 +486,7 @@ export function MessageInput({
     attachmentTabId,
     defaultPath,
     logLabel: "MessageInput",
+    onIntakeStart: reportIntakeStart,
   })
   const {
     attachments,
@@ -930,20 +946,24 @@ export function MessageInput({
   const imageAttachments = attach.imageAttachments
   const hasAttachments = attachments.length > 0
   const hasSendableContent = !composerEmpty || hasAttachments
-  // What this composer holds that its saved draft may not show yet (typing
-  // inside the save debounce, image attachments, which are never saved): the
-  // tab store reads it before tidying a "blank" draft tab away.
-  const composerId = useId()
+  // The committed half of the report above: what the composer holds, and
+  // whether an intake is still in flight (once it settles, what it brought is
+  // already in `hasSendableContent` here).
+  const intakePending = attach.intakePending
   useEffect(() => {
     if (!effectiveDraftStorageKey) return
+    const intakeId = `${composerId}:intake`
     setLiveComposerContent(
       effectiveDraftStorageKey,
       composerId,
       hasSendableContent
     )
-    return () =>
+    setLiveComposerContent(effectiveDraftStorageKey, intakeId, intakePending)
+    return () => {
       setLiveComposerContent(effectiveDraftStorageKey, composerId, false)
-  }, [composerId, effectiveDraftStorageKey, hasSendableContent])
+      setLiveComposerContent(effectiveDraftStorageKey, intakeId, false)
+    }
+  }, [composerId, effectiveDraftStorageKey, hasSendableContent, intakePending])
 
   // ── Slash command autocomplete ──
   //
