@@ -934,7 +934,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       visibleFileTabs.length === 0 ||
       (maximizedPane === "conversation" && !hasConversationTabs)
     ) {
+      /* eslint-disable react-hooks/set-state-in-effect */
       setMaximizedPane(null)
+      /* eslint-enable react-hooks/set-state-in-effect */
     }
   }, [visibleFileTabs.length, hasConversationTabs, maximizedPane])
 
@@ -993,8 +995,11 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   // the board mounts would rearrange a workspace the user isn't even looking
   // at. It still claims the selection when nothing holds it, so "tabs exist
   // but none is active" never becomes reachable.
+  // `scope` defaults in the body, not the parameter list: a call there stops
+  // the React Compiler lint from checking this whole provider.
   const activateTab = useCallback(
-    (tabId: string, background = false, scope = openingScope()) => {
+    (tabId: string, background = false, requestedScope?: TabScope) => {
+      const scope = requestedScope ?? openingScope()
       useFolderTabsStore.getState().addFile(tabId, scope, !background)
       if (
         useFolderTabsStore.getState().enabled &&
@@ -1019,8 +1024,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       nextTab: FileWorkspaceTab,
       background = false,
       index?: number,
-      scope = openingScope(nextTab.folderId)
+      requestedScope?: TabScope
     ) => {
+      const scope = requestedScope ?? openingScope(nextTab.folderId)
       useFolderTabsStore.getState().addFile(nextTab.id, scope, !background)
       setFileTabs((prev) => {
         if (prev.some((tab) => tab.id === nextTab.id)) return prev
@@ -1612,8 +1618,9 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       reload: boolean,
       background = false,
       index?: number,
-      scope: TabScope = openingScope(seed.folderId)
+      requestedScope?: TabScope
     ): LoadDecision => {
+      const scope = requestedScope ?? openingScope(seed.folderId)
       // Dedup synchronously. inFlightLoadsRef is updated immediately on
       // generation start, so rapid re-clicks within a single event loop
       // turn collapse here — unlike fileTabsRef.current, which only
@@ -3593,12 +3600,13 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     if (tab.loading || tab.isDirty) return
     const key = conflictKey(tab.path)
     conflictSignatureByKeyRef.current.delete(key)
-
+    /* eslint-disable react-hooks/set-state-in-effect */
     setExternalConflictQueue((prev) =>
       prev.some((conflict) => conflictKey(conflict.path) === key)
         ? prev.filter((conflict) => conflictKey(conflict.path) !== key)
         : prev
     )
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [activeFileTab])
 
   // The watcher: per-root FS stream subscriptions derived from the open
