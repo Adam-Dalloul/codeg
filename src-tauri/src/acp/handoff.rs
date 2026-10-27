@@ -100,9 +100,14 @@ pub fn native_family(agent_type: AgentType) -> Option<NativeFamily> {
     native_family_of(agent_type, &meta.distribution)
 }
 
-/// Which path a handoff between two agents takes. Same family on both sides
-/// means the transcript can move; anything else is briefed.
+/// Native transfer is for built-in agents with native history. A custom
+/// adapter's ACP id can stay fixed across a native context reset, so its
+/// namesake native file cannot establish complete history or usage coverage.
+/// Keep the Codeg-owned history through the saved-context path on either side.
 pub fn plan_path(source: AgentType, target: AgentType) -> HandoffPath {
+    if matches!(source, AgentType::Custom(_)) || matches!(target, AgentType::Custom(_)) {
+        return HandoffPath::Context;
+    }
     plan_path_of(native_family(source), native_family(target))
 }
 

@@ -73,6 +73,10 @@ an installed agent and an account, optionally add a note, then choose **Switch**
 The dialog identifies whether the selected agent resumes the native Claude
 session or starts a new session with portable context.
 
+Custom agents, including existing numbered Claude slots, use portable context
+in both directions. Their saved Codeg conversation stays available in the same
+chat; the destination starts a new native session.
+
 Portable context keeps the complete conversation saved by Codeg, including its
 tool records and embedded images. Long histories stay available in pages through
 a read-only context tool, rather than being shortened into a digest. Agents

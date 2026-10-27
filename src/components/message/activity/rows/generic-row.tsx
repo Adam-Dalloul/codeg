@@ -106,7 +106,7 @@ export const GenericRow = memo(function GenericRow({
               </span>
             ) : null}
             {tool.detail ? (
-              <span className="shrink-0 font-mono text-xs text-muted-foreground">
+              <span className="shrink-0 font-mono text-xs text-activity-secondary">
                 {tool.detail}
               </span>
             ) : null}
@@ -120,7 +120,7 @@ export const GenericRow = memo(function GenericRow({
             </span>
             {tool.target ? (
               <span
-                className="min-w-0 truncate text-muted-foreground"
+                className="min-w-0 truncate text-activity-secondary"
                 dir="auto"
               >
                 {tool.target.text}
@@ -141,7 +141,7 @@ export const GenericRow = memo(function GenericRow({
             </span>
             {tool.detail ? (
               <span
-                className="min-w-0 truncate text-muted-foreground"
+                className="min-w-0 truncate text-activity-secondary"
                 dir="auto"
               >
                 {tool.detail}
