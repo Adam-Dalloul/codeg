@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { normalizeMathDelimiters } from "@/components/ai-elements/message"
 import { createChatHtmlProcessor } from "./chat-html-markdown"
 
 describe("聊天 HTML 片段识别", () => {
@@ -195,11 +196,12 @@ describe("聊天 HTML 片段识别", () => {
       '<div align="center">\n\n**Title**\n\n</div>\n\nText <b>x</b>\n\n<table><tr><td>1</td></tr></table>\n',
       "```html\nHello<br>world\n```\n\n```html\n<div>Complete</div>\n```",
       '<div class="grid">\n    <div class="card">A</div>\n\n    <div class="card">B</div>\n</div>\n\n<section>\n<p>one</p>\n\n<p>two</p>\n</section>',
+      // Display math across a blank line: the Markdown between fragments is
+      // transformed a whole stretch at a time, however it arrived.
+      "\\[\nx\n<a\n\nb\n\\]\n\nAfter.",
     ]
-    const math = (text: string) =>
-      text.replace(/\\\(([\s\S]*?)\\\)/g, "$$$$$1$$$$")
     for (const document of documents) {
-      for (const transform of [undefined, math]) {
+      for (const transform of [undefined, normalizeMathDelimiters]) {
         const process = createChatHtmlProcessor()
         for (let i = 1; i <= document.length; i++)
           process(document.slice(0, i), true, transform)
@@ -208,5 +210,20 @@ describe("聊天 HTML 片段识别", () => {
         )
       }
     }
+  })
+
+  it("文本被改写（不是追加）时重新处理，不沿用旧的结论", () => {
+    const process = createChatHtmlProcessor()
+    process("<div>\n<p>Card</p>\n\nold", true)
+    const edited = "<div>\n<p>Card</p>\n\n</div>"
+    expect(process(edited, false)).toBe(
+      createChatHtmlProcessor()(edited, false)
+    )
+    expect(process(edited, false)).toContain("```codeg-html\n<div>")
+
+    process("Intro\n\n```html\n<div>", true)
+    expect(process("Intro\n\nPlain prose now.", true)).toBe(
+      "Intro\n\nPlain prose now."
+    )
   })
 })

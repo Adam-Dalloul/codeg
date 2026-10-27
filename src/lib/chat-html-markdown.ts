@@ -176,14 +176,22 @@ function fence(source: string, language: string): string {
 }
 
 /**
- * 每条回复各用一个处理器。流式追加时，已经定稿的前缀——完整的 HTML 片段、仍在生成的
+ * 每条回复各用一个处理器。流式追加时，已经定稿的结构——完整的 HTML 片段、仍在生成的
  * 片段之前的内容，以及最后一个顶层块之前的全部内容——不再重新解析，只解析其后的尾部；
- * 尾部若只是一个尚未闭合的代码围栏，就只留意它的闭合行。
+ * 尾部若只是一个尚未闭合的代码围栏，就只留意它的闭合行。正文的 `transform` 仍按片段
+ * 之间的整段执行（与一次性处理相同），所以只缓存到最后一个定稿片段为止的输出。
  */
 export function createChatHtmlProcessor() {
+  // The whole text of the last call: anything but an append starts over.
+  let previous = ""
+  // How much of the text is settled, and its output up to the end of the last
+  // settled fragment. The settled text after that fragment, `sealedProse`, is
+  // kept raw: the Markdown around fragments is transformed a whole stretch at
+  // a time, and that stretch is still open.
   let sealedSource = ""
   let sealedOutput = ""
-  // The unsealed text is one fence still open: until a line that could close
+  let sealedProse = ""
+  // The unsettled text is one fence still open: until a line that could close
   // it arrives, nothing in it can change how it parses.
   let openFence: { closer: RegExp; html: boolean } | null = null
   return (
@@ -191,24 +199,33 @@ export function createChatHtmlProcessor() {
     streaming: boolean,
     transform: (markdown: string) => string = (text) => text
   ): string => {
-    if (!source.startsWith(sealedSource)) {
+    if (!source.startsWith(previous)) {
       sealedSource = ""
       sealedOutput = ""
+      sealedProse = ""
       openFence = null
     }
+    previous = source
     const tail = source.slice(sealedSource.length)
     if (openFence && streaming && !openFence.closer.test(tail)) {
       return openFence.html
-        ? sealedOutput + fence(fenceBody(tail), LANGUAGE.pending)
-        : sealedOutput + transform(tail)
+        ? sealedOutput +
+            transform(sealedProse) +
+            fence(fenceBody(tail), LANGUAGE.pending)
+        : sealedOutput + transform(sealedProse + tail)
     }
     openFence = null
-    if (!CANDIDATE_LINE.test(tail)) return sealedOutput + transform(tail)
+    if (!CANDIDATE_LINE.test(tail))
+      return sealedOutput + transform(sealedProse + tail)
     const blocks = fromMarkdown(tail, BLOCKS_ONLY).children
-    let output = ""
+    let result = sealedOutput
+    // The Markdown since the last fragment, not yet transformed.
+    let prose = sealedProse
     let cursor = 0
+    // What this call settles: up to `sealedEnd` in `tail`.
     let sealedEnd = 0
-    let sealedTail = ""
+    let nextOutput = sealedOutput
+    let nextProse = sealedProse
     for (let index = 0; index < blocks.length; index++) {
       const node = blocks[index]
       const start = node.position?.start.offset
@@ -308,23 +325,25 @@ export function createChatHtmlProcessor() {
         }
         html = tail.slice(start, end)
       }
-      output += transform(tail.slice(cursor, start))
+      prose += tail.slice(cursor, start)
       if (state === "pending" && start > sealedEnd) {
-        // What comes before a fragment still arriving is final.
+        // What comes before a fragment still arriving is settled.
         sealedEnd = start
-        sealedTail = output
+        nextProse = prose
       }
-      output += fence(html, LANGUAGE[state])
+      result += transform(prose) + fence(html, LANGUAGE[state])
       // A closing fence must end its line, or it does not close.
-      if (end < tail.length && tail[end] !== "\n") output += "\n"
+      if (end < tail.length && tail[end] !== "\n") result += "\n"
+      prose = ""
       cursor = end
       if (final) {
         sealedEnd = end
-        sealedTail = output
+        nextOutput = result
+        nextProse = ""
       }
     }
     // Text can change only the last top-level block — extend a paragraph or a
-    // list, close a fence — so everything before it is final as well. Except
+    // list, close a fence — so everything before it is settled as well. Except
     // while that block's first line is still arriving with a `<`: it may yet
     // be HTML, and the HTML blocks right before it belong with it then.
     const lastBlock = blocks[blocks.length - 1]
@@ -344,10 +363,8 @@ export function createChatHtmlProcessor() {
     }
     const stableStart = blocks[stable]?.position?.start.offset
     if (stableStart !== undefined && stableStart > cursor) {
-      output += transform(tail.slice(cursor, stableStart))
-      cursor = stableStart
       sealedEnd = stableStart
-      sealedTail = output
+      nextProse = prose + tail.slice(cursor, stableStart)
     }
     if (streaming && lastBlock?.type === "code" && lastStart === sealedEnd) {
       const fenceText = tail.slice(sealedEnd)
@@ -357,9 +374,10 @@ export function createChatHtmlProcessor() {
         openFence = { closer, html: /^html?$/i.test(lastBlock.lang ?? "") }
       }
     }
-    const result = sealedOutput + output + transform(tail.slice(cursor))
+    result += transform(prose + tail.slice(cursor))
     if (sealedEnd > 0) {
-      sealedOutput += sealedTail
+      sealedOutput = nextOutput
+      sealedProse = nextProse
       sealedSource = source.slice(0, sealedSource.length + sealedEnd)
     }
     return result
