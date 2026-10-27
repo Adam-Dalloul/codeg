@@ -187,7 +187,7 @@ async fn switch_inner(
     )
     .map_err(failure)?;
     let _prompt_guards = manager
-        .quiesce_account_session(&barrier, &source, &target, &sid)
+        .quiesce_account_session(&barrier, &source, &target, &sid, row.id)
         .await?;
     let transfer =
         account_transfer::copy_claude_session(&source, &target, &sid).map_err(failure)?;

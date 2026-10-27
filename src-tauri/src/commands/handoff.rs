@@ -323,7 +323,7 @@ async fn handoff_inner(
             ));
         }
         manager
-            .quiesce_account_session(&barrier, source_root, target_root, &sid)
+            .quiesce_account_session(&barrier, source_root, target_root, &sid, request.conversation_id)
             .await
             .map_err(failure)?
     } else {

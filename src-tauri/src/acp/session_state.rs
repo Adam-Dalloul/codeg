@@ -260,6 +260,11 @@ pub struct SessionState {
     /// SessionStarted alone is not proof: a load-to-new fallback emits it too.
     /// Backend-only, used to validate account transfers before changing a row.
     pub restored_session_id: Option<String>,
+    /// Native Claude ids observed on this connection, scoped by their public
+    /// ACP id. A context reset can rotate the former without changing the
+    /// latter. Retain aliases for writer tracking; a fork's current public id
+    /// selects which observations govern native-transfer safety.
+    pub(crate) claude_native_sessions: BTreeMap<String, BTreeSet<String>>,
     pub agent_account_id: Option<String>,
     pub account_home: Option<PathBuf>,
     // 身份
@@ -823,6 +828,38 @@ pub enum TurnStatusWriter {
 }
 
 impl SessionState {
+    pub(crate) fn observe_claude_native_session(&mut self, public: &str, native: &str) {
+        if self.agent_type != AgentType::ClaudeCode || public.is_empty() || native.is_empty() {
+            return;
+        }
+        if self.external_id.as_deref() != Some(public)
+            && self.requested_session_id.as_deref() != Some(public)
+            && !self.claude_native_sessions.contains_key(public)
+        {
+            return;
+        }
+        self.claude_native_sessions.entry(public.to_string()).or_default().insert(native.to_string());
+    }
+
+    pub(crate) fn claude_native_context_changed(&self) -> bool {
+        let Some(public) = self.external_id.as_deref().or(self.requested_session_id.as_deref()) else { return false; };
+        self.claude_native_sessions.get(public)
+            .is_some_and(|ids| ids.iter().any(|id| id != public))
+    }
+
+    pub(crate) fn names_native_session(&self, sid: &str) -> bool {
+        self.external_id.as_deref() == Some(sid)
+            || self.requested_session_id.as_deref() == Some(sid)
+            || self.claude_native_sessions.contains_key(sid)
+            || self.claude_native_sessions.values().any(|ids| ids.contains(sid))
+    }
+
+    pub(crate) fn native_session_aliases(&self) -> BTreeSet<String> {
+        self.claude_native_sessions.iter()
+            .flat_map(|(public, native)| std::iter::once(public.clone()).chain(native.iter().cloned()))
+            .collect()
+    }
+
     pub(crate) fn has_restored_session(&self, session_id: &str) -> bool {
         self.restored_session_id.as_deref() == Some(session_id)
             && self.external_id.as_deref() == Some(session_id)
@@ -876,6 +913,7 @@ impl SessionState {
             storage_identity: None,
             requested_session_id: None,
             restored_session_id: None,
+            claude_native_sessions: BTreeMap::new(),
             account_home: None,
             conversation_id: None,
             external_id: None,
@@ -2766,6 +2804,25 @@ mod tests {
         EventEnvelope, PromptCapabilitiesInfo, SessionConfigKindInfo, SessionConfigOptionInfo,
         SessionConfigSelectInfo, SessionModeInfo, SessionModeStateInfo, UserMessageBlock,
     };
+
+    #[test]
+    fn native_context_reset_is_sticky_for_its_public_session_but_not_a_fork() {
+        let mut state = SessionState::new("native-reset".into(), AgentType::ClaudeCode, None, "main".into(), None);
+        state.external_id = Some("public".into());
+        state.observe_claude_native_session("foreign", "unrelated");
+        assert!(!state.names_native_session("unrelated"));
+        state.observe_claude_native_session("public", "public");
+        assert!(!state.claude_native_context_changed());
+        state.observe_claude_native_session("public", "private");
+        state.observe_claude_native_session("public", "public");
+        assert!(state.claude_native_context_changed(), "a late old result cannot erase the reset");
+        assert!(state.names_native_session("private"));
+        state.external_id = Some("fork".into());
+        assert!(!state.claude_native_context_changed());
+        assert!(state.names_native_session("private"), "the process may still be draining the old file");
+        state.observe_claude_native_session("fork", "fork");
+        assert!(!state.claude_native_context_changed());
+    }
 
     fn fresh_state() -> SessionState {
         SessionState::new(
