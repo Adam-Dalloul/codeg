@@ -5864,6 +5864,17 @@ describe("Workbench file closes, restores and selection", () => {
     expect(renderPhaseWrites()).toBe(0)
   })
 
+  it("turning the mode off keeps the file the scope was showing", async () => {
+    await openDirty("/repo/a.ts", false)
+    const b = await openDirty("/repo/b.ts", false)
+    const c = await openDirty("/repo/c.ts", false)
+    act(() => workbenchWorkspace.switchFileTab(b))
+    act(() => workbenchWorkspace.closeFileTab(b))
+    expect(workbenchWorkspace.activeFileTabId).toBe(c)
+    act(() => useWorkbenchStore.getState().setEnabled(false))
+    expect(workbenchWorkspace.activeFileTabId).toBe(c)
+  })
+
   it("turning the mode on keeps the file the user is looking at", async () => {
     act(() => useWorkbenchStore.getState().setEnabled(false))
     // No conversation tab here, so nothing else names the active folder.
@@ -5895,6 +5906,33 @@ describe("Workbench file closes, restores and selection", () => {
     })
     expect(workbenchWorkspace.activeFileTabId).toBe(own)
     expect(useWorkbenchStore.getState().fileSelection[1]).toBe(page)
+  })
+
+  it("a page restored while a queued close removes its duplicate still joins its worktree", () => {
+    let page!: string
+    act(() => {
+      page = workbenchWorkspace.openBrowserTab("https://example.com/u")!
+    })
+    act(() => {
+      workbenchWorkspace.closeFileTab(page, { allScopes: true })
+      workbenchWorkspace.restoreBrowserTabs([
+        {
+          url: "https://example.com/u",
+          title: "Restored U",
+          folderId: 1,
+          profile: "default",
+        },
+      ])
+    })
+    const restored = workbenchWorkspace.allFileTabs?.find(
+      (tab) => tab.title === "Restored U"
+    )
+    expect(restored).toBeDefined()
+    expect(restored!.id).not.toBe(page)
+    expect(workbenchWorkspace.fileTabs.map((tab) => tab.id)).toContain(
+      restored!.id
+    )
+    expect(useWorkbenchStore.getState().fileRefs[1]).toContain(restored!.id)
   })
 
   it("restored pages join their worktrees without store writes during render", async () => {

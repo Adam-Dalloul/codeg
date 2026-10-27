@@ -696,23 +696,47 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   // dirty-close confirm answered "cancel" would leave a buffer that no scope
   // references, invisible in Workbench mode.
   const pendingForgetRef = useRef<Set<string>>(new Set())
+  const committedMembershipRef = useRef("")
   useLayoutEffect(() => {
     const pending = pendingForgetRef.current
-    if (pending.size === 0) return
+    const membership = fileTabs.map((tab) => tab.id).join("\n")
+    if (pending.size === 0 && membership === committedMembershipRef.current) {
+      return
+    }
+    committedMembershipRef.current = membership
     const live = new Set(fileTabs.map((tab) => tab.id))
     for (const id of [...pending]) {
       if (live.has(id)) continue
       pending.delete(id)
       useWorkbenchStore.getState().forgetFile(id)
     }
+    // A committed buffer no scope references would be invisible, and
+    // unclosable, in Workbench mode. Every opener registers its scope in the
+    // same tick as its insert; restored pages join their folder's scope here,
+    // once the merge has committed — deciding earlier could skip a page whose
+    // duplicate a queued close is about to remove.
+    const referenced = new Set(
+      Object.values(useWorkbenchStore.getState().fileRefs).flat()
+    )
+    for (const tab of fileTabs) {
+      if (referenced.has(tab.id)) continue
+      useWorkbenchStore
+        .getState()
+        .addFile(tab.id, openingScope(tab.folderId), false)
+    }
   }, [fileTabs])
   // Turning Workbench on keeps the file the user is looking at, when the new
-  // scope references it, instead of whatever that scope selected last.
+  // scope references it, instead of whatever that scope selected last; turning
+  // it off keeps the scope's file rather than normal mode's last pick.
   useEffect(
     () =>
       useWorkbenchStore.subscribe((next, previous) => {
-        if (!next.enabled || previous.enabled) return
+        if (next.enabled === previous.enabled) return
         const current = selectedFileIdRef.current
+        if (!next.enabled) {
+          setNormalActiveFileTabId(current)
+          return
+        }
         if (current != null && next.fileRefs[next.scope]?.includes(current)) {
           useWorkbenchStore.getState().selectFile(current)
         }
@@ -1293,7 +1317,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
           ? `${tab.browser.remote === true ? "remote" : tab.browser.profile} ${normalizeUrlForDedupe(tab.browser.initialUrl) ?? ""}`
           : null
       // Records are built once, outside the updater, so a replayed updater
-      // inserts the very ids registered below.
+      // inserts the same ids.
       const candidates: { key: string; record: FileWorkspaceTab }[] = []
       const prefs = getBrowserPrefs()
       for (const entry of entries) {
@@ -1322,20 +1346,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
         })
       }
       if (candidates.length === 0) return
-      // Scope references are registered here, before the records can commit:
-      // the updater must not write the store (React may run it during render,
-      // or again). One that loses a race to a tab opened meanwhile leaves a
-      // reference to nothing, which no view shows.
-      const openNow = new Set(
-        fileTabsRef.current.flatMap((tab) => keyOf(tab) ?? [])
-      )
-      for (const { key, record } of candidates) {
-        if (openNow.has(key)) continue
-        openNow.add(key)
-        useWorkbenchStore
-          .getState()
-          .addFile(record.id, openingScope(record.folderId), false)
-      }
+      // No scope registration here: the updater must not write the store
+      // (React may run it during render, or again), and only the merge knows
+      // which records land. Committed records join their folder's scope in
+      // the provider's post-commit pass.
       setFileTabs((prev) => {
         // Merge, never replace: a tab opened before the restore ran (a deep
         // link, an agent request — the capability probe is a round trip) must
