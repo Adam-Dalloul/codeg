@@ -948,8 +948,10 @@ export function MessageInput({
   const hasSendableContent = !composerEmpty || hasAttachments
   // The committed half of the report above: what the composer holds, and
   // whether an intake is still in flight (once it settles, what it brought is
-  // already in `hasSendableContent` here).
-  const intakePending = attach.intakePending
+  // already in `hasSendableContent` here). `intakeRevision` re-runs this after
+  // every intake, even one that started and settled within one render batch,
+  // where `intakePending` reads false both times.
+  const { intakePending, intakeRevision } = attach
   useEffect(() => {
     if (!effectiveDraftStorageKey) return
     const intakeId = `${composerId}:intake`
@@ -963,7 +965,13 @@ export function MessageInput({
       setLiveComposerContent(effectiveDraftStorageKey, composerId, false)
       setLiveComposerContent(effectiveDraftStorageKey, intakeId, false)
     }
-  }, [composerId, effectiveDraftStorageKey, hasSendableContent, intakePending])
+  }, [
+    composerId,
+    effectiveDraftStorageKey,
+    hasSendableContent,
+    intakePending,
+    intakeRevision,
+  ])
 
   // ── Slash command autocomplete ──
   //
@@ -1304,7 +1312,7 @@ export function MessageInput({
   // reproduces the shortcut everywhere in the box. Reading the clipboard happens
   // inside the menu-click / keydown user gesture, so the async Clipboard API has
   // the activation it needs.
-  const handleContextPaste = useCallback(async () => {
+  const pasteFromClipboard = useCallback(async () => {
     if (disabled) return
     const editor = editorRef.current?.getEditor()
     if (!editor) return
@@ -1347,6 +1355,17 @@ export function MessageInput({
       toast.error(t("pasteUnavailable"))
     }
   }, [disabled, attach, t])
+  // Content is on its way from the first clipboard read on: counted as an
+  // intake, so draft tidying never takes this composer for blank meanwhile.
+  const handleContextPaste = useCallback(async () => {
+    if (disabled) return
+    const settle = attach.beginIntake()
+    try {
+      await pasteFromClipboard()
+    } finally {
+      settle()
+    }
+  }, [attach, disabled, pasteFromClipboard])
 
   // Bridges the composer's Ctrl/⌘+Shift+V key to the plain-text paste above.
   // Returns whether the shortcut was consumed: when disabled or when the async

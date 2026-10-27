@@ -133,6 +133,13 @@ export interface ComposerAttachments {
   isDragActive: boolean
   /** A file intake (read, upload, picker) is still in flight. */
   intakePending: boolean
+  /** Bumped whenever an intake starts or the last one settles — even when
+   *  both happen within one render batch, so a host re-reads `intakePending`
+   *  after every intake. */
+  intakeRevision: number
+  /** For a host's own async intake (e.g. a context-menu paste reading the
+   *  clipboard): counts it like the hook's own, until the returned settle. */
+  beginIntake: () => () => void
   /** Local desktop: OS paths are readable by the agent, so the native picker is
    *  offered. False in web mode and for a desktop bound to a remote workspace. */
   showNativePaperclip: boolean
@@ -255,7 +262,7 @@ export function useComposerAttachments({
   // `onIntakeStart` tells the host about content still on its way; the state
   // flips back once the last intake has settled and its content is set.
   const intakeCountRef = useRef(0)
-  const [intakePending, setIntakePending] = useState(false)
+  const [intake, setIntake] = useState({ pending: false, revision: 0 })
   const onIntakeStartRef = useRef(onIntakeStart)
   useEffect(() => {
     onIntakeStartRef.current = onIntakeStart
@@ -264,14 +271,16 @@ export function useComposerAttachments({
     intakeCountRef.current += 1
     if (intakeCountRef.current === 1) {
       onIntakeStartRef.current?.()
-      setIntakePending(true)
+      setIntake((prev) => ({ pending: true, revision: prev.revision + 1 }))
     }
     let settled = false
     return () => {
       if (settled) return
       settled = true
       intakeCountRef.current -= 1
-      if (intakeCountRef.current === 0) setIntakePending(false)
+      if (intakeCountRef.current === 0) {
+        setIntake((prev) => ({ pending: false, revision: prev.revision + 1 }))
+      }
     }
   }, [])
 
@@ -1447,7 +1456,9 @@ export function useComposerAttachments({
     imageAttachments,
     hasUploadingImage,
     isDragActive,
-    intakePending,
+    intakePending: intake.pending,
+    intakeRevision: intake.revision,
+    beginIntake,
     showNativePaperclip,
     canAttachImages,
     embeddedPayloadsRef,
