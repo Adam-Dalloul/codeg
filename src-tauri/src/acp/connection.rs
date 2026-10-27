@@ -1880,7 +1880,6 @@ async fn record_turn_end(
     stop_reason: &str,
     started_at_ms: u64,
     model: Option<String>,
-    usage: Option<&agent_client_protocol::schema::v1::Usage>,
     metrics: Option<&crate::acp::zcode_turn::TurnMetrics>,
 ) {
     let Some(dir) = transcript_dir_for(agent_type) else {
@@ -1891,11 +1890,6 @@ async fn record_turn_end(
         "stopReason": stop_reason,
         "durationMs": now.saturating_sub(started_at_ms),
     });
-    if let Some(usage) = usage {
-        payload["usage"] = serde_json::json!(usage);
-    }
-    // Native bridge metrics remain authoritative when both channels report
-    // the same turn. Do not add the counters together.
     if let Some(metrics) = metrics {
         metrics.apply_to(&mut payload);
     }
@@ -14322,7 +14316,6 @@ async fn run_conversation_loop(
                                         reason_str,
                                         turn_started_at_ms,
                                         current_session_model_id(state).await,
-                                        None,
                                         zcode_turn.metrics(),
                                     )
                                     .await;
@@ -14439,7 +14432,6 @@ async fn run_conversation_loop(
                                 reason_str,
                                 turn_started_at_ms,
                                 current_session_model_id(state).await,
-                                response.usage.as_ref(),
                                 zcode_turn.metrics(),
                             )
                             .await;
@@ -42066,17 +42058,8 @@ mod tests {
         }
 
         async fn start_for(agent_type: AgentType, turns: Vec<Vec<GrokFrame>>) -> Self {
-            Self::start_with_usages(agent_type, turns, Vec::new()).await
-        }
-
-        async fn start_with_usages(
-            agent_type: AgentType,
-            turns: Vec<Vec<GrokFrame>>,
-            usages: Vec<Option<agent_client_protocol::schema::v1::Usage>>,
-        ) -> Self {
             use agent_client_protocol::schema::v1::PromptResponse;
             let turns = Arc::new(std::sync::Mutex::new(VecDeque::from(turns)));
-            let usages = Arc::new(std::sync::Mutex::new(VecDeque::from(usages)));
             let respond = Arc::new(tokio::sync::Notify::new());
             let agent_respond = Arc::clone(&respond);
             let steer_outcomes = Arc::new(std::sync::Mutex::new(VecDeque::new()));
@@ -42101,16 +42084,13 @@ mod tests {
                                     responder: Responder<PromptResponse>,
                                     cx: ConnectionTo<Client>| {
                             let frames = turns.lock().unwrap().pop_front().unwrap_or_default();
-                            let usage = usages.lock().unwrap().pop_front().flatten();
                             send_grok_frames(&cx, &frames)?;
                             let respond = Arc::clone(&agent_respond);
                             // Off the handler, so a held response doesn't hold
                             // up the agent's other incoming messages.
                             tokio::spawn(async move {
                                 respond.notified().await;
-                                let mut response = PromptResponse::new(StopReason::EndTurn);
-                                response.usage = usage;
-                                responder.respond(response)
+                                responder.respond(PromptResponse::new(StopReason::EndTurn))
                             });
                             Ok(())
                         },
@@ -42293,38 +42273,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn custom_prompt_response_usage_reaches_history_without_counting_context_occupancy() {
-        use crate::parsers::AgentParser as _;
-        let home = tempfile::tempdir().unwrap();
-        let home_str = home.path().to_string_lossy().into_owned();
-        temp_env::async_with_vars([("CODEG_HOME", Some(home_str.as_str()))], async {
-            let agent_type = AgentType::custom("usage-fixture").unwrap();
-            let usage = serde_json::from_value(serde_json::json!({
-                "inputTokens":11,"outputTokens":7,"cachedReadTokens":101,
-                "cachedWriteTokens":17,"thoughtTokens":5,"totalTokens":136
-            })).unwrap();
-            let mut lp = CustomLoop::start_with_usages(agent_type, vec![
-                vec![custom_update(serde_json::json!({"sessionUpdate":"usage_update","used":9000,"size":131072})), custom_text("first")],
-                vec![custom_text("without counters")],
-            ], vec![Some(usage), None]).await;
-            lp.run_turn("one", "first").await;
-            let parser = || crate::parsers::acp_native::AcpNativeParser::new_in(
-                agent_type, crate::paths::codeg_acp_transcripts_root(),
-            );
-            let first = parser().get_conversation("s1").unwrap();
-            let usage = first.turns[1].usage.as_ref().unwrap();
-            assert_eq!((usage.input_tokens, usage.output_tokens, usage.cache_read_input_tokens, usage.cache_creation_input_tokens), (11, 7, 101, 17));
-            assert_eq!(first.session_stats.as_ref().unwrap().total_tokens, Some(136));
-            assert_eq!(first.session_stats.as_ref().unwrap().context_window_used_tokens, Some(9000));
-            lp.run_turn("two", "without counters").await;
-            let second = parser().get_conversation("s1").unwrap();
-            assert!(second.turns[3].usage.is_none());
-            assert_eq!(second.session_stats.unwrap().total_tokens, Some(136));
-            lp.shutdown().await;
-        }).await;
-    }
-
-    #[tokio::test]
     async fn zcode_terminal_metrics_reach_history_once_before_turn_complete() {
         use crate::parsers::AgentParser as _;
         let home = tempfile::tempdir().unwrap();
@@ -42335,7 +42283,7 @@ mod tests {
                 "sessionId":"s1","running":false,"turnMs":ms,
                 "usage":{"inputTokens":input,"outputTokens":350,"cachedReadTokens":900,"cachedWriteTokens":120,"totalTokens":input+1370}
             });
-            let mut lp = CustomLoop::start_with_usages(AgentType::ZCode, vec![
+            let mut lp = CustomLoop::start_for(AgentType::ZCode, vec![
                 vec![start(),
                     custom_update(serde_json::json!({"sessionUpdate":"usage_update","used":9999,"size":131072})),
                     ("_zcode/turnState",end(180,4200)),
@@ -42345,9 +42293,7 @@ mod tests {
                 // A late prior-turn end and idle/replay data have no opening
                 // marker in this prompt, so they cannot seed its metadata.
                 vec![("_zcode/turnState",end(9999,9999)),custom_text("third")],
-            ], vec![Some(serde_json::from_value(serde_json::json!({
-                "inputTokens":9999,"outputTokens":1,"totalTokens":10000
-            })).unwrap()), None, None]).await;
+            ]).await;
             lp.agent_sends(vec![start(),("_zcode/turnState",end(9999,9999)),grok_barrier()]);
             lp.until_barrier().await;
             let parser = || crate::parsers::acp_native::AcpNativeParser::new_in(

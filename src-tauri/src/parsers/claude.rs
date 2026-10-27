@@ -1247,8 +1247,7 @@ impl ClaudeParser {
         }
     }
 
-    /// Use an explicitly resolved projects directory, including isolated
-    /// account usage recovery and fixtures, without consulting Default.
+    /// Read projects from the selected native account's home.
     pub fn with_base_dir(base_dir: PathBuf) -> Self {
         Self { base_dir }
     }
@@ -2856,7 +2855,7 @@ impl ClaudeRecordAccumulator {
 }
 
 impl ClaudeParser {
-    pub(crate) fn parse_conversation_detail(
+    fn parse_conversation_detail(
         &self,
         path: &PathBuf,
         conversation_id: &str,

@@ -29,7 +29,7 @@ const INSERT_CHUNK: usize = 200;
 
 /// One turn's usage, ready to persist. The service assigns nothing itself —
 /// the caller (which owns the parser) fills every field.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct UsageFact {
     pub turn_key: String,
     pub occurred_at: DateTime<Utc>,
@@ -143,29 +143,6 @@ fn base_select() -> sea_orm::Select<token_usage_turn::Entity> {
             token_usage_turn::Relation::Conversation.def(),
         )
         .filter(conversation::Column::DeletedAt.is_null())
-}
-
-/// Saved facts from a source that a later parse or handoff must preserve.
-pub async fn facts_with_key_prefix(
-    conn: &DatabaseConnection,
-    conversation_id: i32,
-    prefix: &str,
-) -> Result<Vec<UsageFact>, DbError> {
-    let rows = token_usage_turn::Entity::find()
-        .filter(token_usage_turn::Column::ConversationId.eq(conversation_id))
-        .filter(token_usage_turn::Column::TurnKey.starts_with(prefix))
-        .all(conn)
-        .await?;
-    Ok(rows.into_iter().map(|row| UsageFact {
-        turn_key: row.turn_key,
-        occurred_at: row.occurred_at,
-        model: row.model,
-        input_tokens: row.input_tokens,
-        output_tokens: row.output_tokens,
-        cache_creation_tokens: row.cache_creation_tokens,
-        cache_read_tokens: row.cache_read_tokens,
-        duration_ms: row.duration_ms,
-    }).collect())
 }
 
 fn apply_query(

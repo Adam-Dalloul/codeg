@@ -771,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn account_backups_keep_old_ids_and_use_a_marker_unknown_to_v040() {
+    fn account_backups_keep_old_ids_and_reject_new_schema_in_older_builds() {
         let (compatible, reason) = evaluate_compat(&manifest_with_migration(
             "m20261017_000001_agent_account",
             BACKUP_FORMAT_VERSION,
@@ -784,9 +784,20 @@ mod tests {
         ));
         assert!(compatible && reason.is_none());
 
+        let (compatible, reason) = evaluate_compat(&manifest_with_migration(
+            "m20261024_000001_agent_account_compatibility",
+            BACKUP_FORMAT_VERSION,
+        ));
+        assert!(compatible && reason.is_none());
+
         let latest = latest_migration_name();
-        let released = include_str!("../../../tests/fixtures/v040-migrations.txt");
-        assert!(!released.lines().any(|name| name == latest));
+        for older in [
+            include_str!("../../../tests/fixtures/v040-migrations.txt"),
+            include_str!("../../../tests/fixtures/main-20261027-migrations.txt"),
+            include_str!("../../../tests/fixtures/native-account-migrations-20261024.txt"),
+        ] {
+            assert!(!older.lines().any(|name| name == latest));
+        }
     }
 
     #[test]

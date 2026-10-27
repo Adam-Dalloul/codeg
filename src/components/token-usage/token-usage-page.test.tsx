@@ -30,14 +30,9 @@ vi.mock("@/hooks/use-acp-agents", () => ({
   useAcpAgents: () => ({ agents: h.agents, fresh: true, refresh: vi.fn() }),
 }))
 vi.mock("@/lib/platform", () => ({ subscribe: async () => () => {} }))
-vi.mock("./charts", () => ({
-  ACCENT: "blue",
-  INK: "black",
-  INK_FAINT: "gray",
-  INK_SOFT: "gray",
-  NEUTRAL: "gray",
+vi.mock("./charts", async () => ({
+  ...(await vi.importActual<typeof import("./charts")>("./charts")),
   ActivityHeatmap: () => null,
-  RankedBars: () => null,
   RingMeter: () => null,
   TrendChart: () => null,
 }))
@@ -174,5 +169,39 @@ describe("Token Usage agent filter", () => {
         name: "Claude Code 3",
       })
     ).toHaveAttribute("aria-pressed", "true")
+  })
+
+  it("refreshes the rendered agent breakdown after a registration is renamed", async () => {
+    h.report.mockResolvedValue({
+      ...report,
+      by_agent: [
+        {
+          ...report.totals,
+          key: "custom:claude-code-3",
+          label: "custom:claude-code-3",
+        },
+      ],
+    })
+    const user = userEvent.setup()
+    const view = render(page())
+    await user.click(
+      await screen.findByRole("button", { name: en.TokenUsage.byAgentTitle })
+    )
+    expect(await screen.findByText("Review account")).toBeInTheDocument()
+
+    h.agents = h.agents.map((agent) =>
+      agent.agent_type === "custom:claude-code-3"
+        ? { ...agent, name: "Renamed reviewer" }
+        : agent
+    )
+    view.rerender(page())
+    expect(screen.getByText("Renamed reviewer")).toBeInTheDocument()
+    expect(screen.queryByText("Review account")).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: /Renamed reviewer/ }))
+    await waitFor(() =>
+      expect(h.report).toHaveBeenLastCalledWith(
+        expect.objectContaining({ agentTypes: ["custom:claude-code-3"] })
+      )
+    )
   })
 })
