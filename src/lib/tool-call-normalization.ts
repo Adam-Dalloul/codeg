@@ -35,16 +35,15 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   // matcher below cannot help: its `\bshell\b` needs a word boundary that
   // "powershell" does not have.
   //
-  // Without the alias the name only half-resolved — `getToolIcon` and
-  // `classifyToolKind` matched it, so the call drew a terminal icon and counted
-  // as a command, while every dispatch keyed on the NORMALIZED name
-  // (`isCommandTool`, `deriveToolTitle`, `StructuredToolInput`) fell through to
-  // the generic renderer and dumped the input as raw JSON with no command line
-  // and no terminal body. The live ACP path was rescued only once `rawInput`
-  // streamed and `inferFromInput` found a `command` key in it; the history path
-  // never is, because `parsers/claude.rs` and `parsers/pi.rs` both read the raw
-  // tool name back out of the transcript — so the same call rendered one way
-  // while it ran and another way on reload.
+  // Without the alias the name only half-resolved — what matched the raw name
+  // drew a terminal icon and counted a command, while everything keyed on the
+  // NORMALIZED name fell through to the generic renderer and dumped the input
+  // as raw JSON with no command line and no terminal body. The live ACP path
+  // was rescued only once `rawInput` streamed and `inferFromInput` found a
+  // `command` key in it; the history path never is, because
+  // `parsers/claude.rs` and `parsers/pi.rs` both read the raw tool name back
+  // out of the transcript — so the same call rendered one way while it ran and
+  // another way on reload.
   powershell: "bash",
   exec_command: "exec_command",
   "functions.exec_command": "exec_command",
@@ -271,6 +270,20 @@ function tryParseInputObject(rawInput: string | null | undefined) {
   } catch {
     return null
   }
+}
+
+/** The title (live) and tool name (history) of OpenCode's code-mode tool. */
+const CODE_MODE_TOOL_TITLE = "execute"
+
+/** A frame of OpenCode's code-mode tool: titled `execute`, with a `{code}`
+ *  script for input. */
+function isCodeModeExecuteFrame(
+  title: string | null | undefined,
+  rawInput: string | null | undefined
+): boolean {
+  if ((title ?? "").trim().toLowerCase() !== CODE_MODE_TOOL_TITLE) return false
+  if (!rawInput || !rawInput.includes('"code"')) return false
+  return typeof tryParseInputObject(rawInput)?.code === "string"
 }
 
 function hasAnyKey(obj: Record<string, unknown>, keys: string[]): boolean {
@@ -543,7 +556,31 @@ function inferFromInput(
   return null
 }
 
+/**
+ * Names already normalized, by the name they came with. The same few names
+ * pass through here over and over — every call of a streaming turn, on every
+ * token — and each pass is a run of regular expressions. Short names only: a
+ * live call's title can hold a whole command.
+ */
+const normalizedNames = new Map<string, string>()
+const NORMALIZED_NAMES_MAX = 512
+const NORMALIZED_NAME_MAX_LENGTH = 160
+
 export function normalizeToolName(toolName: string): string {
+  if (toolName.length > NORMALIZED_NAME_MAX_LENGTH) {
+    return normalizeUncached(toolName)
+  }
+  const cached = normalizedNames.get(toolName)
+  if (cached !== undefined) return cached
+  const name = normalizeUncached(toolName)
+  if (normalizedNames.size >= NORMALIZED_NAMES_MAX) {
+    normalizedNames.delete(normalizedNames.keys().next().value!)
+  }
+  normalizedNames.set(toolName, name)
+  return name
+}
+
+function normalizeUncached(toolName: string): string {
   const raw = toolName.trim()
   const trimmed = raw
     .replace(/^[:：'"`“”‘’\s]+/, "")
@@ -559,7 +596,7 @@ export function normalizeToolName(toolName: string): string {
   // codex-acp command-action tool calls (`createCommandActionEvent`) carry no
   // tool name and no rawInput — only a human title — so the search / list-files
   // identity has to be read back out of it. Without this the whole title becomes
-  // the "tool name": no search icon, an "other" tool-group tally, and a body
+  // the "tool name": no search icon, an "other" tool tally, and a body
   // that dumps the raw `{formatted_output, exit_code}` envelope. The sibling
   // `Read file '<path>'` shape already resolves via the `^read` freeform rule.
   //
@@ -657,9 +694,9 @@ export function inferLiveToolName(params: {
   // `title` MUTATES across the lifecycle (`enter_plan_mode` → "Plan: Enter" →
   // "Plan mode entered"). Resolve them to the canonical name here, ahead of the
   // title-based fallbacks below, so the live stream routes into the same
-  // <PlanModeCard> (and its tool-group run-break) the historical path resolves
-  // from `x.ai/tool.name`. Scoped to plan-mode so every other Grok tool keeps
-  // its existing resolution. See `extractGrokPlanModeToolName`.
+  // plan-mode row the historical path resolves from `x.ai/tool.name`. Scoped
+  // to plan-mode so every other Grok tool keeps its existing resolution. See
+  // `extractGrokPlanModeToolName`.
   const grokPlanMode = extractGrokPlanModeToolName(params.meta)
   if (grokPlanMode) return grokPlanMode
 
@@ -757,6 +794,17 @@ export function inferLiveToolName(params: {
   // placement, and reason, as OpenCode's above.
   const kiroToolName = extractKiroToolName(params.meta)
   if (kiroToolName) return normalizeToolName(kiroToolName)
+
+  // OpenCode 2.x code mode: the `execute` tool's input is `{code: "<JS>"}`, a
+  // script that can say anything — a delegated task quoting a patch reads as
+  // `apply_patch` to the input heuristics below. OpenCode titles a non-shell
+  // tool by its name on every frame, and the backend registers code-mode
+  // delegations on that title (`is_delegation_invocation`), so take it here.
+  // Live frames carry the stamped name above; a `session/load` replay opens
+  // with the input already present, so it is never stamped.
+  if (isCodeModeExecuteFrame(params.title, params.rawInput)) {
+    return normalizeToolName(CODE_MODE_TOOL_TITLE)
+  }
 
   // Input-shape detection runs FIRST so cross-agent heuristics (Claude Code
   // `Task` tool routed via `subagent_type`, OpenCode sub-agent calls, etc.)

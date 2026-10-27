@@ -3,11 +3,13 @@ use std::collections::{HashMap, HashSet};
 #[cfg(feature = "tauri-runtime")]
 use tauri::Manager;
 
+use crate::acp::types::ToolApprovalInfo;
 use crate::app_error::AppCommandError;
 use crate::db::entities::conversation;
 use crate::db::entities::folder::FolderKind;
 use crate::db::service::{
     agent_setting_service, conversation_service, folder_service, import_service, tab_service,
+    tool_approval_service,
 };
 #[cfg(feature = "tauri-runtime")]
 use crate::db::AppDatabase;
@@ -242,6 +244,9 @@ fn list_conversations_sync(
         parsers.push((custom, build_agent_parser(custom, &envs.get(custom))));
     }
 
+    // The sessions codeg ran itself to generate text (`acp::one_shot`) were
+    // never conversations: left out, recognised by where they ran.
+    let generated = crate::acp::one_shot::GenerationPaths::current();
     for (at, parser) in &parsers {
         if let Some(ref filter) = agent_type {
             if filter != at {
@@ -252,6 +257,13 @@ fn list_conversations_sync(
             Ok(conversations) => {
                 // Deduplicate conversations based on (agent_type, id) combination
                 for conversation in conversations {
+                    if conversation
+                        .folder_path
+                        .as_deref()
+                        .is_some_and(|p| generated.contains(p))
+                    {
+                        continue;
+                    }
                     let key = format!("{:?}-{}", conversation.agent_type, conversation.id);
                     if seen_keys.insert(key) {
                         all_conversations.push(conversation);
@@ -1337,6 +1349,13 @@ fn parse_resume_task_id(input: &str) -> Option<String> {
 /// an earlier turn). Without this the resumed card would be frozen at the
 /// `running` its ack reported, forever — the child's real outcome landed on the
 /// DB row, not on the resume result.
+///
+/// Any OTHER tool block whose title+args pass [`crate::acp::lifecycle::is_delegation_invocation`]
+/// binds by `tool_use_id` exactly like `delegate_to_agent`. This is what covers
+/// opencode 2.x code mode: the host wraps the MCP call in its `execute` tool, so
+/// the persisted block's title is `execute` and the real invocation lives inside
+/// a JS `code` string. The live path registers those calls through the same
+/// predicate, so replay recognition cannot drift from it.
 fn inject_delegation_meta(turns: &mut [MessageTurn], children: &[DbConversationSummary]) {
     if children.is_empty() {
         return;
@@ -1402,6 +1421,20 @@ fn inject_delegation_meta(turns: &mut [MessageTurn], children: &[DbConversationS
                         .as_deref()
                         .and_then(parse_resume_task_id)
                         .and_then(|task_id| by_task_id.get(task_id.as_str()).copied())
+                } else if crate::acp::lifecycle::is_delegation_invocation(
+                    tool_name,
+                    input_preview.as_deref(),
+                ) {
+                    tool_use_id.as_deref().and_then(|tu| {
+                        by_parent_tool_use_id
+                            .get(tu)
+                            .or_else(|| {
+                                task_id_by_call
+                                    .get(tu)
+                                    .and_then(|task_id| by_task_id.get(task_id.as_str()))
+                            })
+                            .copied()
+                    })
                 } else {
                     continue;
                 };
@@ -1409,6 +1442,58 @@ fn inject_delegation_meta(turns: &mut [MessageTurn], children: &[DbConversationS
                 *meta = Some(serde_json::json!({
                     "codeg.delegation": build_historical_delegation_meta(child),
                 }));
+            }
+        }
+    }
+}
+
+/// Where a tool call's approval record rides on its `ToolUse` block, beside
+/// whatever metadata the agent or [`inject_delegation_meta`] put there.
+const APPROVAL_META_KEY: &str = "codeg.approval";
+
+/// Stamp each kept approval onto the tool call it was about, as
+/// `meta["codeg.approval"]`. Transcripts record the call but never how its
+/// permission request was answered, so this is what lets a reopened
+/// conversation draw the same "approved" chip the live one did. Merges into an
+/// existing meta object; a non-object meta (no parser writes one) is left
+/// alone rather than replaced. Records whose call is not in these turns — an id
+/// the transcript spells differently, a call in a sub-agent's own transcript —
+/// simply match nothing.
+fn inject_tool_approvals(turns: &mut [MessageTurn], approvals: &[ToolApprovalInfo]) {
+    if approvals.is_empty() {
+        return;
+    }
+    let by_call: HashMap<&str, &ToolApprovalInfo> = approvals
+        .iter()
+        .map(|a| (a.tool_call_id.as_str(), a))
+        .collect();
+    for turn in turns.iter_mut() {
+        for block in turn.blocks.iter_mut() {
+            let ContentBlock::ToolUse {
+                tool_use_id: Some(tool_use_id),
+                meta,
+                ..
+            } = block
+            else {
+                continue;
+            };
+            let Some(approval) = by_call.get(tool_use_id.as_str()) else {
+                continue;
+            };
+            let stamp = serde_json::json!({
+                "option_kind": approval.option_kind,
+                "option_name": approval.option_name,
+                "origin": approval.origin,
+                "decided_at": approval.decided_at,
+            });
+            match meta {
+                None => {
+                    *meta = Some(serde_json::json!({ APPROVAL_META_KEY: stamp }));
+                }
+                Some(serde_json::Value::Object(map)) => {
+                    map.insert(APPROVAL_META_KEY.to_string(), stamp);
+                }
+                Some(_) => {}
             }
         }
     }
@@ -1605,6 +1690,12 @@ pub async fn get_folder_conversation_core(
         .await
         .unwrap_or_default();
     inject_delegation_meta(&mut turns, &children);
+    // Same best-effort contract: a failed read costs the approval chips, never
+    // the detail load.
+    let approvals = tool_approval_service::list_by_conversation(conn, conversation_id)
+        .await
+        .unwrap_or_default();
+    inject_tool_approvals(&mut turns, &approvals);
 
     Ok((
         DbConversationDetail {
@@ -2961,6 +3052,7 @@ mod tests {
             delegation_call_id: Some("call-1".into()),
             origin_cwd: None,
             assistant_id: None,
+            source: None,
             assistant_name: None,
             tag_ids: Vec::new(),
         }
@@ -3435,6 +3527,53 @@ mod tests {
         assert_eq!(turns.len(), 2, "the prior completed reply is preserved");
     }
 
+    fn approval_record(tool_call_id: &str, option_kind: &str) -> ToolApprovalInfo {
+        ToolApprovalInfo {
+            tool_call_id: tool_call_id.into(),
+            option_kind: option_kind.into(),
+            option_name: "Always Allow".into(),
+            origin: "chat_channel".into(),
+            decided_at: chrono::DateTime::parse_from_rfc3339("2026-10-22T09:41:12Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        }
+    }
+
+    #[test]
+    fn inject_tool_approvals_stamps_the_matching_call() {
+        let mut turns = vec![
+            tool_use_turn(Some("tu-1"), "Bash"),
+            tool_use_turn(Some("tu-2"), "Bash"),
+            tool_use_turn(None, "Bash"),
+        ];
+        inject_tool_approvals(&mut turns, &[approval_record("tu-1", "allow_always")]);
+        let meta = first_block_meta(&turns[0]).expect("stamped");
+        assert_eq!(
+            meta[APPROVAL_META_KEY],
+            serde_json::json!({
+                "option_kind": "allow_always",
+                "option_name": "Always Allow",
+                "origin": "chat_channel",
+                "decided_at": "2026-10-22T09:41:12Z",
+            })
+        );
+        assert!(first_block_meta(&turns[1]).is_none(), "no record, no stamp");
+        assert!(first_block_meta(&turns[2]).is_none());
+    }
+
+    #[test]
+    fn inject_tool_approvals_merges_into_existing_meta() {
+        let mut turns = vec![tool_use_turn(
+            Some("tu-1"),
+            "mcp__codeg-mcp__delegate_to_agent",
+        )];
+        inject_delegation_meta(&mut turns, &[summary_child(42, "tu-1", "completed")]);
+        inject_tool_approvals(&mut turns, &[approval_record("tu-1", "allow_once")]);
+        let meta = first_block_meta(&turns[0]).expect("meta");
+        assert_eq!(meta["codeg.delegation"]["child_conversation_id"], 42);
+        assert_eq!(meta[APPROVAL_META_KEY]["option_kind"], "allow_once");
+    }
+
     #[test]
     fn inject_delegation_meta_populates_completed_child() {
         let mut turns = vec![tool_use_turn(
@@ -3450,6 +3589,86 @@ mod tests {
         assert!(
             inner.get("error_code").is_none(),
             "completed has no error_code"
+        );
+    }
+
+    /// opencode 2.x wraps the MCP call in its `execute` tool — the persisted
+    /// block's title is `execute` and the real invocation lives in a JS `code`
+    /// string. Replay binds it by the same predicate the live path registers
+    /// with, so a refreshed card keeps its status mapping and 查看会话.
+    #[test]
+    fn inject_delegation_meta_binds_an_opencode_execute_call() {
+        let code = r#"await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: `t` })"#;
+        let mut turns = vec![tool_use_turn_with_input(
+            Some("tu-exec-1"),
+            "execute",
+            Some(&serde_json::json!({ "code": code }).to_string()),
+        )];
+        inject_delegation_meta(&mut turns, &[summary_child(42, "tu-exec-1", "completed")]);
+        let inner = first_block_meta(&turns[0])
+            .and_then(|m| m.get("codeg.delegation").cloned())
+            .expect("execute card should be bound");
+        assert_eq!(inner["status"], "completed");
+        assert_eq!(inner["child_conversation_id"], 42);
+        assert_eq!(inner["agent_type"], "codex");
+    }
+
+    /// The binding fallback is the shared closure, not the tool-name branch:
+    /// an `execute` block whose tool_use_id never meets the child row still
+    /// binds through the task id echoed on its own result.
+    #[test]
+    fn inject_delegation_meta_binds_an_execute_call_by_its_task_id() {
+        let code = r#"tools["codeg-mcp"].delegate_to_agent({ agent_type: "zcode", task: `t` })"#;
+        let mut turns = vec![
+            tool_use_turn_with_input(
+                Some("call_exec_2"),
+                "execute",
+                Some(&serde_json::json!({ "code": code }).to_string()),
+            ),
+            tool_result_turn(
+                "call_exec_2",
+                "Delegation successful. task_id=8ff4c14c-740c-4482-b758-8f2091f97063.",
+            ),
+        ];
+        let mut child = summary_child(7, "exec-unmatched-id", "completed");
+        child.delegation_call_id = Some("8ff4c14c-740c-4482-b758-8f2091f97063".into());
+
+        inject_delegation_meta(&mut turns, &[child]);
+
+        let inner = first_block_meta(&turns[0])
+            .and_then(|m| m.get("codeg.delegation").cloned())
+            .expect("execute card should bind via task id");
+        assert_eq!(inner["child_conversation_id"], 7);
+    }
+
+    /// The code-mode shape counts only on opencode's `execute` tool: another
+    /// tool's `code` argument shaped like the call stays unbound, as it never
+    /// registered live.
+    #[test]
+    fn inject_delegation_meta_does_not_bind_another_tools_code_argument() {
+        let code = r#"await tools["codeg-mcp"].delegate_to_agent({ agent_type: "codex", task: `t` })"#;
+        let mut turns = vec![tool_use_turn_with_input(
+            Some("browser-1"),
+            "mcp__playwright__browser_run_code",
+            Some(&serde_json::json!({ "code": code }).to_string()),
+        )];
+        inject_delegation_meta(&mut turns, &[summary_child(42, "browser-1", "completed")]);
+        assert!(first_block_meta(&turns[0]).is_none());
+    }
+
+    /// The shape gate cuts both ways: an `execute` block whose code is not a
+    /// delegation must stay unbound.
+    #[test]
+    fn inject_delegation_meta_does_not_bind_an_unrelated_execute_call() {
+        let mut turns = vec![tool_use_turn_with_input(
+            Some("tu-exec-3"),
+            "execute",
+            Some(r#"{"code":"const x = 1"}"#),
+        )];
+        inject_delegation_meta(&mut turns, &[summary_child(42, "tu-exec-3", "completed")]);
+        assert!(
+            first_block_meta(&turns[0]).is_none(),
+            "a non-delegation execute call must not be bound"
         );
     }
 
@@ -3496,6 +3715,7 @@ mod tests {
                 is_error: false,
                 agent_stats: None,
                 images: Vec::new(),
+                exit_code: None,
             }],
             timestamp: chrono::Utc::now(),
             usage: None,
@@ -4393,6 +4613,72 @@ mod tests {
             .await
             .expect("read by session id");
         assert_eq!(by_id.turns.len(), 2);
+    }
+
+    /// A reopened conversation gets back the approvals its live run showed:
+    /// the kept record is stamped onto the transcript's tool call.
+    #[tokio::test]
+    async fn a_reopened_conversation_carries_its_tool_approvals() {
+        let config_dir = tempfile::tempdir().expect("tempdir");
+        let project = config_dir.path().join("projects").join("-approvals-proj");
+        std::fs::create_dir_all(&project).expect("project dir");
+        let session_id = "6b1e2f30-4c5d-4e6f-8a7b-9c0d1e2f3a4b";
+        std::fs::write(
+            project.join(format!("{session_id}.jsonl")),
+            [
+                r#"{"type":"user","timestamp":"2026-10-22T09:40:00.000Z","uuid":"u1","cwd":"/tmp/codeg-approvals-proj","message":{"role":"user","content":[{"type":"text","text":"commit it"}]}}"#,
+                r#"{"type":"assistant","timestamp":"2026-10-22T09:40:05.000Z","uuid":"a1","parentUuid":"u1","message":{"id":"msg_01","role":"assistant","model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_commit","name":"Bash","input":{"command":"git commit -am wip"}}]}}"#,
+                r#"{"type":"user","timestamp":"2026-10-22T09:41:20.000Z","uuid":"u2","parentUuid":"a1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_commit","content":"[main 1a2b3c4] wip"}]}}"#,
+            ]
+            .join("\n"),
+        )
+        .expect("write transcript");
+
+        let db = fresh_in_memory_db().await;
+        save_agent_env_json(
+            &db,
+            AgentType::ClaudeCode,
+            &serde_json::json!({ "CLAUDE_CONFIG_DIR": config_dir.path() }).to_string(),
+        )
+        .await;
+        let folder_id = seed_folder(&db, "/tmp/codeg-approvals-proj").await;
+        let conversation_id = create_conversation_core(
+            &db.conn,
+            folder_id,
+            AgentType::ClaudeCode,
+            Some("approvals".into()),
+        )
+        .await
+        .expect("create conversation");
+        conversation_service::bind_external_id(&db.conn, conversation_id, session_id, &[])
+            .await
+            .expect("bind session");
+        tool_approval_service::record(
+            &db.conn,
+            conversation_id,
+            &approval_record("toolu_commit", "allow_always"),
+        )
+        .await
+        .expect("record approval");
+
+        let (detail, _) = get_folder_conversation_core(&db.conn, conversation_id)
+            .await
+            .expect("open conversation");
+        let stamp = detail
+            .turns
+            .iter()
+            .flat_map(|t| t.blocks.iter())
+            .find_map(|b| match b {
+                ContentBlock::ToolUse {
+                    tool_use_id: Some(id),
+                    meta: Some(meta),
+                    ..
+                } if id == "toolu_commit" => meta.get(APPROVAL_META_KEY).cloned(),
+                _ => None,
+            })
+            .expect("the commit carries its approval");
+        assert_eq!(stamp["option_kind"], "allow_always");
+        assert_eq!(stamp["origin"], "chat_channel");
     }
 
     #[tokio::test]
@@ -6883,6 +7169,7 @@ mod tests {
                 delegation_call_id: None,
                 origin_cwd: None,
                 assistant_id: None,
+                source: None,
                 assistant_name: None,
                 tag_ids: Vec::new(),
             },

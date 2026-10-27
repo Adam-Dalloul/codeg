@@ -20,6 +20,7 @@ import {
   CheckCircle2,
   Info,
   ChevronRight,
+  SquareTerminal,
 } from "lucide-react"
 import { useTranslations } from "next-intl"
 import { useImeGuard } from "@/hooks/use-ime-guard"
@@ -475,6 +476,20 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                       size="xs"
                       className="relative -ml-[0.25rem] max-w-[calc(100%-3.875rem)] shrink overflow-hidden"
                     />
+                    {/* Started by `codeg-cli`: told apart from the window's
+                    own, and found again with the Recent filter. */}
+                    {conversation.source === "cli" ? (
+                      <span
+                        className="ml-auto inline-flex shrink-0 items-center"
+                        title={tSidebar("cliBadge")}
+                      >
+                        <SquareTerminal
+                          className="h-3 w-3 text-muted-foreground/60"
+                          aria-hidden
+                        />
+                        <span className="sr-only">{tSidebar("cliBadge")}</span>
+                      </span>
+                    ) : null}
                     {/* No mark for a conversation re-parented out of a removed
                     worktree (`origin_cwd`): the row stays quiet about it, and
                     the hover bubble names the original path instead. */}
@@ -560,10 +575,16 @@ export const SidebarConversationCard = memo(function SidebarConversationCard({
                           className="relative inline-flex shrink-0 items-center justify-center"
                           title={tSidebar("statusRunningBadge")}
                         >
-                          <Loader2
-                            className="h-3.5 w-3.5 animate-spin text-amber-600 dark:text-amber-400"
+                          {/* The turn is on a span, not the icon: an SVG
+                              element's transform animates on the main thread,
+                              laying the page out every frame for as long as
+                              the conversation runs. */}
+                          <span
+                            className="inline-flex animate-spin"
                             aria-hidden
-                          />
+                          >
+                            <Loader2 className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
+                          </span>
                           <span className="sr-only">
                             {tSidebar("statusRunningBadge")}
                           </span>
