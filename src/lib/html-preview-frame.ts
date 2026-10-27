@@ -1,5 +1,6 @@
 export const HTML_PREVIEW_SIZE_MESSAGE_TYPE = "codeg-visualize:size"
 
+/** Theme tokens codeg shares with the Codex visualize skill's contract. */
 const THEME_TOKENS = [
   "background",
   "foreground",
@@ -21,6 +22,19 @@ const THEME_TOKENS = [
   "ring",
 ] as const
 
+/**
+ * Reports the content's height to the parent whenever it changes.
+ *
+ * Measured off the content boxes — the root's box (which holds `<body>`'s
+ * margins, collapsed ones included) and `<body>`'s own overflow — never off
+ * the root's `scrollHeight`, which does not drop below the frame's current
+ * height and so could only ever grow the card. Nothing is reported before
+ * there is a layout to measure. Content whose height follows the viewport
+ * (`100vh` layouts) grows by exactly as much as the frame does; once a resize
+ * shows that, the reporter falls silent and the frame keeps the height it last
+ * asked for (the content scrolls), or every step of "Show all" would ask for
+ * another — and chasing a mid-transition viewport would never settle either.
+ */
 export const HTML_PREVIEW_SIZE_REPORTER = `<script>(()=>{
 const type=${JSON.stringify(HTML_PREVIEW_SIZE_MESSAGE_TYPE)};
 let lastHeight=0,lastViewport=innerHeight,sent=0,coupled=false,queued=false;
@@ -34,6 +48,7 @@ new MutationObserver(schedule).observe(document.documentElement,{subtree:true,ch
 addEventListener("load",update);
 })();</script>`
 
+/** Copy codeg's current theme tokens into the frame's variable contract. */
 export function readHtmlPreviewTheme(): string {
   if (typeof document === "undefined") return ""
   const style = getComputedStyle(document.documentElement)
@@ -50,6 +65,7 @@ export function readHtmlPreviewTheme(): string {
   return `:root{${decls.join(";")}}`
 }
 
+/** The reporter for a frame whose CSP admits only scripts carrying `nonce`. */
 export function htmlPreviewSizeReporter(nonce: string): string {
   return HTML_PREVIEW_SIZE_REPORTER.replace(
     "<script>",

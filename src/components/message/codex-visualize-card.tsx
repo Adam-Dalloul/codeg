@@ -121,8 +121,6 @@ const FRAME_CSP = [
  */
 const FRAME_BASE = `<base href="about:srcdoc">`
 
-/** Names shared by the skill's contract and codeg's theme tokens. */
-
 /**
  * Used only when the Codex plugin's own stylesheet cannot be found. Supplies
  * the variable contract and the few utilities fragments lean on most; it does
@@ -197,20 +195,6 @@ const FRAME_PADDING = "1rem 1.25rem"
  */
 const TRANSPARENT_CANVAS_CSS =
   ":root,body{background:transparent !important;background-color:transparent !important}"
-
-/**
- * Reports the content's height to the parent whenever it changes.
- *
- * Measured off the content boxes — the root's box (which holds `<body>`'s
- * margins, collapsed ones included) and `<body>`'s own overflow — never off
- * the root's `scrollHeight`, which does not drop below the frame's current
- * height and so could only ever grow the card. Nothing is reported before
- * there is a layout to measure. Content whose height follows the viewport
- * (`100vh` layouts) grows by exactly as much as the frame does; once a resize
- * shows that, the reporter falls silent and the frame keeps the height it last
- * asked for (the content scrolls), or every step of "Show all" would ask for
- * another — and chasing a mid-transition viewport would never settle either.
- */
 
 /**
  * The skill tells fragments to keep their state through `window.openai`
@@ -307,8 +291,6 @@ function getVisualizeAssets(): Promise<VisualizeAssets> {
 export function resetCodexVisualizeAssetsForTests(): void {
   assetsPromise = null
 }
-
-/** Copy codeg's current theme tokens into the frame's variable contract. */
 
 function escapeClosingScript(source: string): string {
   return source.replace(/<\/script/gi, "<\\/script")
