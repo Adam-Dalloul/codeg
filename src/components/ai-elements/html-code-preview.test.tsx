@@ -3,6 +3,7 @@ import { NextIntlClientProvider } from "next-intl"
 import type { ComponentType, ReactNode } from "react"
 import { beforeEach, describe, expect, it } from "vitest"
 import enMessages from "@/i18n/messages/en.json"
+import { resetHtmlPreviewCachesForTests } from "./html-code-preview"
 import { messageBlockComponents, JsonRenderScope } from "./json-render-pre"
 import { MessageResponse } from "./message"
 
@@ -13,6 +14,7 @@ const Pre = messageBlockComponents.pre as ComponentType<{
 beforeEach(() => {
   localStorage.clear()
   localStorage.setItem("workspace:chat-html-rendering", "true")
+  resetHtmlPreviewCachesForTests()
 })
 
 function reply(source: string, language = "html") {
@@ -85,5 +87,17 @@ describe("HTML code preview", () => {
   it.each(["HTML", "htm"])("supports the %s language label", (language) => {
     render(reply("<p>Hello</p>", language))
     expect(screen.getByRole("button", { name: "Preview" })).toBeInTheDocument()
+  })
+
+  it("keeps the view switch clear of the code block's own buttons", async () => {
+    render(reply("<h1>Hello</h1>"))
+    await screen.findByTitle("HTML preview")
+    const toolbar = screen.getByRole("button", { name: "Code" }).parentElement
+    // Over the frame, its corner is free.
+    expect(toolbar).toHaveClass("end-1")
+    fireEvent.click(screen.getByRole("button", { name: "Code" }))
+    // Over code, Streamdown's copy and download buttons hold that corner.
+    expect(toolbar).toHaveClass("end-18")
+    expect(toolbar).not.toHaveClass("end-1")
   })
 })

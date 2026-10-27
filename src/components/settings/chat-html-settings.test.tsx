@@ -2,11 +2,15 @@ import { act, fireEvent, render, screen } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import { beforeEach, describe, expect, it } from "vitest"
 import enMessages from "@/i18n/messages/en.json"
+import { resetHtmlPreviewCachesForTests } from "@/components/ai-elements/html-code-preview"
 import { JsonRenderScope } from "@/components/ai-elements/json-render-pre"
 import { MessageResponse } from "@/components/ai-elements/message"
 import { ChatHtmlSettingsSection } from "./chat-html-settings"
 
-beforeEach(() => localStorage.clear())
+beforeEach(() => {
+  localStorage.clear()
+  resetHtmlPreviewCachesForTests()
+})
 
 describe("聊天 HTML 设置联动", () => {
   it("无需刷新就能开启和关闭当前聊天中的 HTML 渲染", async () => {

@@ -1,12 +1,18 @@
 import { act, fireEvent, render, screen } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import enMessages from "@/i18n/messages/en.json"
+import { resetHtmlPreviewCachesForTests } from "./html-code-preview"
 import { JsonRenderScope } from "./json-render-pre"
 import { MessageResponse } from "./message"
 
 vi.mock("next-themes", () => ({
   useTheme: () => ({ resolvedTheme: "light" }),
+}))
+
+// Links route through link safety, which reads app settings; not under test.
+vi.mock("@/components/ai-elements/link-safety", () => ({
+  useStreamdownLinkSafety: () => ({ enabled: false }),
 }))
 
 function reply(text: string, streaming = false, assistant = true) {
@@ -28,7 +34,23 @@ function reply(text: string, streaming = false, assistant = true) {
 beforeEach(() => {
   localStorage.clear()
   localStorage.setItem("workspace:chat-html-rendering", "true")
+  resetHtmlPreviewCachesForTests()
 })
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+function reportHeight(frame: HTMLElement, height: number) {
+  act(() =>
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        source: (frame as HTMLIFrameElement).contentWindow,
+        data: { type: "codeg-visualize:size", height },
+      })
+    )
+  )
+}
 
 describe("rich HTML in assistant replies", () => {
   it("renders styled HTML between Markdown paragraphs without injecting it into the host", async () => {
@@ -75,14 +97,112 @@ describe("rich HTML in assistant replies", () => {
     expect(screen.queryByTitle("HTML preview")).toBeNull()
     expect(screen.getByRole("status")).toBeInTheDocument()
     const complete = '<div style="display:flex"><p>First</p></div>'
+    // Until the next block shows, another root could still join it.
     rerender(reply(complete, true))
+    expect(screen.queryByTitle("HTML preview")).toBeNull()
+    rerender(reply(complete + "\n\nFollowing", true))
     const frame = await screen.findByTitle("HTML preview")
     const document = frame.getAttribute("srcdoc")
     rerender(reply(complete + "\n\nFollowing **prose**.", true))
     expect(screen.getByTitle("HTML preview")).toBe(frame)
     expect(frame.getAttribute("srcdoc")).toBe(document)
-    rerender(reply(complete + "\n\nFollowing **prose**."))
-    expect(screen.getByTitle("HTML preview")).toBe(frame)
+  })
+
+  it("brings a preview back as it was when the reply stops streaming", async () => {
+    const text = '<div style="display:flex"><p>First</p></div>\n\nAfter.'
+    const { rerender } = render(reply(text, true))
+    const frame = await screen.findByTitle("HTML preview")
+    const document = frame.getAttribute("srcdoc")
+    reportHeight(frame, 240)
+    fireEvent.click(screen.getByRole("button", { name: "Code" }))
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }))
+    // A finished reply is a new tree: the preview mounts again, at once and
+    // at the height it measured — no "Generating", no default height.
+    rerender(reply(text))
+    expect(screen.queryByRole("status")).toBeNull()
+    const finished = screen.getByTitle("HTML preview")
+    expect(finished.getAttribute("srcdoc")).toBe(document)
+    expect(finished.style.height).toBe("240px")
+  })
+
+  it("keeps the reader's choice of view when the reply stops streaming", async () => {
+    const text = "<div>Card</div>\n\nAfter."
+    const { rerender } = render(reply(text, true))
+    await screen.findByTitle("HTML preview")
+    fireEvent.click(screen.getByRole("button", { name: "Code" }))
+    rerender(reply(text))
+    expect(screen.queryByTitle("HTML preview")).toBeNull()
+    expect(screen.getByRole("button", { name: "Code" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    )
+  })
+
+  it("draws a finished reply the way it does without the setting", async () => {
+    const markdown = [
+      "مرحبا بكم في المشروع.",
+      "",
+      "Hello there.",
+      "",
+      "- عنصر أول",
+      "- عنصر ثان",
+      "",
+      "مرحبا `code here` بكم",
+      "",
+      "See [the docs][1].",
+      "",
+      "[1]: https://example.com/docs",
+    ].join("\n")
+    for (const enabled of ["false", "true"]) {
+      localStorage.setItem("workspace:chat-html-rendering", enabled)
+      const { container, unmount } = render(reply(markdown))
+      const dirOf = (start: string) =>
+        Array.from(container.querySelectorAll("p"))
+          .find((p) => p.textContent?.startsWith(start))
+          ?.getAttribute("dir")
+      expect(dirOf("مرحبا بكم")).toBe("rtl")
+      expect(dirOf("Hello")).toBe("ltr")
+      expect(container.querySelector("li")).toHaveAttribute("dir", "rtl")
+      expect(screen.getByText("code here")).toHaveAttribute("dir", "ltr")
+      expect(dirOf("See")).toBe("ltr")
+      expect(
+        Array.from(container.querySelectorAll("p")).some(
+          (p) => p.textContent === "See the docs."
+        )
+      ).toBe(true)
+      unmount()
+    }
+  })
+
+  it("leaves Markdown wrapped in HTML tags to Markdown", () => {
+    const { container } = render(
+      reply(
+        "Intro.\n\n<details>\n<summary>More</summary>\n\n- item **one**\n- item two\n\n</details>\n\nAfter."
+      )
+    )
+    expect(screen.queryByTitle("HTML preview")).toBeNull()
+    expect(container.querySelector("details summary")).toHaveTextContent("More")
+    const item = Array.from(container.querySelectorAll("li")).find((li) =>
+      li.textContent?.includes("one")
+    )
+    // Rendered as Markdown: bold, not literal asterisks.
+    expect(item?.textContent).toBe("item one")
+  })
+
+  it("previews where crypto.randomUUID is missing (plain-HTTP origins)", async () => {
+    const { getRandomValues } = globalThis.crypto
+    vi.stubGlobal("crypto", {
+      getRandomValues: getRandomValues.bind(globalThis.crypto),
+    })
+    render(reply("<div>Card</div>"))
+    const frame = await screen.findByTitle("HTML preview")
+    expect(frame.getAttribute("srcdoc")).toMatch(/script-src 'nonce-[\w-]+'/)
+  })
+
+  it("shows an agent's own codeg-html-pending fence as code once the reply is done", () => {
+    render(reply("```codeg-html-pending\n<div>x</div>\n```\n\nDone."))
+    expect(screen.queryByRole("status")).toBeNull()
+    expect(screen.getByText("<div>x</div>")).toBeInTheDocument()
   })
 
   it("does not activate incomplete HTML fences during streaming", () => {

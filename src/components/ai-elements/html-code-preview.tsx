@@ -9,6 +9,49 @@ import {
   HTML_PREVIEW_SIZE_MESSAGE_TYPE,
   readHtmlPreviewTheme,
 } from "@/lib/html-preview-frame"
+import { cn, randomUUID } from "@/lib/utils"
+
+interface FrameEntry {
+  /** `null` when the build failed: the fence stays code. */
+  doc: string | null
+  /** The theme tokens it was built with; other tokens rebuild it. */
+  theme: string
+  /** What the frame last reported, while it reported anything. */
+  height?: number
+}
+
+interface View {
+  preview: boolean
+  expanded: boolean
+}
+
+const DEFAULT_VIEW: View = { preview: true, expanded: false }
+
+/**
+ * The documents previews built, by theme and source, the height each
+ * measured, and the view the reader picked, by source. Streamdown draws a
+ * finished reply as a new tree, so every preview in a reply mounts again the
+ * moment it stops streaming; these bring it back as it was, instead of
+ * "Generating", then growing from the default height, back in its first view.
+ */
+const frames = new Map<string, FrameEntry>()
+const views = new Map<string, View>()
+const CACHE_LIMIT = 32
+
+function remember<T>(cache: Map<string, T>, key: string, value: T) {
+  cache.delete(key)
+  cache.set(key, value)
+  if (cache.size > CACHE_LIMIT) {
+    const oldest = cache.keys().next().value
+    if (oldest !== undefined) cache.delete(oldest)
+  }
+}
+
+/** Tests only. */
+export function resetHtmlPreviewCachesForTests(): void {
+  frames.clear()
+  views.clear()
+}
 
 export function HtmlCodePending() {
   const t = useTranslations("HtmlCodePreview")
@@ -32,10 +75,15 @@ export function HtmlCodePreview({
   const t = useTranslations("HtmlCodePreview")
   const { resolvedTheme } = useTheme()
   const dark = resolvedTheme === "dark"
-  const [preview, setPreview] = useState(true)
-  const [expanded, setExpanded] = useState(false)
+  const [view, setView] = useState(() => views.get(source) ?? DEFAULT_VIEW)
+  const { preview, expanded } = view
+  const changeView = (change: Partial<View>) => {
+    const next = { ...view, ...change }
+    remember(views, source, next)
+    setView(next)
+  }
   const frameRef = useRef<HTMLIFrameElement>(null)
-  const key = `${source}\0${dark}`
+  const key = `${dark}\0${source}`
   const [loaded, setLoaded] = useState<{
     key: string
     doc: string | null
@@ -46,16 +94,20 @@ export function HtmlCodePreview({
   } | null>(null)
 
   useEffect(() => {
+    const theme = readHtmlPreviewTheme()
+    if (frames.get(key)?.theme === theme) return
     let active = true
-    buildChatHtmlDocument(source, {
-      nonce: crypto.randomUUID(),
-      dark,
-      theme: readHtmlPreviewTheme(),
-    }).then(
+    buildChatHtmlDocument(source, { nonce: randomUUID(), dark, theme }).then(
       (doc) => {
+        remember(frames, key, {
+          doc,
+          theme,
+          height: frames.get(key)?.height,
+        })
         if (active) setLoaded({ key, doc })
       },
       () => {
+        remember(frames, key, { doc: null, theme })
         if (active) setLoaded({ key, doc: null })
       }
     )
@@ -77,6 +129,8 @@ export function HtmlCodePreview({
       )
         return
       const height = Math.min(12000, Math.max(96, Math.ceil(data.height)))
+      const entry = frames.get(key)
+      if (entry) entry.height = height
       setMeasured((prev) =>
         prev?.key === key && prev.height === height ? prev : { key, height }
       )
@@ -85,9 +139,13 @@ export function HtmlCodePreview({
     return () => window.removeEventListener("message", onMessage)
   }, [key])
 
-  const current = loaded?.key === key ? loaded : null
-  const height = measured?.key === key ? measured.height : 160
+  const cached = frames.get(key)
+  const current = cached ?? (loaded?.key === key ? loaded : null)
+  const height =
+    measured?.key === key ? measured.height : (cached?.height ?? 160)
   const overflows = height > 640
+  const framed = preview && Boolean(current?.doc)
+  const waiting = preview && current === null
 
   return (
     <section
@@ -95,12 +153,19 @@ export function HtmlCodePreview({
       dir="ltr"
       data-chat-html
     >
-      <div className="absolute end-1 top-1 z-10 flex items-center gap-1 rounded-lg border bg-background/90 px-1 py-0.5 opacity-0 shadow-sm backdrop-blur transition-opacity group-hover/html:opacity-100 group-focus-within/html:opacity-100 max-sm:opacity-100">
+      <div
+        className={cn(
+          "absolute top-1 z-10 flex items-center gap-1 rounded-lg border bg-background/90 px-1 py-0.5 opacity-0 shadow-sm backdrop-blur transition-opacity group-hover/html:opacity-100 group-focus-within/html:opacity-100 max-sm:opacity-100",
+          // Over code, keep clear of the code block's own copy and download
+          // buttons in the same corner.
+          framed || waiting ? "end-1" : "end-18"
+        )}
+      >
         <Button
           size="sm"
           variant={preview ? "ghost" : "secondary"}
           aria-pressed={!preview}
-          onClick={() => setPreview(false)}
+          onClick={() => changeView({ preview: false })}
         >
           {t("code")}
         </Button>
@@ -108,12 +173,12 @@ export function HtmlCodePreview({
           size="sm"
           variant={preview ? "secondary" : "ghost"}
           aria-pressed={preview}
-          onClick={() => setPreview(true)}
+          onClick={() => changeView({ preview: true })}
         >
           {t("preview")}
         </Button>
       </div>
-      {preview && current?.doc ? (
+      {framed && current?.doc ? (
         <iframe
           ref={frameRef}
           title={t("title")}
@@ -123,16 +188,16 @@ export function HtmlCodePreview({
           referrerPolicy="no-referrer"
           srcDoc={current.doc}
         />
-      ) : preview && current === null ? (
+      ) : waiting ? (
         <HtmlCodePending />
       ) : (
         children
       )}
-      {preview && current?.doc && overflows ? (
+      {framed && overflows ? (
         <button
           type="button"
           className="w-full py-1 text-xs text-muted-foreground hover:text-foreground"
-          onClick={() => setExpanded((value) => !value)}
+          onClick={() => changeView({ expanded: !expanded })}
         >
           {expanded ? t("collapse") : t("expand")}
         </button>

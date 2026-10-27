@@ -49,11 +49,27 @@ describe("聊天 HTML 片段识别", () => {
 
   it("完整前缀不受后续 HTML 和 Markdown 追加影响，编辑历史内容时重置缓存", () => {
     const process = createChatHtmlProcessor()
-    const first = process("<div>First</div>", true)
-    expect(process("<div>First</div>\n\nTail.", true)).toBe(first + "\n\nTail.")
+    const first = process("<div>First</div>\n\nTail", true)
+    expect(first).toContain("```codeg-html\n<div>First</div>\n```")
+    expect(process("<div>First</div>\n\nTail.", true)).toBe(first + ".")
     const changed = process("<div>Changed</div>", false)
     expect(changed).toContain("Changed")
     expect(changed).not.toContain("First")
+  })
+
+  it("片段在其后出现内容前仍可能接上同一 HTML 块的根元素，因此保持等待", () => {
+    const process = createChatHtmlProcessor()
+    const style = "<style>.c{color:red}</style>\n"
+    expect(process(style + '<div class="c">A</div>', true)).toContain(
+      "```codeg-html-pending\n"
+    )
+    expect(process(style + '<div class="c">A</div>\n', true)).toContain(
+      "```codeg-html-pending\n"
+    )
+    const whole = style + '<div class="c">A</div>\n<div class="c">B</div>'
+    const result = process(whole + "\n\nAfter.", true)
+    expect(result.match(/```codeg-html\n/g)).toHaveLength(1)
+    expect(result).toContain("```codeg-html\n" + whole + "\n```")
   })
 
   it("使用足够长的围栏，HTML 内部的反引号不会逃逸成主页面内容", () => {
@@ -103,5 +119,94 @@ describe("聊天 HTML 片段识别", () => {
     )
     expect(result).toContain("Outside$x\\)")
     expect(result).toContain(html)
+  })
+
+  it.each([
+    [
+      "Markdown 包在标签里（<details> 里的列表）",
+      "Intro.\n\n<details>\n<summary>More</summary>\n\n- item **one**\n- item two\n\n</details>\n\nAfter.",
+    ],
+    [
+      "根元素一直没有闭合，后面是 Markdown",
+      '<div align="center">\n\n**Title**\n\n- a\n- b\n\n## Heading\n\nMore text.',
+    ],
+    [
+      "同一块中第二个根元素没有闭合，后面是 Markdown",
+      "<div>A</div>\n<p>B\n\nMore **markdown** here.\n\n## Heading",
+    ],
+    [
+      "闭合标签落在段落中间",
+      "<div>\nstart\n\nsome *md* paragraph </div> trailing words\n\nNext para",
+    ],
+  ])("标签跨过 Markdown 才闭合时不当作片段：%s", (_, source) => {
+    for (const streaming of [true, false])
+      expect(createChatHtmlProcessor()(source, streaming)).toBe(source)
+  })
+
+  it("块内空行后缩进四格的 HTML 仍属同一片段", () => {
+    const html =
+      '<div class="grid">\n    <div class="card">A</div>\n\n    <div class="card">B</div>\n</div>'
+    const result = createChatHtmlProcessor()(html + "\n\nAfter.", false)
+    expect(result).toBe("```codeg-html\n" + html + "\n```\n\nAfter.")
+  })
+
+  it("闭合的 HTML 围栏即使不是单个根元素也直接预览，流式中不再显示等待", () => {
+    const source = "```html\nHello <b>x</b>\n```\n\nMore prose"
+    for (const streaming of [true, false])
+      expect(createChatHtmlProcessor()(source, streaming)).toBe(
+        "```codeg-html\nHello <b>x</b>\n```\n\nMore prose"
+      )
+  })
+
+  it("围栏的闭合行写完之前仍在等待；被截断的围栏只在有完整根元素时预览", () => {
+    const process = createChatHtmlProcessor()
+    expect(process("```html\n<p>x</p>\n```", true)).toContain(
+      "codeg-html-pending"
+    )
+    expect(process("```html\n<p>x</p>\n```\n", true)).toContain(
+      "```codeg-html\n<p>x</p>\n```"
+    )
+    expect(createChatHtmlProcessor()("```html\nHello <b", false)).toContain(
+      "codeg-html-source"
+    )
+  })
+
+  it("先到的等待片段不会被后面完成的片段一起封存", () => {
+    const source =
+      "```html\nHello<br>world\n```\n\n```html\n<div>Complete</div>\n```"
+    const process = createChatHtmlProcessor()
+    for (let i = 1; i <= source.length; i++) process(source.slice(0, i), true)
+    const done = process(source, false)
+    expect(done).not.toContain("codeg-html-pending")
+    expect(done.match(/```codeg-html\n/g)).toHaveLength(2)
+  })
+
+  it("CRLF 换行的围栏在流式中也能闭合", () => {
+    const process = createChatHtmlProcessor()
+    process("```html\r\n<p>x</p>\r\n", true)
+    expect(process("```html\r\n<p>x</p>\r\n```\r\n\r\nNext", true)).toContain(
+      "```codeg-html\n"
+    )
+  })
+
+  it("逐字流式的结果在结束时与一次性处理完全相同", () => {
+    const documents = [
+      'Intro **text** with `Map<string, T>`.\n\n<style>.c{color:red}</style>\n<div class="c">A</div>\n<div class="c">B</div>\n\nMiddle \\(a+b\\) here.\n\n```html\n<p>Fence</p>\n```\n\n<details>\n<summary>S</summary>\n\n- item\n\n</details>\n\n```tsx\n<Button />\n  <div>x</div>\n```\n\nEnd \\[c\\].',
+      '<div align="center">\n\n**Title**\n\n</div>\n\nText <b>x</b>\n\n<table><tr><td>1</td></tr></table>\n',
+      "```html\nHello<br>world\n```\n\n```html\n<div>Complete</div>\n```",
+      '<div class="grid">\n    <div class="card">A</div>\n\n    <div class="card">B</div>\n</div>\n\n<section>\n<p>one</p>\n\n<p>two</p>\n</section>',
+    ]
+    const math = (text: string) =>
+      text.replace(/\\\(([\s\S]*?)\\\)/g, "$$$$$1$$$$")
+    for (const document of documents) {
+      for (const transform of [undefined, math]) {
+        const process = createChatHtmlProcessor()
+        for (let i = 1; i <= document.length; i++)
+          process(document.slice(0, i), true, transform)
+        expect(process(document, false, transform)).toBe(
+          createChatHtmlProcessor()(document, false, transform)
+        )
+      }
+    }
   })
 })

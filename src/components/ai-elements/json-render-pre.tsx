@@ -28,7 +28,7 @@ import {
   useContext,
   type ReactNode,
 } from "react"
-import type { Components } from "streamdown"
+import { StreamdownContext, type Components } from "streamdown"
 
 import { MermaidAwarePre } from "./mermaid-block"
 import { HtmlCodePending, HtmlCodePreview } from "./html-code-preview"
@@ -128,6 +128,7 @@ function SpecFence({
 function JsonRenderAwarePre({ children }: { children?: ReactNode }) {
   const inReply = useContext(AssistantReplyContext)
   const htmlEnabled = useChatHtmlEnabled()
+  const { mode } = useContext(StreamdownContext)
   if (
     inReply &&
     htmlEnabled &&
@@ -137,20 +138,22 @@ function JsonRenderAwarePre({ children }: { children?: ReactNode }) {
     ) &&
     typeof children.props.children === "string"
   ) {
-    if (children.props.className?.includes("language-codeg-html-pending"))
-      return <HtmlCodePending />
+    const className = children.props.className ?? ""
+    // Only a reply still streaming has HTML on its way; in a finished one the
+    // same fence (an agent can write one too) is just code.
+    const pending = className.includes("language-codeg-html-pending")
+    if (pending && mode === "streaming") return <HtmlCodePending />
     const code = (
       <MermaidAwarePre>
         {cloneElement(children, {
-          className: children.props.className?.replace(
-            /language-(?:html?|codeg-html(?:-source)?)(?=\s|$)/i,
+          className: className.replace(
+            /language-(?:html?|codeg-html(?:-pending|-source)?)(?=\s|$)/i,
             "language-html"
           ),
         })}
       </MermaidAwarePre>
     )
-    if (children.props.className?.includes("language-codeg-html-source"))
-      return code
+    if (pending || className.includes("language-codeg-html-source")) return code
     return (
       <HtmlCodePreview source={children.props.children}>{code}</HtmlCodePreview>
     )

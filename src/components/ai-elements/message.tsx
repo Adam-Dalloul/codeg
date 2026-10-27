@@ -596,8 +596,7 @@ function MessageResponseImpl({
       plugins={plugins}
       remarkPlugins={remarkPlugins}
       rehypePlugins={rehypePlugins}
-      // 富 HTML 保持按块渲染，避免结束生成时切换整棵树、重载已完成的 iframe。
-      mode={htmlEnabled ? "streaming" : mode}
+      mode={mode}
       parseIncompleteMarkdown={parseIncompleteMarkdown}
       remend={remend ? { ...remend, ...LIVE_REMEND } : LIVE_REMEND}
       // Every paragraph, heading, list item, quote and cell takes the
@@ -606,8 +605,6 @@ function MessageResponseImpl({
       // end, and an Arabic one in an English interface the other way.
       dir="auto"
       {...props}
-      // Streamdown 的 memo 不比较 parseIncompleteMarkdown；用实际生成状态触发收尾重绘。
-      isAnimating={htmlEnabled ? mode === "streaming" : props.isAnimating}
       // Merge after spreading props so a caller can still override other
       // elements, but the link icon + safety routing on `a`, the diagram and
       // json-render blocks on `pre` and the table's scrollbars always win.
