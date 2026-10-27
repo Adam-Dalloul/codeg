@@ -568,7 +568,45 @@ pub(crate) async fn claude_sessions_counted_elsewhere(
         .filter(conversation::Column::DeletedAt.is_null())
         .all(conn)
         .await?;
-    Ok(claude_sessions_counted_in(&rows, transcripts_root))
+    let mut counted = claude_sessions_counted_in(&rows, transcripts_root);
+    // A handoff changes the conversation's current agent, not ownership of
+    // the saved usage. Keep its earlier custom-Claude segments under the
+    // same upstream import rule while that logical conversation is live.
+    // Select identities only; the saved message bodies are not needed here.
+    use crate::db::entities::conversation_handoff;
+    use sea_orm::{QuerySelect, QueryTrait};
+    let live = conversation::Entity::find()
+        .select_only()
+        .column(conversation::Column::Id)
+        .filter(conversation::Column::DeletedAt.is_null())
+        .into_query();
+    let sources: Vec<(String, Option<String>)> = conversation_handoff::Entity::find()
+        .select_only()
+        .columns([
+            conversation_handoff::Column::FromAgentType,
+            conversation_handoff::Column::FromExternalId,
+        ])
+        .filter(conversation_handoff::Column::ConversationId.in_subquery(live))
+        .filter(conversation_handoff::Column::HistoryJson.is_not_null())
+        .filter(conversation_handoff::Column::FromAgentType.starts_with(
+            crate::models::agent::CUSTOM_AGENT_WIRE_PREFIX,
+        ))
+        .filter(conversation_handoff::Column::FromExternalId.is_not_null())
+        .into_tuple()
+        .all(conn)
+        .await?;
+    for (source, sid) in sources {
+        let (Some(agent), Some(sid)) = (claude_adapter_agent(&source), sid) else {
+            continue;
+        };
+        counted.extend(crate::acp_transcript::continuation_ancestors_in(
+            transcripts_root,
+            crate::acp::registry::registry_id_for(agent),
+            &sid,
+        ));
+        counted.insert(sid);
+    }
+    Ok(counted)
 }
 
 /// Reconcile ONE already-imported conversation against a fresh parse of its
@@ -1793,6 +1831,50 @@ mod tests {
             .await
             .expect("bind");
         row.id
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn handoff_keeps_custom_claude_source_and_continuation_ids_counted() {
+        use crate::acp::custom_registry::{hydrate, hydrate_test_guard};
+        use crate::db::service::handoff_service::{self, NewHandoff};
+        let _guard = hydrate_test_guard();
+        hydrate(&[
+            custom_def("handoff-counted", "@agentclientprotocol/claude-agent-acp"),
+            custom_def("handoff-unknown", "@example/unknown-adapter"),
+        ]);
+        let db = fresh_in_memory_db().await;
+        let root = tempfile::tempdir().unwrap();
+        let cwd = "/tmp/handoff-counted-import";
+        let folder = seed_folder(&db, cwd).await;
+        let owner = bound_row(&db.conn, folder, AgentType::Codex, "current-codex").await;
+        let other = bound_row(&db.conn, folder, AgentType::Codex, "other-codex").await;
+        let legacy = bound_row(&db.conn, folder, AgentType::Codex, "legacy-codex").await;
+        let official = AgentType::custom("handoff-counted").unwrap();
+        let header = crate::acp_transcript::TranscriptHeader::new(
+            &official.as_wire(), "saved-source", cwd, 0,
+        ).continuing("saved-ancestor");
+        crate::acp_transcript::record_header_in(root.path(),
+            crate::acp::registry::registry_id_for(official), &header).await.unwrap();
+        for (conversation_id, source, sid, target_sid, saved) in [
+            (owner, official, "saved-source", "current-codex", true),
+            (other, AgentType::custom("handoff-unknown").unwrap(), "unknown-source", "other-codex", true),
+            (legacy, official, "unretained-source", "legacy-codex", false),
+        ] {
+            handoff_service::record(&db.conn, NewHandoff {
+                conversation_id, from_agent_type: source, from_external_id: Some(sid.into()),
+                to_agent_type: AgentType::Codex, to_external_id: target_sid.into(),
+                path: if saved { "context" } else { "summary" }, carried: false, user_turns_before: 1,
+                note: None, briefing: None, truncated: false,
+                from_account_id: None, to_account_id: None, history_json: saved.then(|| "[]".into()),
+                context_id: None, context_pending: false, source_stats_json: None, source_model: None,
+            }).await.unwrap();
+        }
+        let counted = claude_sessions_counted_elsewhere(&db.conn, root.path()).await.unwrap();
+        assert_eq!(counted, HashSet::from(["saved-source".into(), "saved-ancestor".into()]));
+        conversation_service::soft_delete(&db.conn, owner).await.unwrap();
+        assert!(claude_sessions_counted_elsewhere(&db.conn, root.path()).await.unwrap().is_empty());
+        hydrate(&[]);
     }
 
     async fn claude_rows(conn: &DatabaseConnection, ext: &str) -> Vec<conversation::Model> {
