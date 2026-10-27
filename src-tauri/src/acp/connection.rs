@@ -184,9 +184,9 @@ pub(crate) fn is_launch_only_key(key: &str) -> bool {
 }
 
 /// `scratch` is the per-launch temp directory from
-/// [`crate::acp::scratch_dir`], or `None` when isolation is off or the
-/// directory could not be created (then the child inherits the ambient temp
-/// dir, exactly as it did before).
+/// [`crate::acp::scratch_dir`], or `None` when isolation is off, is not applied
+/// to this agent on this platform, or the directory could not be created (then
+/// the child inherits the ambient temp dir, exactly as it did before).
 fn merge_agent_env(
     env: &[(&'static str, &'static str)],
     runtime_env: &BTreeMap<String, String>,
@@ -2661,9 +2661,10 @@ pub async fn spawn_agent_connection(
     // exist by the time the child looks: a self-extracting agent binary creates
     // only its own leaf under whatever `TMP` names, so pointing at a directory
     // that is not there yet is a failed launch rather than a graceful fallback.
-    // `None` (isolation off, or the directory could not be created) means the
-    // child inherits the ambient temp dir exactly as it did before.
-    let scratch = crate::acp::scratch_dir::create();
+    // `None` (isolation off, not applied to this agent on this platform, or the
+    // directory could not be created) means the child inherits the ambient
+    // temp dir exactly as it did before.
+    let scratch = crate::acp::scratch_dir::create(agent_type);
     let agent = match build_agent(
         agent_type,
         &runtime_env,
