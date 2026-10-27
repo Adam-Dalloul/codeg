@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { NextIntlClientProvider } from "next-intl"
 import type { ComponentType, ReactNode } from "react"
 import { beforeEach, describe, expect, it } from "vitest"
@@ -99,5 +99,34 @@ describe("HTML code preview", () => {
     // Over code, Streamdown's copy and download buttons hold that corner.
     expect(toolbar).toHaveClass("end-18")
     expect(toolbar).not.toHaveClass("end-1")
+  })
+
+  it("keeps showing a preview it mounted from the cache after the cache moves on", async () => {
+    const first = render(reply("<p>Kept</p>"))
+    await screen.findByTitle("HTML preview")
+    first.unmount()
+    // Mounted again from the cache, as when a reply stops streaming.
+    render(reply("<p>Kept</p>"))
+    const frame = screen.getByTitle("HTML preview") as HTMLIFrameElement
+    // Enough other previews to push its entry out of the cache.
+    for (let i = 0; i < 40; i++) {
+      const other = render(reply(`<p>Other ${i}</p>`))
+      await waitFor(() =>
+        expect(other.container.querySelector("iframe")).not.toBeNull()
+      )
+      other.unmount()
+    }
+    act(() =>
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          source: frame.contentWindow,
+          data: { type: "codeg-visualize:size", height: 200 },
+        })
+      )
+    )
+    expect(screen.queryByRole("status")).toBeNull()
+    expect(screen.getByTitle("HTML preview").getAttribute("srcdoc")).toContain(
+      "<p>Kept</p>"
+    )
   })
 })

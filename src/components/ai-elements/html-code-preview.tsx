@@ -36,14 +36,16 @@ const DEFAULT_VIEW: View = { preview: true, expanded: false }
  */
 const frames = new Map<string, FrameEntry>()
 const views = new Map<string, View>()
+/** Previews on screen, by `frames` key: their entries are never evicted. */
+const pins = new Map<string, number>()
 const CACHE_LIMIT = 32
 
 function remember<T>(cache: Map<string, T>, key: string, value: T) {
   cache.delete(key)
   cache.set(key, value)
-  if (cache.size > CACHE_LIMIT) {
-    const oldest = cache.keys().next().value
-    if (oldest !== undefined) cache.delete(oldest)
+  for (const oldest of cache.keys()) {
+    if (cache.size <= CACHE_LIMIT) break
+    if (cache !== frames || !pins.has(oldest)) cache.delete(oldest)
   }
 }
 
@@ -92,6 +94,16 @@ export function HtmlCodePreview({
     key: string
     height: number
   } | null>(null)
+
+  // What is on screen stays in the cache.
+  useEffect(() => {
+    pins.set(key, (pins.get(key) ?? 0) + 1)
+    return () => {
+      const count = (pins.get(key) ?? 1) - 1
+      if (count > 0) pins.set(key, count)
+      else pins.delete(key)
+    }
+  }, [key])
 
   useEffect(() => {
     const theme = readHtmlPreviewTheme()
