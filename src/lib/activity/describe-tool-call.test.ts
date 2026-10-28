@@ -34,6 +34,9 @@ describe("toolStepKind", () => {
     ["Glob", { pattern: "**/*.ts" }, "glob"],
     ["Bash", { command: "ls" }, "command"],
     ["PowerShell", { command: "dir" }, "command"],
+    // A watch, not a command: never folded into "Ran N commands".
+    ["Monitor", { command: "tail -f log", description: "errors" }, "monitor"],
+    ["SandboxNetworkAccess", { host: "example.com" }, "network"],
     [
       "Edit",
       { file_path: "/r/a.ts", old_string: "a", new_string: "b" },
@@ -529,6 +532,91 @@ describe("describeToolCall: code-mode scripts", () => {
     expect(tool.command?.display).toBe(
       "const r = await tools.probe.echo({ text: 'hi from code mode' });"
     )
+  })
+})
+
+describe("describeToolCall: Claude Code monitors and network requests", () => {
+  // Claude Code 2.1.310's result for a started Monitor, verbatim.
+  const STARTED =
+    "Monitor started (task bttyx34fg, expires in 5m unless the source ends first; you get one notice at expiry \u2014 re-arm if you still need the watch). You will be notified on each event. Keep working \u2014 do not poll or sleep. Events may arrive while you are waiting for the user \u2014 an event is not their reply."
+
+  it("draws a started monitor by its command, description and task", () => {
+    const tool = describeToolCall(
+      call(
+        "Monitor",
+        {
+          command: "for i in 1 2 3; do echo event-$i; sleep 2; done",
+          description: "probe monitor",
+        },
+        { output: STARTED }
+      )
+    )
+    expect(tool.kind).toBe("monitor")
+    expect(tool.command).toMatchObject({
+      display: "for i in 1 2 3; do echo event-$i; sleep 2; done",
+      description: "probe monitor",
+      lineCount: 1,
+    })
+    expect(tool.command?.websocket).toBeUndefined()
+    expect(tool.background).toEqual({ taskId: "bttyx34fg" })
+  })
+
+  it("reads a persistent monitor's task the same way", () => {
+    const tool = describeToolCall(
+      call(
+        "Monitor",
+        {
+          command: "tail -f app.log",
+          description: "app log",
+          persistent: true,
+        },
+        {
+          output:
+            "Monitor started (task b2, persistent \u2014 runs until TaskStop or session end). You will be notified on each event.",
+        }
+      )
+    )
+    expect(tool.background).toEqual({ taskId: "b2" })
+  })
+
+  it("names a WebSocket monitor by its URL", () => {
+    const tool = describeToolCall(
+      call("Monitor", {
+        description: "CI events",
+        ws: { url: "wss://ci.example.com/events" },
+      })
+    )
+    expect(tool.command).toMatchObject({
+      display: "wss://ci.example.com/events",
+      description: "CI events",
+      heredoc: null,
+      websocket: true,
+    })
+    expect(tool.background).toBeNull()
+  })
+
+  it("names no task for a monitor that did not start", () => {
+    const tool = describeToolCall(
+      call(
+        "Monitor",
+        { command: "tail -f log", description: "log" },
+        {
+          state: "output-error",
+          errorText:
+            "This call was interrupted before the monitor started; nothing is running.",
+        }
+      )
+    )
+    expect(tool.status).toBe("failed")
+    expect(tool.background).toBeNull()
+  })
+
+  it("names the host a sandbox network request is for", () => {
+    const tool = describeToolCall(
+      call("SandboxNetworkAccess", { host: "example.com" })
+    )
+    expect(tool.kind).toBe("network")
+    expect(tool.target).toEqual({ text: "example.com" })
   })
 })
 

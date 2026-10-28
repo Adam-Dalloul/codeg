@@ -3657,8 +3657,12 @@
       },
       "permissionDialog": {
         "subtitle": "Agent 请求继续当前轮次的权限。",
+        "networkRequest": "沙箱外的网络请求",
+        "networkQuestion": "允许这个连接吗？",
+        "networkHost": "主机",
         "queuedCount": "还有 {count} 项待审批",
         "kindFallbackTool": "工具",
+        "kindNetwork": "网络",
         "command": "命令",
         "cwd": "工作目录：{cwd}",
         "filesSummary": "文件：{count}",
@@ -3897,7 +3901,8 @@
         },
         "backgroundTask": {
           "polledTimes": "轮询 {count} 次",
-          "launchNote": "已在后台运行 · {id}"
+          "launchNote": "已在后台运行 · {id}",
+          "monitorNote": "已在后台监视 · {id}"
         },
         "codexScript": {
           "outputMissing": "codex 截断脚本输出时丢掉了这条命令的分隔行，因此没有输出可以归属给它。",
@@ -3958,6 +3963,8 @@
           "script": "{count} 行脚本",
           "moreLines": "+{count} 行",
           "command": "命令",
+          "monitor": "监视",
+          "networkAccess": "网络访问",
           "codexScript": "脚本",
           "background": "后台 · #{id}",
           "backgroundShort": "后台",
@@ -4048,6 +4055,8 @@
           "read": "读取文件",
           "search": "搜索",
           "command": "命令",
+          "monitor": "监视",
+          "network": "网络访问",
           "edit": "编辑文件",
           "mcp": "MCP 调用",
           "tool": "工具调用",

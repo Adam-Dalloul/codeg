@@ -80,6 +80,16 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   context7_query_docs: "context7_query-docs",
   context7_resolve_library_id: "context7_resolve-library-id",
   agent: "agent",
+  // Claude Code's `Monitor`: a script (or a WebSocket) watched in the
+  // background, each line it prints a notification to the model. Its live
+  // `rawInput` carries `command`, which the input-shape rule reads as a shell
+  // command, so the live path resolves it from the meta name first
+  // (`META_NAMED_TOOLS`); the transcript keeps the raw name, which lands here.
+  monitor: "monitor",
+  // claude-agent-acp's tool call for a sandbox network request
+  // (`SandboxNetworkAccess {host}`): the permission Claude Code asks before a
+  // sandboxed command reaches a new host. Live only — no transcript records it.
+  sandboxnetworkaccess: "sandboxnetworkaccess",
   // Gemini CLI
   searchtext: "grep",
   search_text: "grep",
@@ -690,6 +700,17 @@ const DELEGATION_COMPANION_TOOLS: ReadonlySet<string> = new Set([
   "resume_delegation",
 ])
 
+// Built-in tools whose meta name outranks their input shape, for the same
+// reason as the companions above: the shape names another tool. Claude Code's
+// `Monitor` input carries `command`, so `inferFromInput` would make it a shell
+// command while it ran and a monitor on reload (the transcript keeps the raw
+// name). `SandboxNetworkAccess` is here so its `{host}` input can never be
+// read as something else.
+const META_NAMED_TOOLS: ReadonlySet<string> = new Set([
+  "monitor",
+  "sandboxnetworkaccess",
+])
+
 export function inferLiveToolName(params: {
   title?: string | null
   kind?: string | null
@@ -749,6 +770,7 @@ export function inferLiveToolName(params: {
     if (!candidate) continue
     const normalizedMeta = normalizeToolName(candidate)
     if (DELEGATION_COMPANION_TOOLS.has(normalizedMeta)) return normalizedMeta
+    if (META_NAMED_TOOLS.has(normalizedMeta)) return normalizedMeta
   }
 
   // The delegation broker stamps `meta["codeg.delegation"]` onto the parent's
@@ -905,7 +927,9 @@ export function inferLiveToolName(params: {
   return "tool"
 }
 
-function extractClaudeCodeToolName(
+/** Claude Code's own name for a tool call, `_meta.claudeCode.toolName`
+ *  (claude-agent-acp sets it on every live call). */
+export function extractClaudeCodeToolName(
   meta: Record<string, unknown> | null | undefined
 ): string | null {
   if (!meta || typeof meta !== "object") return null

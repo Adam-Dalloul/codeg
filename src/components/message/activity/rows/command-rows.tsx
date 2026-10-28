@@ -77,9 +77,14 @@ function useCommandOutput(step: ToolStep): CommandOutput | null {
   const { part, tool } = step
   return useMemo(() => {
     if (tool.background?.taskId && part.output) {
-      const text = t("backgroundTask.launchNote", {
-        id: tool.background.taskId,
-      })
+      // The result is the CLI's note to the model that the work went on in
+      // the background; the reader gets which task it is.
+      const text = t(
+        tool.kind === "monitor"
+          ? "backgroundTask.monitorNote"
+          : "backgroundTask.launchNote",
+        { id: tool.background.taskId }
+      )
       return { text, lines: 1, truncated: 0 }
     }
     const source = part.output ?? part.errorText ?? null
@@ -101,7 +106,7 @@ function useCommandOutput(step: ToolStep): CommandOutput | null {
       }
     }
     return { text, lines, truncated: 0 }
-  }, [part.output, part.errorText, tool.background, tool.status, t])
+  }, [part.output, part.errorText, tool.background, tool.kind, tool.status, t])
 }
 
 /** What a command row says: a fixed "Command", then the agent's description
@@ -193,7 +198,7 @@ function CommandLabel({
           live ? "activity-shimmer" : "text-activity-secondary"
         )}
       >
-        {t("row.command")}
+        {step.tool.kind === "monitor" ? t("row.monitor") : t("row.command")}
       </span>
       {command.description ? (
         <span dir="auto" className="min-w-0 truncate text-activity-secondary">
@@ -463,7 +468,9 @@ function CommandDetail({
           className="whitespace-pre-wrap break-words border-b border-foreground/5 px-4 py-3 font-mono text-[0.78125rem] leading-relaxed"
           dir="ltr"
         >
-          <span className="select-none text-muted-foreground">$ </span>
+          {command?.websocket ? null : (
+            <span className="select-none text-muted-foreground">$ </span>
+          )}
           {fullCommand}
         </pre>
       ) : null}
@@ -564,7 +571,7 @@ export const CommandRow = memo(function CommandRow({
           icon={toolIcon(tool)}
           status={tool.status}
           size={inGroup ? "sm" : "md"}
-          label={`${t("kind.command")}, ${statusText(tool.status, tool.exit)}`}
+          label={`${t(tool.kind === "monitor" ? "kind.monitor" : "kind.command")}, ${statusText(tool.status, tool.exit)}`}
         />
       }
       expandable={expandable}

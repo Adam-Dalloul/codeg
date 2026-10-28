@@ -469,7 +469,7 @@ pub const CODEX_NESTED_VERSION_FALLBACK: &str = "0.164.0";
 
 /// The npm package the built-in Claude Code entry runs — and the name the
 /// adapter reports as `agentInfo.name` at `initialize`, which is its
-/// `packageJson.name` (read from the 0.58.1 to 0.97.0 sources). A custom agent
+/// `packageJson.name` (read from the 0.58.1 to 0.98.0 sources). A custom agent
 /// whose running adapter reports exactly this name follows the Claude Code
 /// steering policy (`connection.rs::steering_policy_agent`).
 pub const CLAUDE_AGENT_ACP_PACKAGE: &str = "@agentclientprotocol/claude-agent-acp";
@@ -1933,7 +1933,8 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             // the autonomous turn is still waiting on the model is not folded
             // on either version; it runs as its own turn afterwards.
             //
-            // (eee) **Monitor tasks leave the async-task channel** (#1249). The
+            // (eee) **Monitor tasks leave the async-task channel** (#1249;
+            // 0.98.0 brings them back as monitors, see (mmmm)). The
             // task of a `Monitor` call (the SDK reports it as `local_bash`) and
             // a `local_monitor` task are no longer published. codeg's task strip
             // therefore lists no running monitor and offers no stop for one,
@@ -2671,9 +2672,69 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             //     ignores. Per the changelog, subagent transcripts now record
             //     real usage for streamed responses, and the Monitor tool is
             //     offered on more providers.
+            //
+            // 0.98.0 keeps every dependency of 0.97.0 (Claude SDK 0.3.310, so
+            // CLI 2.1.310; ACP SDK 2.0.2; `engines.node` ">=22"), so only the
+            // adapter moves. Its scenario harness, run on the 0.98.0 sources
+            // with codeg's exact `clientCapabilities`, is byte-identical to
+            // 0.97.0's recording in 39 of the 40 scenarios; the
+            // `network-permission` one adds the update (nnnn) describes. A
+            // live `initialize` and `session/new` differ from 0.97.0's in the
+            // version only. No harness scenario runs a Monitor, so (mmmm) was
+            // measured live against the local fake Anthropic API (no model
+            // call), 0.97.0 and 0.98.0 side by side, and both through
+            // codeg-server in a browser.
+            //
+            // (mmmm) **Monitor tasks are published again, as monitors**
+            // (#1452), undoing what (eee) recorded. The task of a `Monitor`
+            // call (the SDK reports it as `local_bash`) and a `local_monitor`
+            // task arrive as `async_task_spawned {taskType: "monitor",
+            // showInTranscript: false, canStop: false, toolCallId: <the Monitor
+            // call>}`, named by the call's `description`, and end `completed`
+            // when the script exits (a second update adds the output file).
+            // Measured: 0.97.0 sends nothing for the same monitor; on both, each
+            // event starts an autonomous turn, a `turn` task of its own (see
+            // (gggg)). The strip shows the monitor's row with no Stop, as
+            // `can_stop` says, and `_session/async_task/stop` on it answers
+            // `{stopped: false}` (stopping it would only end the agent's wait;
+            // the agent's own TaskStop still ends it). A live monitor now also
+            // holds its connection off the idle sweeps (`has_live_async_task`),
+            // as a background shell does. Before, nothing did: its result
+            // (`toolUseResult {taskId, timeoutMs, persistent}`) has no
+            // `backgroundTaskId` for the transcript watcher to count, so a quiet
+            // monitor died with a connection whose tab was closed. The Monitor
+            // call itself was drawn as a shell command while it ran (its
+            // `command` input won the input-shape rule) and as a generic tool
+            // after a reload; the activity timeline now draws it as a monitor on
+            // both paths (`META_NAMED_TOOLS` and the `monitor` step kind in
+            // `src/lib/activity`), by the task id its result names.
+            //
+            // (nnnn) **A SandboxNetworkAccess call settles** (#1448). With
+            // `sandbox.enabled`, Claude Code asks before a sandboxed command
+            // reaches a new host: the adapter announces a `tool_call`
+            // `SandboxNetworkAccess {host}` under a synthetic id, then asks with
+            // a bare request (`{toolCallId, title: <host>, rawInput: {host}}`).
+            // 0.97.0 left that call pending for good; 0.98.0 settles it as soon
+            // as the request is answered, `completed` when allowed and `failed`
+            // when denied (measured both ways, a curl through the sandbox
+            // proxy). codeg's live approval record draws the denied one as
+            // declined. The transcript never records the call, so a reload
+            // drops the row, while the Bash result keeps a denial in its
+            // `<sandbox_violations>` block. The row and the permission card now
+            // name it as a network request for the host; the card used to dump
+            // the request as JSON (it reads the tool from the live call,
+            // `mergePermissionToolCallWithLiveInfo`).
+            //
+            // (oooo) Nothing to change in codeg, each checked:
+            //   * #1408 adds `_session/batch_get` and the `sessionBatchGet`
+            //     capability for a client that declares `sessionIndex`, which
+            //     codeg does not (see (lll) and `build_client_capabilities`).
+            //   * #1447 leaves the status out of a permission subject for a
+            //     client that is not AIR and speaks ACP v2. codeg is an AIR
+            //     client on v1, whose branch is unchanged.
             distribution: AgentDistribution::Npx {
-                version: "0.97.0",
-                package: "@agentclientprotocol/claude-agent-acp@0.97.0",
+                version: "0.98.0",
+                package: "@agentclientprotocol/claude-agent-acp@0.98.0",
                 cmd: "claude-agent-acp",
                 args: &[],
                 env: &[],
@@ -6584,8 +6645,8 @@ mod tests {
     fn registry_pins_current_acp_agent_versions() {
         assert_npx_version(
             AgentType::ClaudeCode,
-            "0.97.0",
-            "@agentclientprotocol/claude-agent-acp@0.97.0",
+            "0.98.0",
+            "@agentclientprotocol/claude-agent-acp@0.98.0",
             Some("22.0.0"),
         );
         assert_npx_version(

@@ -3657,8 +3657,12 @@
       },
       "permissionDialog": {
         "subtitle": "Agent 請求繼續目前輪次的權限。",
+        "networkRequest": "沙箱外的網路請求",
+        "networkQuestion": "允許這個連線嗎？",
+        "networkHost": "主機",
         "queuedCount": "還有 {count} 項待審批",
         "kindFallbackTool": "工具",
+        "kindNetwork": "網路",
         "command": "命令",
         "cwd": "工作目錄：{cwd}",
         "filesSummary": "檔案：{count}",
@@ -3897,7 +3901,8 @@
         },
         "backgroundTask": {
           "polledTimes": "輪詢 {count} 次",
-          "launchNote": "已在背景執行 · {id}"
+          "launchNote": "已在背景執行 · {id}",
+          "monitorNote": "已在背景監看 · {id}"
         },
         "codexScript": {
           "outputMissing": "codex 截斷指令碼輸出時捨棄了這個命令的分隔行，因此沒有輸出可歸屬給它。",
@@ -3958,6 +3963,8 @@
           "script": "{count} 行指令稿",
           "moreLines": "+{count} 行",
           "command": "指令",
+          "monitor": "監看",
+          "networkAccess": "網路存取",
           "codexScript": "指令稿",
           "background": "背景 · #{id}",
           "backgroundShort": "背景",
@@ -4048,6 +4055,8 @@
           "read": "讀取檔案",
           "search": "搜尋",
           "command": "指令",
+          "monitor": "監看",
+          "network": "網路存取",
           "edit": "編輯檔案",
           "mcp": "MCP 呼叫",
           "tool": "工具呼叫",

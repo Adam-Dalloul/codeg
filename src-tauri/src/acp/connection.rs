@@ -6839,17 +6839,19 @@ fn build_client_capabilities(
     // below, this one adds something codeg cannot get anywhere else: the
     // transcript watcher (`background_watch`) can see that a task was launched
     // but explicitly CANNOT tell a still-running task from one whose CLI died,
-    // it never sees workflow/monitor tasks at all (they produce no tool call),
-    // and there is no way to stop a task from outside. This channel carries a
+    // it never sees workflow or monitor tasks at all (a workflow produces no
+    // tool call, and a Monitor's result names no `backgroundTaskId`), and
+    // there is no way to stop a task from outside. This channel carries a
     // real terminal edge, a liveness boundary, an output file path, and the
     // `_session/async_task/stop` control. Sub-agent tasks stay out of it by the
     // adapter's own filter (`taskType: "local_agent"` is marked ignored), so
     // advertising this does not disturb the sub-agent surfaces.
     //
-    // For claude those tasks are background shells, workflows and monitors, and
-    // from 0.97.0 the turns Claude Code starts on its own after a prompt ended
-    // (`taskType: "turn"`, stoppable; see (gggg) of the claude entry in
-    // `registry.rs`), which ACP v1 has no other signal for; for
+    // For claude those tasks are background shells, workflows and monitors
+    // (left out from 0.88.0, back from 0.98.0 with no stop; see (mmmm) of the
+    // claude entry in `registry.rs`), and from 0.97.0 the turns Claude Code
+    // starts on its own after a prompt ended (`taskType: "turn"`, stoppable;
+    // see (gggg)), which ACP v1 has no other signal for; for
     // codex they are BACKGROUND TERMINALS — a shell process the model leaves
     // running past the tool call, which codex core tracks under
     // `thread/backgroundTerminals/*`. codex-acp only announces a terminal that
@@ -32604,6 +32606,76 @@ mod tests {
         assert!(!state.spawned);
         assert_eq!(state.state.as_deref(), Some("completed"));
         assert_eq!(state.summary.as_deref(), Some("3 files changed"));
+    }
+
+    /// claude-agent-acp 0.98.0's frames for a `Monitor` call, verbatim off a
+    /// live stdio session (a script printing three lines). The task is
+    /// announced as a monitor that offers no stop (`can_stop`, which the strip
+    /// reads), and while it runs it counts as background work
+    /// (`has_active_background_work`, what the idle sweep asks) like any other
+    /// live task: nothing else would hold the connection, since a Monitor's
+    /// result names no `backgroundTaskId` for the transcript watcher.
+    #[test]
+    fn a_claude_monitor_task_is_read_as_one_that_offers_no_stop() {
+        let spawn = air_async_task_delta(&async_task_notif(serde_json::json!({
+            "sessionUpdate": "async_task_spawned",
+            "asyncTaskId": "bttyx34fg",
+            "name": "probe monitor",
+            "taskType": "monitor",
+            "description": "probe monitor",
+            "showInTranscript": false,
+            "canStop": false,
+            "toolCallId": "toolu_0ee43b74e5ca40629f61",
+        })))
+        .expect("monitor spawn frame");
+        assert!(spawn.spawned);
+        assert_eq!(spawn.task_type.as_deref(), Some("monitor"));
+        assert_eq!(spawn.can_stop, Some(false));
+        assert_eq!(
+            spawn.tool_call_id.as_deref(),
+            Some("toolu_0ee43b74e5ca40629f61")
+        );
+        let record = spawn.to_record();
+        assert!(!record.can_stop);
+        assert_eq!(record.state, "running");
+
+        let mut state = SessionState::new(
+            "conn-monitor".to_string(),
+            AgentType::ClaudeCode,
+            None,
+            "win".to_string(),
+            None,
+        );
+        let now = chrono::Utc::now();
+        state.apply_event(&AcpEvent::AsyncTask { delta: spawn });
+        assert!(state.has_active_background_work(now));
+
+        // The script exits: `completed`, then the same state again with the
+        // output file.
+        for update in [
+            serde_json::json!({
+                "sessionUpdate": "async_task_state_update",
+                "asyncTaskId": "bttyx34fg",
+                "state": "completed",
+            }),
+            serde_json::json!({
+                "sessionUpdate": "async_task_state_update",
+                "asyncTaskId": "bttyx34fg",
+                "state": "completed",
+                "outputFilePath": "/private/tmp/claude-501/p/s/tasks/bttyx34fg.output",
+            }),
+        ] {
+            let delta = air_async_task_delta(&async_task_notif(update)).expect("state");
+            state.apply_event(&AcpEvent::AsyncTask { delta });
+        }
+        assert!(!state.has_active_background_work(now));
+        let row = &state.async_tasks["bttyx34fg"];
+        assert_eq!(row.state, "completed");
+        assert!(!row.can_stop);
+        assert_eq!(
+            row.output_file_path.as_deref(),
+            Some("/private/tmp/claude-501/p/s/tasks/bttyx34fg.output")
+        );
     }
 
     /// codex-acp 1.10.0's frames, verbatim off a live stdio session (`sleep 400`

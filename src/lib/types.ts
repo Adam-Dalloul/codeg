@@ -3694,7 +3694,8 @@ export interface AsyncTaskRecord {
    *  unmapped future value rendered as itself. NOT the SDK's raw type.
    *  codex publishes `shell` for every background terminal. claude 0.97.0+
    *  publishes `turn` for a turn Claude Code started on its own
-   *  (`AUTONOMOUS_TURN_TASK_TYPE`). */
+   *  (`AUTONOMOUS_TURN_TASK_TYPE`), and 0.98.0+ `monitor` for the task of a
+   *  `Monitor` call. */
   task_type: string
   description: string
   /** Whether the task earns its own transcript card upstream. The strip renders
@@ -3702,7 +3703,8 @@ export interface AsyncTaskRecord {
    *  as an ordinary tool call (a background `Bash` is). */
   show_in_transcript: boolean
   /** Whether `_session/async_task/stop` is offered for this task. Always
-   *  `false` for Grok, which has no such request. */
+   *  `false` for Grok, which has no such request, and for a Claude Code
+   *  monitor (claude-agent-acp 0.98.0+), which the adapter will not stop. */
   can_stop: boolean
   /** `running` | `paused` | `completed` | `failed` | `stopped`. Anything
    *  outside the terminal three is treated as still live. */

@@ -3657,8 +3657,12 @@
       },
       "permissionDialog": {
         "subtitle": "Agent fordert Berechtigung an, um diesen Zug fortzusetzen.",
+        "networkRequest": "Netzwerkanfrage außerhalb der Sandbox",
+        "networkQuestion": "Diese Verbindung zulassen?",
+        "networkHost": "Host",
         "queuedCount": "+{count} wartend",
         "kindFallbackTool": "Tool",
+        "kindNetwork": "Netzwerk",
         "command": "Befehl",
         "cwd": "Arbeitsverzeichnis: {cwd}",
         "filesSummary": "Dateien: {count}",
@@ -3897,7 +3901,8 @@
         },
         "backgroundTask": {
           "polledTimes": "{count}-mal abgefragt",
-          "launchNote": "Läuft im Hintergrund · {id}"
+          "launchNote": "Läuft im Hintergrund · {id}",
+          "monitorNote": "Überwacht im Hintergrund · {id}"
         },
         "codexScript": {
           "outputMissing": "Codex hat die Skriptausgabe gekürzt und dabei das Trennzeichen dieses Befehls entfernt, sodass ihm keine Ausgabe zugeordnet werden konnte.",
@@ -3958,6 +3963,8 @@
           "script": "{count, plural, one {#-zeiliges Skript} other {#-zeiliges Skript}}",
           "moreLines": "{count, plural, one {+# Zeile} other {+# Zeilen}}",
           "command": "Befehl",
+          "monitor": "Monitor",
+          "networkAccess": "Netzwerkzugriff",
           "codexScript": "Skript",
           "background": "Hintergrund · #{id}",
           "backgroundShort": "Hintergrund",
@@ -4048,6 +4055,8 @@
           "read": "Datei lesen",
           "search": "Suche",
           "command": "Befehl",
+          "monitor": "Monitor",
+          "network": "Netzwerkzugriff",
           "edit": "Dateiänderung",
           "mcp": "MCP-Aufruf",
           "tool": "Werkzeugaufruf",

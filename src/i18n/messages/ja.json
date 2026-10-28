@@ -3657,8 +3657,12 @@
       },
       "permissionDialog": {
         "subtitle": "エージェントがこのターンを続行するための許可を要求しています。",
+        "networkRequest": "サンドボックス外へのネットワークリクエスト",
+        "networkQuestion": "この接続を許可しますか？",
+        "networkHost": "ホスト",
         "queuedCount": "他 {count} 件待機中",
         "kindFallbackTool": "ツール",
+        "kindNetwork": "ネットワーク",
         "command": "コマンド",
         "cwd": "作業ディレクトリ: {cwd}",
         "filesSummary": "ファイル: {count}",
@@ -3897,7 +3901,8 @@
         },
         "backgroundTask": {
           "polledTimes": "{count} 回ポーリング",
-          "launchNote": "バックグラウンドで実行中 · {id}"
+          "launchNote": "バックグラウンドで実行中 · {id}",
+          "monitorNote": "バックグラウンドで監視中 · {id}"
         },
         "codexScript": {
           "outputMissing": "codex がスクリプト出力を切り詰めた際にこのコマンドの区切り行が失われたため、出力を割り当てられませんでした。",
@@ -3958,6 +3963,8 @@
           "script": "{count} 行のスクリプト",
           "moreLines": "+{count} 行",
           "command": "コマンド",
+          "monitor": "モニター",
+          "networkAccess": "ネットワークアクセス",
           "codexScript": "スクリプト",
           "background": "バックグラウンド · #{id}",
           "backgroundShort": "バックグラウンド",
@@ -4048,6 +4055,8 @@
           "read": "ファイル読み取り",
           "search": "検索",
           "command": "コマンド",
+          "monitor": "モニター",
+          "network": "ネットワークアクセス",
           "edit": "ファイル編集",
           "mcp": "MCP 呼び出し",
           "tool": "ツール呼び出し",

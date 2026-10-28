@@ -3657,8 +3657,12 @@
       },
       "permissionDialog": {
         "subtitle": "يطلب الوكيل إذنًا لمتابعة هذا الدور.",
+        "networkRequest": "طلب شبكة خارج بيئة العزل",
+        "networkQuestion": "هل تسمح بهذا الاتصال؟",
+        "networkHost": "المضيف",
         "queuedCount": "+{count} في الانتظار",
         "kindFallbackTool": "أداة",
+        "kindNetwork": "شبكة",
         "command": "أمر",
         "cwd": "دليل العمل: {cwd}",
         "filesSummary": "الملفات: {count}",
@@ -3897,7 +3901,8 @@
         },
         "backgroundTask": {
           "polledTimes": "تم الاستعلام {count} مرة",
-          "launchNote": "قيد التشغيل في الخلفية · {id}"
+          "launchNote": "قيد التشغيل في الخلفية · {id}",
+          "monitorNote": "قيد المراقبة في الخلفية · {id}"
         },
         "codexScript": {
           "outputMissing": "اقتطع codex مُخرَج النص البرمجي وأزال الفاصل الخاص بهذا الأمر، لذا تعذّر نسب أي مُخرَج إليه.",
@@ -3958,6 +3963,8 @@
           "script": "{count, plural, zero {نص برمجي بلا أسطر} one {نص برمجي من سطر واحد} two {نص برمجي من سطرين} few {نص برمجي من # أسطر} many {نص برمجي من # سطراً} other {نص برمجي من # سطر}}",
           "moreLines": "{count, plural, zero {+0 سطر} one {+سطر واحد} two {+سطران} few {+# أسطر} many {+# سطراً} other {+# سطر}}",
           "command": "أمر",
+          "monitor": "مراقبة",
+          "networkAccess": "الوصول إلى الشبكة",
           "codexScript": "نص برمجي",
           "background": "في الخلفية · \u2066#{id}\u2069",
           "backgroundShort": "في الخلفية",
@@ -4048,6 +4055,8 @@
           "read": "قراءة ملف",
           "search": "بحث",
           "command": "أمر",
+          "monitor": "مراقبة",
+          "network": "الوصول إلى الشبكة",
           "edit": "تعديل ملف",
           "mcp": "استدعاء MCP",
           "tool": "استدعاء أداة",

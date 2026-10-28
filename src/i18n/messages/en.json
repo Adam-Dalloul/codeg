@@ -3657,8 +3657,12 @@
       },
       "permissionDialog": {
         "subtitle": "Agent requests permission to continue this turn.",
+        "networkRequest": "Network request outside the sandbox",
+        "networkQuestion": "Allow this connection?",
+        "networkHost": "Host",
         "queuedCount": "+{count} waiting",
         "kindFallbackTool": "tool",
+        "kindNetwork": "network",
         "command": "Command",
         "cwd": "CWD: {cwd}",
         "filesSummary": "Files: {count}",
@@ -3897,7 +3901,8 @@
         },
         "backgroundTask": {
           "polledTimes": "Polled {count} times",
-          "launchNote": "Running in background · {id}"
+          "launchNote": "Running in background · {id}",
+          "monitorNote": "Watching in background · {id}"
         },
         "codexScript": {
           "outputMissing": "Codex truncated the script output and dropped this command's separator, so none of the output could be attributed to it.",
@@ -3958,6 +3963,8 @@
           "script": "{count, plural, one {#-line script} other {#-line script}}",
           "moreLines": "{count, plural, one {+# line} other {+# lines}}",
           "command": "Command",
+          "monitor": "Monitor",
+          "networkAccess": "Network access",
           "codexScript": "Script",
           "background": "background · #{id}",
           "backgroundShort": "background",
@@ -4048,6 +4055,8 @@
           "read": "File read",
           "search": "Search",
           "command": "Command",
+          "monitor": "Monitor",
+          "network": "Network access",
           "edit": "File edit",
           "mcp": "MCP call",
           "tool": "Tool call",

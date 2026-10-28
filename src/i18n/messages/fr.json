@@ -3657,8 +3657,12 @@
       },
       "permissionDialog": {
         "subtitle": "L'agent demande une autorisation pour continuer ce tour.",
+        "networkRequest": "Requête réseau hors du bac à sable",
+        "networkQuestion": "Autoriser cette connexion ?",
+        "networkHost": "Hôte",
         "queuedCount": "+{count} en attente",
         "kindFallbackTool": "outil",
+        "kindNetwork": "réseau",
         "command": "Commande",
         "cwd": "Répertoire de travail : {cwd}",
         "filesSummary": "Fichiers : {count}",
@@ -3897,7 +3901,8 @@
         },
         "backgroundTask": {
           "polledTimes": "Interrogée {count} fois",
-          "launchNote": "En cours d'exécution en arrière-plan · {id}"
+          "launchNote": "En cours d'exécution en arrière-plan · {id}",
+          "monitorNote": "Surveillance en arrière-plan · {id}"
         },
         "codexScript": {
           "outputMissing": "Codex a tronqué la sortie du script et supprimé le séparateur de cette commande ; aucune sortie n'a donc pu lui être attribuée.",
@@ -3958,6 +3963,8 @@
           "script": "{count, plural, one {script de # ligne} other {script de # lignes}}",
           "moreLines": "{count, plural, one {+# ligne} other {+# lignes}}",
           "command": "Commande",
+          "monitor": "Surveillance",
+          "networkAccess": "Accès réseau",
           "codexScript": "Script",
           "background": "arrière-plan · #{id}",
           "backgroundShort": "arrière-plan",
@@ -4048,6 +4055,8 @@
           "read": "Lecture de fichier",
           "search": "Recherche",
           "command": "Commande",
+          "monitor": "Surveillance",
+          "network": "Accès réseau",
           "edit": "Modification de fichier",
           "mcp": "Appel MCP",
           "tool": "Appel d’outil",

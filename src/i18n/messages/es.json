@@ -3657,8 +3657,12 @@
       },
       "permissionDialog": {
         "subtitle": "El agente solicita permiso para continuar este turno.",
+        "networkRequest": "Solicitud de red fuera del sandbox",
+        "networkQuestion": "¿Permitir esta conexión?",
+        "networkHost": "Host",
         "queuedCount": "+{count} en espera",
         "kindFallbackTool": "herramienta",
+        "kindNetwork": "red",
         "command": "Comando",
         "cwd": "Directorio de trabajo: {cwd}",
         "filesSummary": "Archivos: {count}",
@@ -3897,7 +3901,8 @@
         },
         "backgroundTask": {
           "polledTimes": "Consultada {count} veces",
-          "launchNote": "Ejecutándose en segundo plano · {id}"
+          "launchNote": "Ejecutándose en segundo plano · {id}",
+          "monitorNote": "Supervisando en segundo plano · {id}"
         },
         "codexScript": {
           "outputMissing": "Codex truncó la salida del script y eliminó el separador de este comando, por lo que no se le pudo atribuir ninguna salida.",
@@ -3958,6 +3963,8 @@
           "script": "{count, plural, one {script de # línea} other {script de # líneas}}",
           "moreLines": "{count, plural, one {+# línea} other {+# líneas}}",
           "command": "Comando",
+          "monitor": "Monitor",
+          "networkAccess": "Acceso a la red",
           "codexScript": "Script",
           "background": "segundo plano · #{id}",
           "backgroundShort": "segundo plano",
@@ -4048,6 +4055,8 @@
           "read": "Lectura de archivo",
           "search": "Búsqueda",
           "command": "Comando",
+          "monitor": "Monitor",
+          "network": "Acceso a la red",
           "edit": "Edición de archivo",
           "mcp": "Llamada MCP",
           "tool": "Llamada a herramienta",

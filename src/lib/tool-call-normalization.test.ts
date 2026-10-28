@@ -390,6 +390,82 @@ describe("inferLiveToolName meta.claudeCode.toolName override", () => {
     ).toBe("delegate_to_agent")
   })
 
+  it("names a live Monitor a monitor, not the shell command its input looks like", () => {
+    // claude-agent-acp 0.98.0's live frame, recorded: the `command` key made
+    // the input-shape rule call it "bash" while it ran, and the transcript's
+    // raw name made it a generic "Monitor" on reload.
+    const live = inferLiveToolName({
+      title: "Monitor",
+      kind: "other",
+      rawInput: JSON.stringify({
+        command: "for i in 1 2 3; do echo event-$i; sleep 2; done",
+        description: "probe monitor",
+      }),
+      meta: { claudeCode: { toolName: "Monitor" } },
+    })
+    expect(live).toBe("monitor")
+    expect(normalizeToolName("Monitor")).toBe(live)
+    // A WebSocket monitor has no command at all.
+    expect(
+      inferLiveToolName({
+        title: "Monitor",
+        kind: "other",
+        rawInput: JSON.stringify({
+          ws: { url: "wss://ci.example.com/events" },
+          description: "CI events",
+        }),
+        meta: { claudeCode: { toolName: "Monitor" } },
+      })
+    ).toBe("monitor")
+    // Without the meta name, a command-shaped input is still a command.
+    expect(
+      inferLiveToolName({
+        title: "Monitor",
+        kind: "other",
+        rawInput: JSON.stringify({ command: "tail -f log" }),
+        meta: null,
+      })
+    ).toBe("bash")
+  })
+
+  it("gives a sandbox network request one name in either spelling", () => {
+    const live = inferLiveToolName({
+      title: "SandboxNetworkAccess",
+      kind: "other",
+      rawInput: JSON.stringify({ host: "example.com" }),
+      meta: { claudeCode: { toolName: "SandboxNetworkAccess" } },
+    })
+    expect(live).toBe("sandboxnetworkaccess")
+    expect(normalizeToolName("SandboxNetworkAccess")).toBe(live)
+    expect(normalizeToolName("sandboxnetworkaccess")).toBe(live)
+  })
+
+  it("keeps a sandbox network request by its meta name, whatever its input carries", () => {
+    // `{host}` matches no input shape today; the meta name is what keeps the
+    // call from being read as another tool once its input does (a `url`
+    // reads as a web fetch). The title is the host, as the request has it.
+    const rawInput = JSON.stringify({
+      host: "example.com",
+      url: "https://example.com/",
+    })
+    expect(
+      inferLiveToolName({
+        title: "example.com",
+        kind: "other",
+        rawInput,
+        meta: { claudeCode: { toolName: "SandboxNetworkAccess" } },
+      })
+    ).toBe("sandboxnetworkaccess")
+    expect(
+      inferLiveToolName({
+        title: "example.com",
+        kind: "other",
+        rawInput,
+        meta: null,
+      })
+    ).toBe("webfetch")
+  })
+
   it("still classifies a {task_id} tool as task when no Claude Code meta is present", () => {
     // Non-Claude agents (no meta.claudeCode.toolName) keep the legacy
     // input-shape behavior — the fix is meta-driven, not a removal of the

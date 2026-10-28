@@ -131,6 +131,10 @@ export function toolStepKind(part: AdaptedToolCallPart): ToolStepKind {
     case "bash":
     case "exec_command":
       return "command"
+    case "monitor":
+      return "monitor"
+    case "sandboxnetworkaccess":
+      return "network"
     case CODEX_SCRIPT_TOOL_NAME:
       return "script"
     case "read":
@@ -408,6 +412,57 @@ function describeCommand(
   }
 }
 
+/**
+ * The result of a `Monitor` that started: it names the background task the
+ * events will come from, `Monitor started (task <id>, <expiry>). You will be
+ * notified on each event. …` (Claude Code 2.1.310). That task is what
+ * claude-agent-acp 0.98.0 publishes to the async-task strip, under the same id.
+ */
+const MONITOR_STARTED_RE = /^Monitor started \(task ([A-Za-z0-9_-]+)[,)]/
+
+/**
+ * Claude Code's `Monitor`: a script whose every printed line is an event to
+ * the model, or a WebSocket whose every message is. Drawn like a command — the
+ * row says what it watches for in the agent's words, the panel shows the
+ * command (or the socket) — but its result is only the CLI's note to the model
+ * that the watch began, so a started one is shown by its task id.
+ */
+function describeMonitor(
+  payload: Payload,
+  base: ToolDescriptor
+): ToolDescriptor {
+  const parsed = payload.parsed
+  const command =
+    typeof parsed?.command === "string" && parsed.command.trim()
+      ? parsed.command
+      : null
+  const ws =
+    parsed?.ws && typeof parsed.ws === "object" && !Array.isArray(parsed.ws)
+      ? (parsed.ws as Record<string, unknown>)
+      : null
+  const url = !command && typeof ws?.url === "string" ? ws.url : null
+  const display = command ?? url ?? ""
+  const described =
+    typeof parsed?.description === "string" ? parsed.description.trim() : ""
+  const started = payload.output
+    ? MONITOR_STARTED_RE.exec(payload.output.trimStart())
+    : null
+  return {
+    ...base,
+    command: {
+      display,
+      lineCount: display ? countLines(display) : 0,
+      heredoc: command ? detectHeredoc(command) : null,
+      description: described && described !== display.trim() ? described : null,
+      session: null,
+      durationMs: null,
+      announcedSession: null,
+      ...(url ? { websocket: true } : {}),
+    },
+    background: started ? { taskId: started[1]! } : null,
+  }
+}
+
 function describeShellSession(
   part: AdaptedToolCallPart,
   base: ToolDescriptor
@@ -587,6 +642,12 @@ function describeUncached(part: AdaptedToolCallPart): ToolDescriptor {
       return describeShellSession(part, base)
     case "script":
       return describeScript(part, base)
+    case "monitor":
+      return describeMonitor(payload, base)
+    case "network": {
+      const host = payload.field("host")
+      return { ...base, target: host ? textTarget(host, 60) : null }
+    }
     case "read": {
       const path = filePathOf(payload)
       return {
