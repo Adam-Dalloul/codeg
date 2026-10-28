@@ -575,6 +575,10 @@ jobs:
           # Skip the duplicate beforeBuildCommand sidecar pass so cross builds
           # do not fall back to the runner host triple.
           CODEG_SKIP_SIDECAR: "1"
+          # beforeBuildCommand runs `next build`, whose type-check needs more
+          # than the 2 GB heap Node defaults to on these 7 GB runners; 4 GB is
+          # what Node already gets on the 16 GB Linux and Windows runners.
+          NODE_OPTIONS: --max-old-space-size=4096
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -809,6 +813,12 @@ jobs:
           cache: "pnpm"
 
       - name: Build frontend
+        env:
+          # The `next build` type-check needs more than the 2 GB heap Node
+          # defaults to on the 7 GB macOS runners. 4 GB is what Node already
+          # gets on the 16 GB Linux and Windows runners, so it changes nothing
+          # there.
+          NODE_OPTIONS: --max-old-space-size=4096
         run: |
           pnpm install --frozen-lockfile
           pnpm build
