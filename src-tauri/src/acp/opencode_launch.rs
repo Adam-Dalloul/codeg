@@ -92,6 +92,7 @@ pub(crate) fn runtime_outdated_message(
 mod tests {
     use super::*;
     use crate::acp::registry::{self, AgentDistribution};
+    #[cfg(unix)]
     use std::path::PathBuf;
 
     #[test]
