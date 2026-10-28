@@ -61,9 +61,26 @@ describe("toolStepKind", () => {
       },
       "delegation",
     ],
-    // A code-mode `execute` that is not a delegation call keeps its own row:
-    // `execute` normalizes to `bash`, so it stays a command.
-    ["execute", { code: "return 1 + 1" }, "command"],
+    // Any other code-mode `execute` is a script row: `execute` normalizes to
+    // `bash`, but its input is the script, which a command row would show as
+    // an empty command line.
+    ["execute", { code: "return 1 + 1" }, "script"],
+    // A `{code}` input on a real command tool stays a command.
+    ["bash", { command: "node -e x", code: "x" }, "command"],
+    // OpenCode 2's renamed tools (packages/core/src/tool/plugin, 2.2.0).
+    ["shell", { command: "ls" }, "command"],
+    ["patch", { patchText: "*** Begin Patch\n*** End Patch" }, "edit"],
+    [
+      "subagent",
+      {
+        agent: "general",
+        description: "d",
+        prompt: "p",
+        subagent_type: "general",
+      },
+      "agent",
+    ],
+    ["skill", { id: "probe-skill" }, "skill"],
     // Another tool's `code` argument shaped like the call is no delegation.
     [
       "mcp__playwright__browser_run_code",
@@ -219,6 +236,78 @@ describe("describeToolCall: commands", () => {
     )
     expect(tool.status).toBe("failed")
     expect(tool.exit).toEqual({ code: 1, signal: null })
+  })
+
+  // OpenCode 2 completes a command that exited non-zero SUCCESSFULLY, closing
+  // its result with an `Exited with code N` notice block
+  // (packages/core/src/shell/result.ts, 2.2.0 capture), and the live call
+  // carries the code as `_meta["codeg.exitCode"]` too.
+  it("reads OpenCode 2's exit notice as the command's failure", () => {
+    const fromText = describeToolCall(
+      call(
+        "shell",
+        { command: "pnpm build" },
+        { output: "ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL\n\nExited with code 1" }
+      )
+    )
+    expect(fromText.status).toBe("failed")
+    expect(fromText.exit).toEqual({ code: 1, signal: null })
+
+    const fromMeta = describeToolCall(
+      call(
+        "shell",
+        { command: "make" },
+        {
+          output: "make: *** [all] Error 2\n",
+          meta: { opencode: { toolName: "shell" }, "codeg.exitCode": 2 },
+        }
+      )
+    )
+    expect(fromMeta.status).toBe("failed")
+    expect(fromMeta.exit).toEqual({ code: 2, signal: null })
+  })
+
+  it("reads a missing path the way it does for every agent", () => {
+    // The 2.2.0 capture's `ls` of a missing directory: the notice is framing,
+    // so what is left is the "not found" answer, as for Claude Code's `ls`.
+    const tool = describeToolCall(
+      call(
+        "shell",
+        { command: "ls /definitely-not-here" },
+        {
+          output:
+            "ls: /definitely-not-here: No such file or directory\n\nExited with code 1",
+        }
+      )
+    )
+    expect(tool.status).toBe("succeeded")
+    expect(tool.exit).toEqual({ code: 1, signal: null })
+    expect(tool.exitMeaning).toBe("notFound")
+  })
+
+  it("keeps OpenCode 2's no-match search a success", () => {
+    const tool = describeToolCall(
+      call(
+        "shell",
+        { command: "rg -n 'nothing-here' src" },
+        { output: "Exited with code 1" }
+      )
+    )
+    expect(tool.status).toBe("succeeded")
+    expect(tool.exit).toEqual({ code: 1, signal: null })
+  })
+
+  it("leaves a succeeded command's own text alone", () => {
+    // The program printed the words, mid-output: not the agent's notice.
+    const tool = describeToolCall(
+      call(
+        "shell",
+        { command: "./report.sh" },
+        { output: "Exited with code 3\nall checks passed" }
+      )
+    )
+    expect(tool.status).toBe("succeeded")
+    expect(tool.exit).toBeNull()
   })
 
   it("prefers the exit code the transcript kept as a field", () => {
@@ -398,6 +487,48 @@ describe("describeToolCall: commands", () => {
       describeToolCall(call("wait", { cell_id: "17", terminate: true })).command
         ?.session?.verb
     ).toBe("terminate")
+  })
+})
+
+describe("describeToolCall: code-mode scripts", () => {
+  // OpenCode 2.2.0's `execute` running an MCP tool (live capture): the script
+  // is the input, the calls it made ride the `_meta`, the result is the text.
+  const code =
+    "const r = await tools.probe.echo({ text: 'hi from code mode' });\nreturn r"
+
+  it("titles the row with the tools the script called", () => {
+    const tool = describeToolCall(
+      call(
+        "execute",
+        { code },
+        {
+          output: '{\n  "echoed": "hi from code mode"\n}',
+          meta: {
+            opencode: { toolName: "execute" },
+            "codeg.codeModeCalls": [
+              {
+                tool: "probe.echo",
+                status: "completed",
+                input: { text: "hi from code mode" },
+              },
+            ],
+          },
+        }
+      )
+    )
+    expect(tool.kind).toBe("script")
+    expect(tool.command?.display).toBe("probe.echo")
+    expect(tool.command?.lineCount).toBe(2)
+  })
+
+  it("titles a script whose calls are not known yet by its first line", () => {
+    const tool = describeToolCall(
+      call("execute", { code }, { state: "input-available" })
+    )
+    expect(tool.kind).toBe("script")
+    expect(tool.command?.display).toBe(
+      "const r = await tools.probe.echo({ text: 'hi from code mode' });"
+    )
   })
 })
 

@@ -325,9 +325,11 @@ const GIT_DIAGNOSTIC_RE = /^(?:error|fatal|usage|warning):/i
 const SED_PRINT_RE = /^(?:\d+|\$)(?:,(?:\d+|\$))?p$/
 
 /** The agents' framing around what a command printed: Claude Code's `Exit
- *  code 1` (and the fence it may wrap the result in), codex's `Wall time: …`
+ *  code 1` (and the fence it may wrap the result in), OpenCode 2's closing
+ *  `Exited with code 1` / `Killed by SIGTERM` notice, codex's `Wall time: …`
  *  lines, the backend's `[terminal exited: …]`. */
-const FRAMING_RE = /^(?:exit code[:\s]\s*-?\d+$|\[terminal exited:|```)/i
+const FRAMING_RE =
+  /^(?:exit code[:\s]\s*-?\d+$|exited with code\s+-?\d+$|killed by\s+SIG[A-Z0-9]+$|\[terminal exited:|```)/i
 
 /** The lines the command printed, the framing left out. */
 function printedLines(output: string): string[] {

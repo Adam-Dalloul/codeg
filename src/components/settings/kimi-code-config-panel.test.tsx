@@ -451,7 +451,6 @@ function makeAgent(
     env,
     config_json: configJson,
     config_file_path: "/home/u/.kimi-code/config.toml",
-    opencode_auth_json: null,
     codex_auth_json: null,
     codex_config_toml: null,
     codex_model_catalog: null,

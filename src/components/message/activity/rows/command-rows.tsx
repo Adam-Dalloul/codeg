@@ -12,9 +12,11 @@ import { useElapsedLabel } from "@/hooks/use-elapsed-label"
 import { useTruncation } from "@/hooks/use-truncation"
 import { normalizeCommandOutput } from "@/lib/activity/command"
 import {
-  parseCodexScriptCard,
-  parseCodexScriptMeta,
-} from "@/lib/codex-code-mode"
+  codeModeCalls,
+  parseScriptCard,
+  type CodeModeCall,
+} from "@/lib/activity/code-mode"
+import { parseCodexScriptMeta } from "@/lib/codex-code-mode"
 import { countLines } from "@/lib/activity/format"
 import type { StepStatus } from "@/lib/activity/types"
 import { describeStdinChars } from "@/lib/shell-session-tool"
@@ -253,13 +255,61 @@ function expandTabs(line: string): string {
   return out
 }
 
+/** Longest argument preview a script call's line shows. */
+const CALL_INPUT_CHARS = 160
+
+function callInputPreview(input: Record<string, unknown> | null): string {
+  if (!input || Object.keys(input).length === 0) return ""
+  const text = JSON.stringify(input)
+  return text.length > CALL_INPUT_CHARS
+    ? `${text.slice(0, CALL_INPUT_CHARS - 1)}…`
+    : text
+}
+
+/** The tools a code-mode script called, one per line, with how each ended. */
+function ScriptCalls({ calls }: { calls: CodeModeCall[] }) {
+  return (
+    <ul
+      className="border-b border-foreground/5 px-4 py-2 font-mono text-[0.78125rem] leading-relaxed"
+      dir="ltr"
+    >
+      {calls.map((call, index) => (
+        <li key={index} className="flex min-w-0 items-baseline gap-2">
+          <span
+            aria-hidden
+            className={cn(
+              "shrink-0",
+              call.status === "error"
+                ? "text-destructive"
+                : call.status === "running"
+                  ? "text-muted-foreground"
+                  : "text-emerald-500"
+            )}
+          >
+            {call.status === "error"
+              ? "✕"
+              : call.status === "running"
+                ? "…"
+                : "✓"}
+          </span>
+          <span className="shrink-0 text-foreground">{call.tool}</span>
+          <span className="min-w-0 truncate text-activity-secondary">
+            {callInputPreview(call.input)}
+          </span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 /**
- * A codex script, set in its panel the way a command is: flush, at the
- * output's size, in the colours of the app's code blocks. Its lines wrap, as
- * the command's and the output's do, so all of a line reads without a
- * sideways scroll; a wrapped line hangs two columns in from its own indent,
- * so it never reads as the next line. A long script scrolls on its own under
- * a lower cap than the output's, which keeps its full height beneath it.
+ * A code-mode script (codex's or OpenCode's), set in its panel the way a
+ * command is: flush, at the output's size, in the colours of the app's code
+ * blocks. Its lines wrap, as the command's and the output's do, so all of a
+ * line reads without a sideways scroll; a wrapped line hangs two columns in
+ * from its own indent, so it never reads as the next line. A long script
+ * scrolls on its own under a lower cap than the output's, which keeps its
+ * full height beneath it.
  */
 function ScriptSource({ source }: { source: string }) {
   const code = useMemo(
@@ -325,8 +375,14 @@ function CommandDetail({
     !!command.display
   const fullCommand = command?.display ?? ""
   const script = useMemo(
-    () => (isScript ? parseCodexScriptCard(step.part.input) : null),
-    [isScript, step.part.input]
+    () => (isScript ? parseScriptCard(step.part.input, step.part.meta) : null),
+    [isScript, step.part.input, step.part.meta]
+  )
+  // The calls the script made, when the agent reports them (OpenCode's
+  // `execute`; see `CODE_MODE_CALLS_META_KEY`).
+  const calls = useMemo(
+    () => (isScript ? codeModeCalls(step.part.meta) : []),
+    [isScript, step.part.meta]
   )
   const scriptMeta = useMemo(
     () => parseCodexScriptMeta(step.part.meta),
@@ -385,6 +441,7 @@ function CommandDetail({
       }
     >
       {script ? <ScriptSource source={script.source} /> : null}
+      {calls.length > 0 ? <ScriptCalls calls={calls} /> : null}
       {scriptMeta?.sharedWith.length ? (
         <p className="border-b border-foreground/5 px-4 py-2 text-xs text-muted-foreground">
           {tParts("codexScript.sharedWith", {

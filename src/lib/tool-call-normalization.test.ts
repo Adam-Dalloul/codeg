@@ -8,6 +8,7 @@ import {
   extractClaudeCodeSkillName,
   inferLiveToolName,
   normalizeToolName,
+  PARENT_TOOL_CALL_META_KEY,
   toolCallMovedToBackground,
 } from "./tool-call-normalization"
 
@@ -110,6 +111,45 @@ describe("inferLiveToolName on OpenCode's code-mode execute frames", () => {
         meta: null,
       })
     ).toBe("apply_patch")
+  })
+})
+
+describe("OpenCode 2 tool names", () => {
+  // OpenCode 2.2.0's opening frames state the tool as the ACP `name`, which the
+  // backend stamps as `_meta.opencode.toolName` (live capture).
+  const opening = (name: string) =>
+    inferLiveToolName({
+      title: name,
+      kind: "other",
+      rawInput: "{}",
+      meta: { opencode: { toolName: name } },
+    })
+
+  it("maps the renamed tools to their cards", () => {
+    expect(normalizeToolName("patch")).toBe("apply_patch")
+    expect(normalizeToolName("subagent")).toBe("agent")
+    expect(normalizeToolName("shell")).toBe("bash")
+    expect(opening("patch")).toBe("apply_patch")
+    expect(opening("subagent")).toBe("agent")
+    expect(opening("shell")).toBe("bash")
+  })
+
+  it("names a sub-agent's call from the stamp, not its prefixed title", () => {
+    expect(
+      inferLiveToolName({
+        title: "read",
+        kind: "read",
+        rawInput: JSON.stringify({ path: "hello.txt" }),
+        meta: {
+          "opencode/child-session": {
+            id: "ses_child",
+            title: "Probe child task",
+          },
+          opencode: { toolName: "read" },
+          [PARENT_TOOL_CALL_META_KEY]: "call_main_9_11",
+        },
+      })
+    ).toBe("read")
   })
 })
 

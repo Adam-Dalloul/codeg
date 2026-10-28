@@ -460,7 +460,6 @@ async fn saving_preferences_keeps_the_provider_bound() {
             std::collections::BTreeMap::new(),
             None,
             None,
-            None,
             Some("model_provider = \"codeg\"\n".into()),
             &db,
             &crate::web::event_bridge::EventEmitter::Noop,

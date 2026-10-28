@@ -253,6 +253,21 @@ fn merge_agent_env_with_color(
     merged.into_iter().collect()
 }
 
+/// The environment of an OpenCode process codeg starts outside a session (the
+/// credentials helper in `opencode_credentials`): a session's own launch env,
+/// minus the per-launch scratch directory. Built the same way so the helper
+/// opens the very `opencode.db` and config files a session would — the XDG
+/// roots or `OPENCODE_DB` a user set in the agent's env included.
+pub(crate) fn opencode_helper_env(runtime_env: &BTreeMap<String, String>) -> Vec<(String, String)> {
+    let env = match registry::get_agent_meta(AgentType::OpenCode).distribution {
+        AgentDistribution::Binary { env, .. } => env,
+        _ => &[],
+    };
+    let mut merged = merge_agent_env(env, runtime_env, None);
+    prepend_agent_install_dirs_path(&mut merged, AgentType::OpenCode);
+    merged
+}
+
 /// Whether a Cursor launch gets the root `--force` (Run Everything) flag, from
 /// the panel's `CURSOR_FORCE` knob.
 ///
@@ -2372,19 +2387,29 @@ async fn build_agent(
                     cmd_args.insert(0, "--force".to_string());
                 }
             }
-            // `opencode acp` embeds an HTTP server that otherwise takes its
-            // port and host from opencode's GLOBAL config (`server.*`, meant
-            // for `opencode serve`); a fixed port there fails every concurrent
-            // session with `ServeError` (#860). The subcommand's own defaults,
-            // passed explicitly, outrank that config — for builds that know
-            // the flags (see `opencode_launch`).
+            // codeg configures OpenCode in OpenCode 2's terms, which 1.x does
+            // not read, so a 1.x build is refused with the way to upgrade
+            // rather than started half-configured (see `opencode_launch`).
             if agent_type == AgentType::OpenCode {
-                let listen = crate::acp::opencode_launch::listen_args(
+                if let Some(version) = crate::acp::opencode_launch::pre_v2_runtime(
                     &binary_path,
                     cached_version.as_deref(),
                 )
-                .await;
-                cmd_args.extend(listen.iter().map(|a| (*a).to_string()));
+                .await
+                {
+                    tracing::warn!(
+                        "[ACP][OpenCode] refusing {} (version {version}): codeg runs OpenCode 2",
+                        binary_path.display()
+                    );
+                    return Err(AcpError::AgentRuntimeOutdated(
+                        crate::acp::opencode_launch::runtime_outdated_message(
+                            &version,
+                            &binary_path,
+                            cached_version.is_some(),
+                            registry_version,
+                        ),
+                    ));
+                }
             }
             let cmd_args_for_log = cmd_args.clone();
             if !cmd_args.is_empty() {
@@ -6712,13 +6737,13 @@ pub(crate) fn claude_raw_sdk_session_meta(
 ///   process, where the agent's own OS sandbox and permission rules already
 ///   apply (#436). Withholding one without the other buys nothing: the agent
 ///   just reaches the same file through the channel it kept.
-/// - Codex, DeepSeek and Qoder only: form elicitation, so their native
-///   questions (codex's Plan-mode `request_user_input`, DeepSeek's
-///   `ask_user_question` and plan review, Qoder's `AskUserQuestion`) are
-///   delivered as `elicitation/create` (handled by
+/// - Codex, DeepSeek, Qoder and OpenCode only: form elicitation, so their
+///   native questions (codex's Plan-mode `request_user_input`, DeepSeek's
+///   `ask_user_question` and plan review, Qoder's `AskUserQuestion`,
+///   OpenCode's `question`) are delivered as `elicitation/create` (handled by
 ///   `handle_elicitation_request`). Without it codex silently answers `{}`,
-///   DeepSeek falls back to permission buttons, and Qoder withholds the tool
-///   from the model.
+///   DeepSeek falls back to permission buttons, Qoder withholds the tool from
+///   the model, and OpenCode tells the model the question could not be shown.
 ///   NOTE this reroutes codex's WHOLE form-elicitation surface — MCP
 ///   tool-call approvals and MCP-server forms included — so the handler must
 ///   cover every shape (`classify_elicitation`). URL elicitation is
@@ -6776,11 +6801,19 @@ fn build_client_capabilities(
     // tool. Verified on the real 1.1.67 wire, MCP tool-call approvals staying
     // on `session/request_permission`; the same form and answer handling ship
     // in every release from 1.1.23 through 1.1.75, which matters because codeg
-    // launches a `qoder` found on PATH ahead of the pinned package). Agents
-    // without the bit fall back to their own `request_permission` button path.
+    // launches a `qoder` found on PATH ahead of the pinned package). OpenCode 2
+    // asks its native `question` tool's questions ONLY as a form
+    // (`packages/cli/src/acp/elicitation.ts`, 2.2.0): `q<n>` select fields
+    // (`oneOf`, or `items.anyOf` for multi-select) with a `q<n>_custom` text
+    // companion for a typed answer, scoped to the tool call. Without the bit it
+    // cancels the form unseen and tells the model to carry on without an
+    // answer, so the user never sees the question. Its only other form, the
+    // web-search provider choice, is declined unshown
+    // (`handle_elicitation_request`). Agents without the bit fall back to their
+    // own `request_permission` button path.
     if matches!(
         agent_type,
-        AgentType::Codex | AgentType::DeepSeek | AgentType::Qoder
+        AgentType::Codex | AgentType::DeepSeek | AgentType::Qoder | AgentType::OpenCode
     ) {
         client_capabilities = client_capabilities
             .elicitation(ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()));
@@ -7073,6 +7106,22 @@ fn build_client_capabilities(
             serde_json::Value::Bool(true),
         );
     }
+    // OpenCode 2 sends a sub-agent's updates on the parent's session either
+    // way. Without this key it sends them inline, and only while the turn that
+    // launched the sub-agent runs; with it, as `opencode/session/child_update`
+    // notifications that keep coming after that turn has answered — the only
+    // way a background sub-agent's work, and its end, reach codeg — plus the
+    // child's lifecycle (created/running/completed/failed/interrupted)
+    // (`packages/cli/src/acp/capabilities.ts`, `turn.ts` `interpret`, 2.2.0).
+    // The notification names no `sessionId`, so `OpenCodeChildSessionUpdates`
+    // rewrites it into the update it carries, which then takes the same route
+    // an inline sub-agent frame does (`opencode_frame_route`).
+    if agent_type == AgentType::OpenCode {
+        meta.insert(
+            OPENCODE_CHILD_UPDATES_CAPABILITY.to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
     if !meta.is_empty() {
         client_capabilities = client_capabilities.meta(meta);
     }
@@ -7107,6 +7156,20 @@ fn build_client_capabilities(
             ClientSessionCapabilities::new()
                 .notices(NoticeCapabilities::new())
                 .compaction(CompactionCapabilities::new()),
+        );
+    }
+    // OpenCode 2 implements `compaction` alone. Without it, a compaction —
+    // `/compact` or the automatic one — reaches a client only as a
+    // `session_info_update` carrying `_meta["opencode/compaction"]`, which no
+    // card renders; with it, as the standard `compaction_update` (in_progress
+    // → completed with the summary, failed, or cancelled) and
+    // `compaction_summary_chunk` that `session_compaction_event` already turns
+    // into the compaction card (`packages/cli/src/acp/compaction.ts`, 2.2.0).
+    // A sub-agent's own compaction rides `opencode/session/child_update` and is
+    // dropped (`opencode_child_update_as_session_update`).
+    if agent_type == AgentType::OpenCode {
+        client_capabilities = client_capabilities.session(
+            ClientSessionCapabilities::new().compaction(CompactionCapabilities::new()),
         );
     }
     // Two more client capabilities are deliberately NOT advertised, because each
@@ -7301,6 +7364,7 @@ fn agent_reads_own_mcp_config(agent_type: AgentType) -> bool {
             | AgentType::Cline
             | AgentType::Trae
             | AgentType::CommandCode
+            | AgentType::OpenCode
     )
 }
 
@@ -7430,6 +7494,14 @@ fn load_mcp_servers_for_agent(agent_type: AgentType) -> Vec<McpServer> {
     // in one session's tool list), and a name on both sides keeps the file's
     // copy, as its docs say and 1.88.0 showed live. codeg's MCP settings UI
     // manages that file.
+    //
+    // OpenCode joins it: 2.x loads `mcp.servers` from its own config, which
+    // codeg's MCP settings UI manages, and turns each server `session/new`
+    // carries into an override that REPLACES the config entry of the same name
+    // (`cli/src/acp/sessions.ts` `mcpConfig`, `core/src/mcp/index.ts` `add`,
+    // 2.2.0). The override is rebuilt from the wire fields alone, so forwarding
+    // the file's servers would only drop their `codemode`, timeouts, `cwd` and
+    // OAuth settings.
     if agent_reads_own_mcp_config(agent_type) {
         return Vec::new();
     }
@@ -8207,6 +8279,9 @@ async fn run_connection(
             state: Arc::clone(&state),
             emitter: emitter.clone(),
         })
+        // OpenCode's sub-agent notifications name no session either; each is
+        // rewritten into the session update it carries. See the type docs.
+        .with_handler(OpenCodeChildSessionUpdates { agent_type })
         .on_receive_request(
             {
                 let emitter_inner = emitter_clone.clone();
@@ -10621,10 +10696,12 @@ async fn handle_elicitation_request(
     // wire cannot disambiguate.
     let (peer, synthesizes_answer_card) = {
         let s = state.read().await;
-        let peer = if s.agent_type == AgentType::Codex {
-            crate::acp::question::ElicitationPeer::Codex(s.codex_user_input_shape)
-        } else {
-            crate::acp::question::ElicitationPeer::Other
+        let peer = match s.agent_type {
+            AgentType::Codex => {
+                crate::acp::question::ElicitationPeer::Codex(s.codex_user_input_shape)
+            }
+            AgentType::OpenCode => crate::acp::question::ElicitationPeer::OpenCode,
+            _ => crate::acp::question::ElicitationPeer::Other,
         };
         // Qoder announces its AskUserQuestion as a stream `tool_call` under
         // the very id this form is scoped to, and completes that call with the
@@ -10632,9 +10709,34 @@ async fn handle_elicitation_request(
         // never reaches the stream would only replace that call's input with
         // this form's flattened copy, and then be overwritten by Qoder's own
         // completion. That completion is what renders the answers (see
-        // `qoder_ask_live_output`).
-        (peer, s.agent_type != AgentType::Qoder)
+        // `qoder_ask_live_output`). OpenCode streams its `question` call the
+        // same way, completing it with `metadata.answers`
+        // (`opencode_question_outcome`).
+        (
+            peer,
+            !matches!(s.agent_type, AgentType::Qoder | AgentType::OpenCode),
+        )
     };
+    let is_opencode = peer == crate::acp::question::ElicitationPeer::OpenCode;
+    // Where codeg cannot put a question to the user, an OpenCode question is
+    // answered with nothing instead of declined: OpenCode reads a decline as
+    // the user dismissing it, which ends the turn, while an empty answer lets
+    // the model go on without one (see `elicitation_unanswered_response`).
+    let unanswered = || {
+        if is_opencode {
+            serde_json::to_value(crate::acp::question::elicitation_unanswered_response())
+                .unwrap_or_default()
+        } else {
+            decline()
+        }
+    };
+    // OpenCode's only other form is the web-search provider choice, which
+    // codeg does not ask: declined, the search fails over to the model.
+    if is_opencode && !crate::acp::question::is_opencode_question_form(&raw) {
+        tracing::info!("[opencode elicitation] declining a non-question form");
+        let _ = responder.respond(decline());
+        return;
+    }
     // Everything codex-acp can send once `elicitation.form` is advertised
     // resolves to a plan here — an unhandled shape would silently reject the
     // agent's blocked request (an MCP tool-call approval, most damagingly).
@@ -10706,14 +10808,14 @@ async fn handle_elicitation_request(
         // bridge into the same ask card as the codeg-mcp ask tool.
         crate::acp::question::ElicitationPlan::Questions(questions) => {
             let Some((question_access, ask_cfg)) = access else {
-                let _ = responder.respond(decline());
+                let _ = responder.respond(unanswered());
                 return;
             };
             // Same kill switch as the codeg-mcp ask tool and the grok bridge:
             // when the user has turned ask_user_question off, decline so codex
             // proceeds.
             if !ask_cfg.is_enabled().await {
-                let _ = responder.respond(decline());
+                let _ = responder.respond(unanswered());
                 return;
             }
             // register_question consumes the specs; `questions` keeps its copy
@@ -10724,7 +10826,7 @@ async fn handle_elicitation_request(
                 .await
             else {
                 // Connection gone, or an ask is already pending on this connection.
-                let _ = responder.respond(decline());
+                let _ = responder.respond(unanswered());
                 return;
             };
             // The user answers out-of-band (the `answer_question` endpoint
@@ -13249,7 +13351,29 @@ fn classify_session_load_error(e: &agent_client_protocol::Error) -> Option<&'sta
     if codex_app_server_lost(e).is_some() {
         return Some("session_unavailable");
     }
+    if opencode_session_not_found(e) {
+        return Some("resource_not_found");
+    }
     classify_session_load_failure(e.code, &e.to_string())
+}
+
+/// OpenCode 2's answer for a session it has no record of: -32602 with
+/// `data: {sessionId}` and "session not found: <id>" (`cli/src/acp/error.ts`
+/// `toRequestError`, 2.2.0) — ResourceNotFound by another code. Two sessions
+/// codeg still lists get it: one a 1.x binary started after 2.x migrated the
+/// database, which only the 1.x tables hold, and one whose 2.x row was
+/// deleted after codeg opened it. Falling through to `session/new` would
+/// rebind the row to an empty session and lose the history it shows.
+fn opencode_session_not_found(e: &agent_client_protocol::Error) -> bool {
+    matches!(
+        e.code,
+        agent_client_protocol::schema::v1::ErrorCode::InvalidParams
+    ) && e
+        .data
+        .as_ref()
+        .and_then(|data| data.get("sessionId"))
+        .is_some_and(serde_json::Value::is_string)
+        && e.to_string().contains("session not found")
 }
 
 /// codex-acp 2.2's word that the Codex app-server behind the adapter died:
@@ -14282,6 +14406,10 @@ async fn run_conversation_loop(
                 // save one held ring reading.
                 cb_state.codex_context_readings.turn_started();
                 cb_state.kiro_calls.clear();
+                // OpenCode's per-call names and inputs live for one turn; its
+                // sub-agent launches persist, as a background child outlives
+                // the turn that launched it.
+                cb_state.opencode.turn_started();
                 // Grok's context ring needs the active model's window paired
                 // with the cumulative token count riding each update. Resolve it
                 // once here (the model can't change mid-turn) so the per-update
@@ -16197,35 +16325,28 @@ fn pi_result_content_is_stringify_noise(
 /// adapter itself publishes.
 const OPENCODE_META_KEY: &str = "opencode";
 
-/// Record the raw tool name from an OpenCode `tool_call`'s opening frame as
+/// Record the raw tool name of an OpenCode tool call as
 /// `_meta.opencode.toolName`, so the frontend classifier has the same identity
-/// the history parser reads out of `part.tool`.
+/// the history parser reads out of the stored part.
 ///
-/// OpenCode's ACP adapter states the tool's name EXACTLY ONCE, and only on this
-/// frame: `pendingToolCall` titles a not-yet-running call with the bare tool id
-/// (`toolTitle` falls through to `toolName` because `ToolStatePending` carries
-/// no title), the `in_progress` update repeats it, and then the COMPLETION frame
-/// replaces `title` with a display label and drops `kind`, `locations` and
-/// `rawInput` entirely — verified against opencode 1.18.30 driven over real ACP:
-///   tool_call        title="glob"  kind="search" rawInput={}
-///   tool_call_update title="glob"  kind="search" rawInput={"pattern":"*.txt"}
-///   tool_call_update (no title, no kind, no rawInput) content=[…]
-/// (`read`→"notes.txt", `todowrite`→"3 todos", `grep`→"third", `bash` keeps the
-/// command.) So from the second frame on, the only signal left is the input
-/// shape — and OpenCode has several tools that are indistinguishable that way:
-/// `glob` (`{pattern, path}`) classified as **grep**, `lsp_*` (`{path}`) as
-/// **read**, and an MCP tool taking `{query}` as **websearch**, each of which the
-/// history parser names correctly. This closes that live/history split at the
-/// source instead of adding more input-shape heuristics.
+/// OpenCode states the tool's name only on the call's OPENING frame. Every
+/// later frame titles it by name too, but the completion drops `title`, `kind`
+/// and `rawInput` — and the input shape alone cannot tell several of its tools
+/// apart (`glob` `{pattern, path}` reads as **grep**, an MCP tool taking
+/// `{query}` as **websearch**), each of which the history parser names right.
 ///
-/// Gated on `pending` + an empty `rawInput` because `loadSession`/`forkSession`
-/// REPLAY finished tool parts through the same `pendingToolCall` builder: a
-/// replayed frame is also `status: "pending"`, but it is built from the
-/// COMPLETED state, so its title is the display label and its input is fully
-/// populated. Requiring the empty input keeps the marker off those. (codeg
-/// prefers `session/resume`, which replays nothing, so this is belt-and-braces.)
-/// A `pending` frame that did arrive with partial input simply goes unstamped —
-/// today's behavior, never a wrong name.
+/// OpenCode 2's bridge sends the name as the ACP `ToolCall.name` on every
+/// opening frame — live, replayed (`session/load`) and permission-request
+/// alike (`packages/cli/src/acp/tool.ts` `pendingToolCall`, 2.2.0) — so that
+/// is the name stamped whenever it is present. It matters most for a
+/// sub-agent's own calls, whose `title` OpenCode prefixes with the child
+/// session's title (`"Explore auth: read"`, `cli/src/acp/child.ts`
+/// `prefixTitle`): only `name` still says `read`.
+///
+/// Without a `name` (1.x), the title of an argument-less `pending` frame is the
+/// name, as it was before: a `pending` frame that already carries input is a
+/// `session/load` replay, whose title may be a display label, so it goes
+/// unstamped rather than wrongly named.
 ///
 /// Merges into whatever `_meta` the adapter sent and never overwrites an
 /// existing `opencode` key.
@@ -16233,21 +16354,28 @@ fn stamp_opencode_tool_name(
     agent_type: AgentType,
     status: &str,
     raw_input: &Option<serde_json::Value>,
+    name: Option<&str>,
     title: &str,
     meta: Option<serde_json::Map<String, serde_json::Value>>,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
-    if agent_type != AgentType::OpenCode || status != "pending" {
+    if agent_type != AgentType::OpenCode {
         return meta;
     }
-    let input_is_empty = match raw_input {
-        None | Some(serde_json::Value::Null) => true,
-        Some(serde_json::Value::Object(map)) => map.is_empty(),
-        _ => false,
+    let name = match name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(name) => name,
+        None => {
+            let input_is_empty = match raw_input {
+                None | Some(serde_json::Value::Null) => true,
+                Some(serde_json::Value::Object(map)) => map.is_empty(),
+                _ => false,
+            };
+            let name = title.trim();
+            if status != "pending" || !input_is_empty || name.is_empty() {
+                return meta;
+            }
+            name
+        }
     };
-    let name = title.trim();
-    if !input_is_empty || name.is_empty() {
-        return meta;
-    }
     let mut meta = meta.unwrap_or_default();
     if meta.contains_key(OPENCODE_META_KEY) {
         return Some(meta);
@@ -16300,50 +16428,74 @@ fn stamp_codex_search_action(
 
 /// Resolve the live `raw_output` string for an OpenCode tool call.
 ///
-/// OpenCode's ACP adapter reports a finished tool on BOTH channels: the clean
-/// result text on `content[]`, and the envelope `{output, metadata?,
-/// attachments?}` — wrapping that very same string — on `rawOutput` (a failure
-/// sends `{error, metadata?}` beside the error text). Stringifying the envelope
-/// shadows the clean text, because the live renderer's `raw_output_chunks` win
-/// over `content` (`conversation-runtime-store.ts`), so every card that parses
-/// the result ITSELF is handed JSON source instead of the result.
+/// OpenCode reports a finished tool's result as `content[]` — the text the
+/// model was given — beside a `rawOutput` that carries only `{metadata}`, or
+/// `{metadata, error}` for a failure; OpenCode 2 puts no `output` there at all
+/// (`packages/cli/src/acp/tool.ts` `completedToolUpdate`/`errorToolUpdate`,
+/// 2.2.0). Stringifying that object would shadow the clean text, because the
+/// live renderer's `raw_output_chunks` win over `content`
+/// (`conversation-runtime-store.ts`).
 ///
-/// Verified against opencode 1.18.23 (driven over real ACP with a stub MCP
-/// server): a codeg-mcp `ask_user_question` completes as
-///   content:   [{"type":"content","content":{"type":"text","text":"The user
-///               answered your question(s):\n1. [框架] …\n   → 选项 A\n"}}]
-///   rawOutput: {"output":"<that same text>","metadata":{"truncated":false}}
-/// OpenCode drops the MCP `structuredContent` entirely, so the human-readable
-/// lines ARE the whole record — and `AskQuestionResultCard`, seeing only the
-/// one-line JSON blob, matched neither the structured envelope nor the text
-/// fallback and rendered an answered question as "no selection", while the
-/// history parser (which reads the same `state.output` bare) rendered it fine.
+/// So the parity rule shared with Grok and pi (see [`grok_live_tool_output`])
+/// holds: whenever `content` carries anything it IS the result — return `None`
+/// and let it render. The exceptions are the tools whose result the history
+/// parser reshapes for its card, which the live card must be handed reshaped
+/// too, or the call changes face on reload (`parsers::opencode` owns the
+/// shared helpers):
 ///
-/// Same parity rule as Grok and pi (see [`grok_live_tool_output`]): whenever
-/// `content` carries anything, it IS OpenCode's own rendering of this result —
-/// return `None` and let it render. Only with no `content` is the envelope
-/// unwrapped, mirroring `parsers/opencode.rs`: `output`, else the failure
-/// `error`, else `metadata.output` (a command writing only to stderr leaves
-/// `state.output` empty while the combined stream stays in the metadata). An
-/// unrecognized payload still stringifies as before, so no result is ever lost.
+/// - `read`: the model's `Read file <path>, lines a-b` + `n: ` text becomes the
+///   `{start_line, content}` the Read card numbers its lines from; a 1.x
+///   `metadata.display` the same.
+/// - `skill`: the `<skill_content>` envelope is peeled down to the skill body.
+/// - `subagent`: the `<subagent sessionID=…>` wrapper is peeled down to the
+///   sub-agent's answer.
+/// - `question`: the `{declined, answers}` envelope the question card reads
+///   (see [`opencode_question_outcome`]); the sentence OpenCode writes for the
+///   model is one no card parser reads.
+///
+/// With no `content`, the envelope is unwrapped as before (`output`, else the
+/// failure `error`, else `metadata.output`), and an unrecognized payload still
+/// stringifies, so no result is ever lost.
 fn opencode_live_tool_output(
+    name: Option<&str>,
+    input: Option<&serde_json::Value>,
     content: &Option<String>,
     raw_output: &Option<serde_json::Value>,
 ) -> Option<String> {
-    // `read` is the one tool whose `content` is LOSSY rather than merely
-    // redundant: OpenCode hands the client the file body with the line numbers
-    // stripped, while `metadata.display` still carries `lineStart`. The history
-    // parser rebuilds `{start_line, content}` from it, so without this the same
-    // finished `read` renders numbered after a reload and unnumbered while
-    // live. `metadata.display` is unique to `read`, so every other tool keeps
-    // the parity rule below.
     if let Some(structured) = raw_output
         .as_ref()
         .and_then(|raw| crate::parsers::opencode::structure_read_output(raw.get("metadata")))
     {
         return Some(structured);
     }
-    if content.as_deref().is_some_and(|c| !c.trim().is_empty()) {
+    let result = content.as_deref().filter(|c| !c.trim().is_empty());
+    match (name, result) {
+        (Some("read"), Some(result)) => {
+            if let Some(structured) = crate::parsers::opencode::structure_read_output_text(result)
+            {
+                return Some(structured);
+            }
+        }
+        (Some("skill"), Some(result)) => {
+            let body = crate::parsers::opencode::unwrap_skill_content(result);
+            if body != result {
+                return Some(body);
+            }
+        }
+        (Some("subagent"), Some(result)) => {
+            let answer = crate::parsers::opencode::extract_subagent_result(result);
+            if answer != result {
+                return Some(answer);
+            }
+        }
+        (Some("question"), _) => {
+            if let Some(outcome) = opencode_question_outcome(input, raw_output) {
+                return Some(outcome);
+            }
+        }
+        _ => {}
+    }
+    if result.is_some() {
         return None;
     }
     let raw = raw_output.as_ref()?;
@@ -16357,6 +16509,1005 @@ fn opencode_live_tool_output(
         .or_else(|| text(raw.pointer("/metadata/output")))
         .map(structurize_live_output)
         .or_else(|| json_value_to_text(raw_output).map(|t| structurize_live_output(&t)))
+}
+
+/// The `{declined, answers}` envelope the question card reads, for an OpenCode
+/// `question` call — the live twin of the history parser's
+/// `structure_question_output`. One entry per asked question, in order, with
+/// the labels the user picked: OpenCode records them as `metadata.answers`, one
+/// array per question (`core/src/tool/plugin/question.ts`, 2.2.0), and writes
+/// the model a sentence (`User has answered your questions: "…"="…"`) that no
+/// card parser reads.
+///
+/// A failure whose error says the user dismissed the question is that outcome,
+/// not a tool error (see [`opencode_question_dismissed`]). `None` while the
+/// call has no result yet.
+fn opencode_question_outcome(
+    input: Option<&serde_json::Value>,
+    raw_output: &Option<serde_json::Value>,
+) -> Option<String> {
+    let answers = raw_output
+        .as_ref()
+        .and_then(|raw| raw.pointer("/metadata/answers"))
+        .and_then(serde_json::Value::as_array);
+    let Some(answers) = answers else {
+        return opencode_question_dismissed(raw_output)
+            .then(|| serde_json::json!({ "declined": true, "answers": [] }).to_string());
+    };
+    let questions = input
+        .and_then(|input| input.get("questions"))
+        .and_then(serde_json::Value::as_array);
+    let field = |index: usize, key: &str| {
+        questions
+            .and_then(|list| list.get(index))
+            .and_then(|question| question.get(key))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let entries: Vec<serde_json::Value> = answers
+        .iter()
+        .enumerate()
+        .map(|(index, picked)| {
+            let selected: Vec<&str> = match picked {
+                serde_json::Value::Array(items) => {
+                    items.iter().filter_map(serde_json::Value::as_str).collect()
+                }
+                serde_json::Value::String(one) => vec![one.as_str()],
+                _ => Vec::new(),
+            };
+            serde_json::json!({
+                "header": field(index, "header"),
+                "question": field(index, "question"),
+                "selected": selected,
+            })
+        })
+        .collect();
+    Some(serde_json::json!({ "declined": false, "answers": entries }).to_string())
+}
+
+/// Whether an OpenCode `question` call failed only because the user dismissed
+/// it — OpenCode unwinds a dismissal through the tool's error ("The user
+/// dismissed this question", `core/src/tool/plugin/question.ts`
+/// `CancelledError`). The history parser reports that as an outcome rather
+/// than a failure, so the live card does too.
+fn opencode_question_dismissed(raw_output: &Option<serde_json::Value>) -> bool {
+    raw_output
+        .as_ref()
+        .and_then(|raw| raw.get("error"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|error| error.to_ascii_lowercase().contains("dismissed"))
+}
+
+/// A sub-agent launch's input in OpenCode 2's shape, `{agent, description,
+/// prompt, …}` (`core/src/tool/plugin/subagent.ts`). Used only when the call's
+/// name is unknown — the name is what identifies the tool.
+fn opencode_looks_like_subagent_input(input: Option<&serde_json::Value>) -> bool {
+    let Some(obj) = input.and_then(serde_json::Value::as_object) else {
+        return false;
+    };
+    ["agent", "description", "prompt"]
+        .iter()
+        .all(|key| obj.get(*key).is_some_and(serde_json::Value::is_string))
+}
+
+/// An OpenCode 2 tool call's input rewritten into the keys codeg's cards read
+/// — the rewrites the history parser applies to the stored call, so a card
+/// does not change face on reload:
+///
+/// - `subagent` (`{agent, description, prompt, …}`,
+///   `core/src/tool/plugin/subagent.ts`) gains `subagent_type: <agent>`, the
+///   key the Agent card names the sub-agent by and [`is_subagent_invocation`]
+///   recognises a launch by (history: `v2_agent_blocks`).
+/// - each of `question`'s questions gains `multiSelect` from OpenCode's
+///   `multiple` (history: `normalize_question_input`).
+///
+/// `None` when there is nothing to rewrite.
+fn opencode_canonical_input(
+    name: Option<&str>,
+    input: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let obj = input?.as_object()?;
+    match name? {
+        "subagent" => {
+            if obj.contains_key("subagent_type") {
+                return None;
+            }
+            let agent = obj
+                .get("agent")
+                .and_then(serde_json::Value::as_str)
+                .filter(|agent| !agent.trim().is_empty())?;
+            let mut out = obj.clone();
+            out.insert(
+                "subagent_type".to_string(),
+                serde_json::Value::String(agent.to_string()),
+            );
+            Some(serde_json::Value::Object(out))
+        }
+        "question" => {
+            let questions = obj.get("questions")?.as_array()?;
+            let mut changed = false;
+            let rewritten: Vec<serde_json::Value> = questions
+                .iter()
+                .map(|question| {
+                    let multiple = question.get("multiple").and_then(serde_json::Value::as_bool);
+                    match (question.as_object(), multiple) {
+                        (Some(fields), Some(multiple)) if !fields.contains_key("multiSelect") => {
+                            changed = true;
+                            let mut fields = fields.clone();
+                            fields.insert(
+                                "multiSelect".to_string(),
+                                serde_json::Value::Bool(multiple),
+                            );
+                            serde_json::Value::Object(fields)
+                        }
+                        _ => question.clone(),
+                    }
+                })
+                .collect();
+            if !changed {
+                return None;
+            }
+            let mut out = obj.clone();
+            out.insert("questions".to_string(), serde_json::Value::Array(rewritten));
+            Some(serde_json::Value::Object(out))
+        }
+        _ => None,
+    }
+}
+
+/// `_meta` key carrying the calls a code-mode script made: an array of
+/// `{tool, status, input?}`, where `tool` is the catalog path the script called
+/// (`"probe.echo"`, `"codeg-mcp.ask_user_question"`), `status` is `"running"` /
+/// `"completed"` / `"error"`, and `input` is the arguments as the agent shows
+/// them. Agent-neutral by design — the card reads this key, whoever wrote it.
+/// Frontend twin: `CODE_MODE_CALLS_META_KEY` in `src/lib/activity/code-mode.ts`.
+///
+/// OpenCode 2 runs every MCP tool through its `execute` tool and reports the
+/// calls only in the completion's `rawOutput.metadata.toolCalls`, exactly this
+/// shape (`core/src/codemode/tool.ts` `ExecuteCall`, 2.2.0); its running
+/// frames carry nothing (`cli/src/acp/translate.ts` drops a progress event's
+/// metadata).
+const CODE_MODE_CALLS_META_KEY: &str = "codeg.codeModeCalls";
+
+/// How many code-mode calls [`CODE_MODE_CALLS_META_KEY`] keeps: the list rides
+/// every snapshot of the turn, and a script that loops over a tool should not
+/// put hundreds of argument objects there.
+const MAX_CODE_MODE_CALLS: usize = 50;
+
+/// `_meta` key carrying a command's exit code when the agent reports it as a
+/// field rather than only in the output text. Frontend twin:
+/// `EXIT_CODE_META_KEY` in `src/lib/activity/command.ts`.
+const EXIT_CODE_META_KEY: &str = "codeg.exitCode";
+
+/// The facts an OpenCode completion carries only under `rawOutput.metadata`,
+/// lifted onto the call's `_meta` for its card (see [`opencode_metadata_meta`]).
+fn opencode_completion_meta(
+    name: Option<&str>,
+    raw_output: &Option<serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    match (name, raw_output.as_ref().and_then(|raw| raw.get("metadata"))) {
+        (Some(name), Some(metadata)) => opencode_metadata_meta(name, metadata),
+        _ => serde_json::Map::new(),
+    }
+}
+
+/// The facts an OpenCode tool call records only in its `metadata`, as the
+/// `_meta` entries its card reads. The live stream (from a completion's
+/// `rawOutput.metadata`) and the history parser (from the stored call's
+/// `state.metadata`) both write them, so a reopened session reads the same:
+///
+/// - `execute`: the calls the script made ([`CODE_MODE_CALLS_META_KEY`]).
+/// - `shell` (1.x's `bash`): a non-zero exit code ([`EXIT_CODE_META_KEY`]).
+///   OpenCode completes a command that exited non-zero successfully, with
+///   `Exited with code N` as a second result block
+///   (`core/src/tool/shell/result.ts`), and 1.x never printed it, so this is
+///   the one structured statement of it.
+pub(crate) fn opencode_metadata_meta(
+    name: &str,
+    metadata: &serde_json::Value,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut extras = serde_json::Map::new();
+    match name {
+        "execute" => {
+            if let Some(calls) = metadata.get("toolCalls").and_then(serde_json::Value::as_array) {
+                let kept: Vec<serde_json::Value> = calls
+                    .iter()
+                    .filter(|call| call.get("tool").is_some_and(serde_json::Value::is_string))
+                    .take(MAX_CODE_MODE_CALLS)
+                    .cloned()
+                    .collect();
+                if !kept.is_empty() {
+                    extras.insert(
+                        CODE_MODE_CALLS_META_KEY.to_string(),
+                        serde_json::Value::Array(kept),
+                    );
+                }
+            }
+        }
+        "shell" | "bash" => {
+            let exit = metadata.get("exit").and_then(|exit| {
+                exit.as_i64().or_else(|| {
+                    exit.as_f64()
+                        .filter(|code| code.is_finite() && code.fract() == 0.0)
+                        .map(|code| code as i64)
+                })
+            });
+            if let Some(exit) = exit.filter(|code| *code != 0) {
+                extras.insert(EXIT_CODE_META_KEY.to_string(), serde_json::json!(exit));
+            }
+        }
+        _ => {}
+    }
+    extras
+}
+
+/// `_meta` key OpenCode 2 marks every update of a sub-agent's (child) session
+/// with: `{id, parentID, depth, title?}` (`cli/src/acp/child.ts` `meta`, 2.2.0).
+const OPENCODE_CHILD_SESSION_META_KEY: &str = "opencode/child-session";
+
+/// `_meta` key of the `session_info_update` codeg synthesizes from a child
+/// session's lifecycle (`{status, error?}`; see
+/// [`opencode_child_update_as_session_update`]). codeg's own, never OpenCode's.
+const OPENCODE_CHILD_STATUS_META_KEY: &str = "codeg.opencodeChildStatus";
+
+/// The client capability that makes OpenCode 2 send a sub-agent's updates as
+/// [`OPENCODE_CHILD_UPDATE_METHOD`] notifications (`cli/src/acp/capabilities.ts`).
+const OPENCODE_CHILD_UPDATES_CAPABILITY: &str = "opencode/child-session-updates";
+
+/// OpenCode 2's notification for a sub-agent (child) session: a lifecycle
+/// status, or one of the child's own session updates (`cli/src/acp/child.ts`
+/// `UpdateMethod`, 2.2.0).
+const OPENCODE_CHILD_UPDATE_METHOD: &str = "opencode/session/child_update";
+
+/// `_meta` key of OpenCode 2's retry announcement (`cli/src/acp/translate.ts`
+/// `RetryMeta`): `{attempt, nextRetryAt, error}` while a retry is scheduled,
+/// `null` once the next step starts.
+const OPENCODE_RETRY_META_KEY: &str = "opencode/retry";
+
+/// `_meta` key codeg stamps on a sub-agent's tool calls: the id of the tool
+/// call that launched the sub-agent, so the frontend nests the call inside that
+/// call's Agent card (`conversation-runtime-store.ts`). Agent-neutral; frontend
+/// twin `PARENT_TOOL_CALL_META_KEY` in `src/lib/tool-call-normalization.ts`.
+const PARENT_TOOL_CALL_META_KEY: &str = "codeg.parentToolCallId";
+
+/// A sub-agent session, as OpenCode 2 marks its updates (see
+/// [`OPENCODE_CHILD_SESSION_META_KEY`]).
+#[derive(Debug, Clone, PartialEq)]
+struct OpenCodeChildSession {
+    id: String,
+    /// The session that launched it: the root session for a sub-agent the main
+    /// agent started, another child for a nested one.
+    parent_id: Option<String>,
+    /// The child session's title — the launching call's `description`.
+    title: Option<String>,
+}
+
+fn opencode_child_session(
+    agent_type: AgentType,
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Option<OpenCodeChildSession> {
+    if agent_type != AgentType::OpenCode {
+        return None;
+    }
+    let child = meta?.get(OPENCODE_CHILD_SESSION_META_KEY)?;
+    let text = |key: &str| {
+        child
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    Some(OpenCodeChildSession {
+        id: text("id")?,
+        parent_id: text("parentID"),
+        title: text("title"),
+    })
+}
+
+/// A sub-agent tool call's title without the `"<child title>: "` prefix
+/// OpenCode adds to it (`cli/src/acp/child.ts` `prefixTitle`), so the call's
+/// card reads as it would at the top level.
+fn strip_opencode_child_title<'a>(title: &'a str, child: &OpenCodeChildSession) -> &'a str {
+    child
+        .title
+        .as_deref()
+        .and_then(|prefix| title.strip_prefix(prefix))
+        .and_then(|rest| rest.strip_prefix(": "))
+        .unwrap_or(title)
+}
+
+/// Where an OpenCode frame belongs (see [`opencode_frame_route`]).
+#[derive(Debug, Clone, PartialEq)]
+enum OpenCodeFrameRoute {
+    /// The main session's own frame.
+    Main,
+    /// A sub-agent's frame, rendered inside the Agent card of the tool call
+    /// that launched it.
+    Subagent {
+        parent_tool_call_id: String,
+        child: OpenCodeChildSession,
+    },
+    /// A sub-agent's frame whose launching call is not on screen.
+    Drop,
+}
+
+/// What the OpenCode live stream has to remember across frames. Part of
+/// [`CodeBuddyLiveState`], with its lifetime.
+#[derive(Default)]
+struct OpenCodeLiveState {
+    /// Calls of the current turn, by tool call id. Only a call's opening frame
+    /// names the tool; every later frame of OpenCode 2 is an update that names
+    /// nothing, so the name is kept here, with the latest input (the
+    /// completion carries none). Cleared at turn start, and an entry is
+    /// dropped once its call settles.
+    calls: HashMap<String, OpenCodeLiveCall>,
+    /// The `subagent` launches seen on this connection, newest last, each with
+    /// the child session it runs once that is known. Kept across turns, because
+    /// a background sub-agent outlives the turn that launched it, and bounded
+    /// by [`OpenCodeLiveState::MAX_SUBAGENTS`].
+    subagents: Vec<OpenCodeSubagentLaunch>,
+}
+
+#[derive(Default)]
+struct OpenCodeLiveCall {
+    name: Option<String>,
+    input: Option<serde_json::Value>,
+}
+
+struct OpenCodeSubagentLaunch {
+    tool_call_id: String,
+    description: Option<String>,
+    /// The child session whose frame announced this launch (a nested
+    /// sub-agent), `None` for one the root session made.
+    owner: Option<String>,
+    /// The child session it runs, once known.
+    child: Option<OpenCodeChild>,
+    /// Its completion said the child runs on in the background, and the
+    /// child's end has not been reported yet (see
+    /// [`OpenCodeLiveState::subagent_completed`]).
+    background: bool,
+}
+
+impl OpenCodeSubagentLaunch {
+    fn child_id(&self) -> Option<&str> {
+        self.child.as_ref().map(|child| child.id.as_str())
+    }
+}
+
+/// A sub-agent session, as far as a background launch's settle needs it. It
+/// moves with the session when a completion re-binds it to another launch
+/// ([`OpenCodeLiveState::bind_child`]).
+struct OpenCodeChild {
+    id: String,
+    /// OpenCode follows it: announced `created`, not ended yet. OpenCode keeps
+    /// reporting such a child after the turn that launched it has answered,
+    /// until it ends (`openChildren`, `cli/src/acp/turn.ts` `handoff`, 2.2.0)
+    /// — and only such a child, so only such a child is counted as background
+    /// work still out.
+    open: bool,
+    /// How it ended, while its launch has not completed yet. A blocking
+    /// launch's child always ends first; the completion then says whether the
+    /// launch went to the background after all.
+    ended: Option<OpenCodeChildEnd>,
+    /// Its latest words, the answer a background launch's settle reports.
+    answer: OpenCodeChildAnswer,
+}
+
+impl OpenCodeChild {
+    fn new(id: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            open: false,
+            ended: None,
+            answer: OpenCodeChildAnswer::default(),
+        }
+    }
+}
+
+/// A sub-agent's end, as its `opencode/session/child_update` status says it
+/// (`cli/src/acp/translate.ts` `childEnded`, 2.2.0).
+struct OpenCodeChildEnd {
+    /// `completed`, `failed` or `interrupted`.
+    status: String,
+    /// A failed child's error message.
+    error: Option<String>,
+}
+
+/// The text of a sub-agent's latest assistant message, from its
+/// `agent_message_chunk` frames: what OpenCode hands the parent as the
+/// sub-agent's answer — the text of its last assistant message, each of which
+/// is one model step (`core/src/session/subagent-job.ts`,
+/// `subagent-completion.ts` `text`; `core/src/session/runner/llm.ts`).
+///
+/// It starts over when the child starts a new message (the chunks' `messageId`
+/// changes) and when the child calls a tool, after which its next step is a
+/// new message. It keeps one character past
+/// [`crate::parsers::claude::BACKGROUND_RESULT_MAX_CHARS`] at most, which is
+/// enough for [`crate::parsers::truncate_str`] to mark the cut.
+#[derive(Default)]
+struct OpenCodeChildAnswer {
+    message_id: Option<String>,
+    text: String,
+    /// `text`'s length in characters.
+    chars: usize,
+}
+
+impl OpenCodeChildAnswer {
+    const KEPT_CHARS: usize = crate::parsers::claude::BACKGROUND_RESULT_MAX_CHARS + 1;
+
+    fn push(&mut self, message_id: Option<&str>, text: &str) {
+        if message_id.is_some() && message_id != self.message_id.as_deref() {
+            *self = Self {
+                message_id: message_id.map(str::to_string),
+                ..Self::default()
+            };
+        }
+        let room = Self::KEPT_CHARS.saturating_sub(self.chars);
+        let end = text
+            .char_indices()
+            .nth(room)
+            .map_or(text.len(), |(at, _)| at);
+        let kept = &text[..end];
+        self.chars += kept.chars().count();
+        self.text.push_str(kept);
+    }
+
+    /// The answer, capped like every background result, or `None` when the
+    /// latest message said nothing.
+    fn take(&mut self) -> Option<String> {
+        let text = std::mem::take(self).text;
+        let text = text.trim();
+        (!text.is_empty()).then(|| {
+            crate::parsers::truncate_str(text, crate::parsers::claude::BACKGROUND_RESULT_MAX_CHARS)
+        })
+    }
+}
+
+/// What the background sub-agents have to tell the client when one goes to
+/// the background or ends: [`AcpEvent::BackgroundActivity`]'s `outstanding`
+/// and, for an end, its settle (see [`emit_opencode_background_report`]).
+#[derive(Debug)]
+struct OpenCodeBackgroundReport {
+    outstanding: u32,
+    settled: Option<crate::acp::types::BackgroundSettledInfo>,
+}
+
+impl OpenCodeLiveState {
+    const MAX_SUBAGENTS: usize = 64;
+
+    fn turn_started(&mut self) {
+        self.calls.clear();
+    }
+
+    /// Remember what a frame says about a call: its name (opening frames
+    /// only) and its latest input. Returns the call's name.
+    fn note_call(
+        &mut self,
+        tool_call_id: &str,
+        name: Option<&str>,
+        input: Option<&serde_json::Value>,
+    ) -> Option<String> {
+        let call = self.calls.entry(tool_call_id.to_string()).or_default();
+        if let Some(name) = name.map(str::trim).filter(|n| !n.is_empty()) {
+            call.name = Some(name.to_string());
+        }
+        if let Some(input) = input.filter(|input| input.as_object().is_some_and(|o| !o.is_empty()))
+        {
+            call.input = Some(input.clone());
+        }
+        call.name.clone()
+    }
+
+    fn input_of(&self, tool_call_id: &str) -> Option<&serde_json::Value> {
+        self.calls.get(tool_call_id)?.input.as_ref()
+    }
+
+    fn call_settled(&mut self, tool_call_id: &str) {
+        self.calls.remove(tool_call_id);
+    }
+
+    /// Record a `subagent` launch, `owner` being the child session whose frame
+    /// made it (a nested sub-agent) — `None` for the root session.
+    fn note_subagent(
+        &mut self,
+        tool_call_id: &str,
+        description: Option<&str>,
+        owner: Option<&str>,
+    ) {
+        let description = description
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .map(str::to_string);
+        if let Some(launch) = self
+            .subagents
+            .iter_mut()
+            .find(|launch| launch.tool_call_id == tool_call_id)
+        {
+            if description.is_some() {
+                launch.description = description;
+            }
+            return;
+        }
+        if self.subagents.len() == Self::MAX_SUBAGENTS {
+            self.subagents.remove(0);
+        }
+        self.subagents.push(OpenCodeSubagentLaunch {
+            tool_call_id: tool_call_id.to_string(),
+            description,
+            owner: owner.map(str::to_string),
+            child: None,
+            background: false,
+        });
+    }
+
+    /// The launch a child session's frames belong to, binding the child to one
+    /// the first time it is seen (see [`OpenCodeLiveState::launch_of_child`]).
+    fn parent_of_child(&mut self, child: &OpenCodeChildSession) -> Option<String> {
+        self.launch_of_child(child)
+            .map(|launch| launch.tool_call_id.clone())
+    }
+
+    /// The launch a child session belongs to, binding the child to one the
+    /// first time it is seen.
+    ///
+    /// OpenCode names no tool call on a child's frames — only the child session
+    /// (`{id, parentID, title}`) — so the binding is inferred: among the
+    /// launches its parent session made that have no child yet, the one whose
+    /// `description` is the child's title (OpenCode creates the child with
+    /// `title: input.description`, `core/src/tool/plugin/subagent.ts`), else
+    /// the newest. A launch's completion then names its child for certain
+    /// (`metadata.sessionID`; see [`OpenCodeLiveState::bind_child`]).
+    fn launch_of_child(
+        &mut self,
+        child: &OpenCodeChildSession,
+    ) -> Option<&mut OpenCodeSubagentLaunch> {
+        if let Some(index) = self
+            .subagents
+            .iter()
+            .position(|launch| launch.child_id() == Some(child.id.as_str()))
+        {
+            return Some(&mut self.subagents[index]);
+        }
+        // The root session is not a child of anything codeg tracks, so a
+        // parent that is not a known child means the root launched it.
+        let owner = child.parent_id.as_deref().filter(|parent| {
+            self.subagents
+                .iter()
+                .any(|launch| launch.child_id() == Some(*parent))
+        });
+        let unbound: Vec<usize> = (0..self.subagents.len())
+            .rev()
+            .filter(|&i| {
+                let launch = &self.subagents[i];
+                launch.child.is_none() && launch.owner.as_deref() == owner
+            })
+            .collect();
+        let index = unbound
+            .iter()
+            .copied()
+            .find(|&i| {
+                child.title.is_some() && self.subagents[i].description == child.title
+            })
+            .or_else(|| unbound.first().copied())?;
+        let launch = &mut self.subagents[index];
+        launch.child = Some(OpenCodeChild::new(&child.id));
+        Some(launch)
+    }
+
+    /// A launch's completion reports the child it ran (`metadata.sessionID`,
+    /// `core/src/tool/plugin/subagent.ts`): bind it, undoing any guess that
+    /// gave that child to another launch — and taking along what that launch
+    /// learned about it.
+    fn bind_child(&mut self, tool_call_id: &str, child_id: &str) {
+        let mut carried = None;
+        for launch in &mut self.subagents {
+            if launch.child_id() == Some(child_id) && launch.tool_call_id != tool_call_id {
+                carried = launch.child.take();
+            }
+        }
+        if let Some(launch) = self
+            .subagents
+            .iter_mut()
+            .find(|launch| launch.tool_call_id == tool_call_id)
+        {
+            if launch.child_id() != Some(child_id) {
+                launch.child = Some(carried.unwrap_or_else(|| OpenCodeChild::new(child_id)));
+            }
+        }
+    }
+
+    /// A child session announced `created`: bound to its launch at once, and
+    /// followed from here on (see [`OpenCodeChild::open`]).
+    fn child_created(&mut self, child: &OpenCodeChildSession) {
+        if let Some(child) = self
+            .launch_of_child(child)
+            .and_then(|launch| launch.child.as_mut())
+        {
+            child.open = true;
+        }
+    }
+
+    /// One of a child session's `agent_message_chunk`s (see
+    /// [`OpenCodeChildAnswer`]).
+    fn child_text(&mut self, child: &OpenCodeChildSession, message_id: Option<&str>, text: &str) {
+        if let Some(child) = self
+            .launch_of_child(child)
+            .and_then(|launch| launch.child.as_mut())
+        {
+            child.answer.push(message_id, text);
+        }
+    }
+
+    /// A child session opened a tool call: whatever it said before is not its
+    /// answer, as its next step is a new message (see [`OpenCodeChildAnswer`]).
+    fn child_called_tool(&mut self, child: &OpenCodeChildSession) {
+        if let Some(child) = self
+            .launch_of_child(child)
+            .and_then(|launch| launch.child.as_mut())
+        {
+            child.answer = OpenCodeChildAnswer::default();
+        }
+    }
+
+    /// Background launches whose child OpenCode still follows: work the agent
+    /// process is doing that no turn is waiting for.
+    fn outstanding(&self) -> u32 {
+        let open = self
+            .subagents
+            .iter()
+            .filter(|launch| launch.background && launch.child.as_ref().is_some_and(|c| c.open))
+            .count();
+        u32::try_from(open).unwrap_or(u32::MAX)
+    }
+
+    /// A `subagent` launch completed — into the background when `background`
+    /// (see [`opencode_subagent_went_background`]).
+    ///
+    /// A background launch whose child is still out is reported as such, so
+    /// the idle sweeps leave the connection (and the agent process the child
+    /// runs in) alone. One whose child already ended settles right away. A
+    /// blocking launch's completion carries the child's answer itself, so
+    /// nothing of its child is kept.
+    fn subagent_completed(
+        &mut self,
+        tool_call_id: &str,
+        background: bool,
+    ) -> Option<OpenCodeBackgroundReport> {
+        let launch = self
+            .subagents
+            .iter_mut()
+            .find(|launch| launch.tool_call_id == tool_call_id)?;
+        let child = launch.child.as_mut()?;
+        if !background {
+            child.ended = None;
+            child.answer = OpenCodeChildAnswer::default();
+            return None;
+        }
+        let settled = match child.ended.take() {
+            // It ended before its launch said where it went.
+            Some(end) => Some(opencode_settled(tool_call_id, child, end)),
+            None if child.open => {
+                launch.background = true;
+                None
+            }
+            // A session OpenCode no longer follows — one a launch continued
+            // (`input.sessionID`) after it had ended: its end is reported only
+            // while a turn that still tracks it is being followed, so it is
+            // not counted as out (nothing might ever take it off again). An
+            // end that does come still settles it.
+            None => {
+                launch.background = true;
+                return None;
+            }
+        };
+        Some(OpenCodeBackgroundReport {
+            outstanding: self.outstanding(),
+            settled,
+        })
+    }
+
+    /// A child session ended. Settles its launch when that went to the
+    /// background; a launch still in flight learns of the end at its
+    /// completion ([`OpenCodeLiveState::subagent_completed`]). A child no
+    /// launch on this connection claims settles nothing.
+    fn child_ended(
+        &mut self,
+        child_id: &str,
+        end: OpenCodeChildEnd,
+    ) -> Option<OpenCodeBackgroundReport> {
+        let launch = self
+            .subagents
+            .iter_mut()
+            .find(|launch| launch.child_id() == Some(child_id))?;
+        let child = launch.child.as_mut()?;
+        child.open = false;
+        if !launch.background {
+            child.ended = Some(end);
+            return None;
+        }
+        launch.background = false;
+        let settled = opencode_settled(&launch.tool_call_id, child, end);
+        Some(OpenCodeBackgroundReport {
+            outstanding: self.outstanding(),
+            settled: Some(settled),
+        })
+    }
+}
+
+/// The settle of a background launch whose child ended: the shape
+/// [`AcpEvent::BackgroundActivity`] gives every agent's background sub-agent
+/// (see `map_grok_subagent_notification`), keyed by the child session and
+/// pointing at the launch's card, which the frontend flips from "running in
+/// background" to how the child ended (`applyBackgroundSettlementToTurns`).
+fn opencode_settled(
+    tool_call_id: &str,
+    child: &mut OpenCodeChild,
+    end: OpenCodeChildEnd,
+) -> crate::acp::types::BackgroundSettledInfo {
+    crate::acp::types::BackgroundSettledInfo {
+        task_id: child.id.clone(),
+        status: end.status,
+        summary: end.error,
+        tool_use_id: Some(tool_call_id.to_string()),
+        result: child.answer.take(),
+        interim: false,
+    }
+}
+
+/// Whether an OpenCode `subagent` launch's update completes it into the
+/// background: completed, with `metadata.status: "running"` — what a
+/// `background: true` launch returns at once, and what a blocking one the
+/// user moved to the background returns (`core/src/tool/plugin/subagent.ts`
+/// `backgroundResult`, 2.2.0; the history parser reads the same pair). A
+/// FAILED launch carries the metadata of its last progress report
+/// (`cli/src/acp/translate.ts` `session.tool.failed`), which says `running`
+/// as well, so the status has to be `completed`.
+fn opencode_subagent_went_background(
+    status: Option<&agent_client_protocol::schema::v1::ToolCallStatus>,
+    raw_output: Option<&serde_json::Value>,
+) -> bool {
+    matches!(
+        status,
+        Some(agent_client_protocol::schema::v1::ToolCallStatus::Completed)
+    ) && raw_output
+        .and_then(|raw| raw.pointer("/metadata/status"))
+        .and_then(serde_json::Value::as_str)
+        == Some("running")
+}
+
+/// Send what [`OpenCodeLiveState`] reports about the background sub-agents as
+/// [`AcpEvent::BackgroundActivity`], on the session the conversation knows
+/// (OpenCode's root session, which a sub-agent's frames ride on). Works
+/// outside a turn as inside one: `SessionState` mirrors `outstanding` for the
+/// idle sweeps, and the frontend flips the launch's card wherever it is — or
+/// holds the settle until the turn that holds the card is promoted.
+async fn emit_opencode_background_report(
+    state: &Arc<RwLock<SessionState>>,
+    emitter: &EventEmitter,
+    report: OpenCodeBackgroundReport,
+) {
+    emit_with_state_built(state, emitter, |s| {
+        Some(AcpEvent::BackgroundActivity {
+            session_id: s.external_id.clone()?,
+            turns: Vec::new(),
+            outstanding: report.outstanding,
+            settled: report.settled.into_iter().collect(),
+            watermark: 0,
+        })
+    })
+    .await;
+}
+
+/// Where an OpenCode frame belongs: the main session's, or a sub-agent's.
+///
+/// OpenCode 2 sends a sub-agent's frames on the PARENT's session, marked with
+/// [`OPENCODE_CHILD_SESSION_META_KEY`] — inline as plain `session/update`s, or
+/// unwrapped from [`OPENCODE_CHILD_UPDATE_METHOD`] by
+/// [`OpenCodeChildSessionUpdates`] — with the tool call ids prefixed by the
+/// child session and the titles by its title (`cli/src/acp/translate.ts`
+/// `route`, `cli/src/acp/child.ts`). Unrouted, the sub-agent's text and
+/// thoughts read as the main agent's reply and its calls as the main agent's.
+///
+/// They are routed into the Agent card of the call that launched the
+/// sub-agent, the way Claude's sub-agent transcripts are, while that card is in
+/// the current turn. A frame whose launch is not — a background sub-agent still
+/// working after its turn ended, or one codeg never saw launched — is dropped:
+/// there is no card on screen to put it in, and the history parser folds the
+/// child's work into the launch's card on reload. What the card does get live
+/// is the child's end, with its answer ([`OpenCodeLiveState::child_ended`]).
+async fn opencode_frame_route(
+    agent_type: AgentType,
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+    state: &Arc<RwLock<SessionState>>,
+    opencode: &mut OpenCodeLiveState,
+) -> OpenCodeFrameRoute {
+    let Some(child) = opencode_child_session(agent_type, meta) else {
+        return OpenCodeFrameRoute::Main;
+    };
+    let Some(parent_tool_call_id) = opencode.parent_of_child(&child) else {
+        tracing::debug!(
+            "[ACP][OpenCode] dropping a sub-agent frame no launch on this connection claims"
+        );
+        return OpenCodeFrameRoute::Drop;
+    };
+    if !state
+        .read()
+        .await
+        .active_tool_calls
+        .contains_key(&parent_tool_call_id)
+    {
+        tracing::debug!(
+            "[ACP][OpenCode] dropping a sub-agent frame: its launch ({parent_tool_call_id}) \
+             is not in this turn"
+        );
+        return OpenCodeFrameRoute::Drop;
+    }
+    OpenCodeFrameRoute::Subagent {
+        parent_tool_call_id,
+        child,
+    }
+}
+
+/// The `_meta` an OpenCode `tool_call_update` hands the frontend, or `None` to
+/// leave the call's `_meta` as it is.
+///
+/// The frontend (and `SessionState`) REPLACE a call's `_meta` with whatever an
+/// update carries, so an update that says something — a sub-agent's frame,
+/// which always carries its child session, or a completion with facts lifted
+/// out of its `rawOutput.metadata` ([`opencode_completion_meta`]) — must carry
+/// everything the call's `_meta` already holds as well: the opening frame's
+/// tool name and parent stamps, and anything codeg wrote onto the call since
+/// (the delegation broker's `codeg.delegation` on a code-mode delegation). It
+/// is rebuilt from the session's copy of the call, with this frame's keys and
+/// the stamps on top. A frame that says nothing new leaves it untouched.
+async fn opencode_update_meta(
+    state: &Arc<RwLock<SessionState>>,
+    tool_call_id: &str,
+    frame: Option<serde_json::Map<String, serde_json::Value>>,
+    name: Option<&str>,
+    parent_tool_call_id: Option<&str>,
+    extras: serde_json::Map<String, serde_json::Value>,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    if frame.is_none() && extras.is_empty() {
+        return None;
+    }
+    let mut meta = state
+        .read()
+        .await
+        .active_tool_calls
+        .get(tool_call_id)
+        .and_then(|call| call.meta.as_ref())
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(frame) = frame {
+        meta.extend(frame);
+    }
+    if let Some(name) = name {
+        meta.entry(OPENCODE_META_KEY.to_string())
+            .or_insert_with(|| serde_json::json!({ "toolName": name }));
+    }
+    if let Some(parent) = parent_tool_call_id {
+        meta.insert(
+            PARENT_TOOL_CALL_META_KEY.to_string(),
+            serde_json::Value::String(parent.to_string()),
+        );
+    }
+    meta.extend(extras);
+    Some(meta)
+}
+
+/// OpenCode 2's retry announcement as the shared retry banner
+/// ([`AcpEvent::TurnRetrying`]). `None` for the `null` that clears it — the
+/// banner already clears itself when the retried step streams again — and for
+/// a frame without the key.
+///
+/// OpenCode counts the first call as attempt 1, so the first retry is attempt
+/// 2 (`core/src/model-retry.ts`); the banner numbers retries, hence the `- 1`.
+fn opencode_retry_event(
+    meta: Option<&serde_json::Map<String, serde_json::Value>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<AcpEvent> {
+    let retry = meta?.get(OPENCODE_RETRY_META_KEY)?.as_object()?;
+    let error = retry.get("error");
+    let message = error
+        .and_then(|e| e.get("message"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let error_status = error
+        .and_then(|e| e.get("status"))
+        .and_then(serde_json::Value::as_i64);
+    let attempt = retry
+        .get("attempt")
+        .and_then(serde_json::Value::as_u64)
+        .map(|attempt| u32::try_from(attempt.saturating_sub(1)).unwrap_or(u32::MAX));
+    let retry_delay_ms = retry
+        .get("nextRetryAt")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+        .map(|at| {
+            let delay = at.with_timezone(&chrono::Utc) - now;
+            u64::try_from(delay.num_milliseconds().max(0)).unwrap_or_default()
+        });
+    Some(AcpEvent::TurnRetrying {
+        message,
+        error_status,
+        attempt,
+        max_retries: None,
+        retry_delay_ms,
+    })
+}
+
+/// The `session/update` params an [`OPENCODE_CHILD_UPDATE_METHOD`] notification
+/// stands for, or `None` for one that carries nothing for the main
+/// conversation.
+///
+/// - `{type: "update", update}` → the child's own update, on the ROOT
+///   session. OpenCode has already marked it with
+///   [`OPENCODE_CHILD_SESSION_META_KEY`] (and prefixed its tool call ids), so
+///   it takes the same route an inline child frame does. A child's compaction
+///   is its own context's business, not the main conversation's, and is
+///   dropped.
+/// - `{type: "status", status, error?}` (`created` / `running` / `completed` /
+///   `failed` / `interrupted`) → a `session_info_update` carrying the child
+///   session and [`OPENCODE_CHILD_STATUS_META_KEY`].
+///
+/// Payload shape: `cli/src/acp/child.ts` `update`, 2.2.0.
+fn opencode_child_update_as_session_update(
+    params: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let text = |key: &str| {
+        params
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+    };
+    let root = text("rootSessionId")?;
+    match text("type")? {
+        "update" => {
+            let update = params.get("update").filter(|u| u.is_object())?;
+            let kind = update
+                .get("sessionUpdate")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            if matches!(kind, "compaction_update" | "compaction_summary_chunk") {
+                return None;
+            }
+            Some(serde_json::json!({ "sessionId": root, "update": update }))
+        }
+        "status" => {
+            let mut child = serde_json::Map::new();
+            child.insert("id".to_string(), serde_json::json!(text("childSessionId")?));
+            if let Some(parent) = text("parentSessionId") {
+                child.insert("parentID".to_string(), serde_json::json!(parent));
+            }
+            if let Some(depth) = params.get("depth").filter(|d| d.is_number()) {
+                child.insert("depth".to_string(), depth.clone());
+            }
+            if let Some(title) = text("title") {
+                child.insert("title".to_string(), serde_json::json!(title));
+            }
+            let mut status = serde_json::Map::new();
+            status.insert("status".to_string(), serde_json::json!(text("status")?));
+            if let Some(error) = params.get("error").filter(|e| e.is_object()) {
+                status.insert("error".to_string(), error.clone());
+            }
+            Some(serde_json::json!({
+                "sessionId": root,
+                "update": {
+                    "sessionUpdate": "session_info_update",
+                    "_meta": {
+                        OPENCODE_CHILD_SESSION_META_KEY: child,
+                        OPENCODE_CHILD_STATUS_META_KEY: status,
+                    },
+                },
+            }))
+        }
+        _ => None,
+    }
 }
 
 /// What a pi `agent_message_chunk` actually IS (issue #525).
@@ -18618,6 +19769,10 @@ struct CodeBuddyLiveState {
     /// ([`remote_control_command`]), until the adapter's reply to it arrives
     /// ([`remote_control_reply`]) or the next prompt replaces it.
     claude_remote_control: Option<RemoteControlCommand>,
+    /// OpenCode: call names and inputs, which sub-agent launch each child
+    /// session belongs to, and the background sub-agents still out (see
+    /// [`OpenCodeLiveState`]).
+    opencode: OpenCodeLiveState,
 }
 
 /// What [`kiro_live_tool`] remembers about one live Kiro tool call.
@@ -19685,6 +20840,63 @@ impl<Counterpart: Role> HandleDispatchFrom<Counterpart> for GrokModelCatalogBroa
 
     fn describe_chain(&self) -> impl std::fmt::Debug {
         "GrokModelCatalogBroadcasts"
+    }
+}
+
+/// Turns OpenCode 2's sub-agent notifications back into the session updates
+/// they carry (see [`opencode_child_update_as_session_update`]).
+///
+/// codeg asks for them ([`OPENCODE_CHILD_UPDATES_CAPABILITY`]) because they are
+/// the only way a BACKGROUND sub-agent's work reaches a client: without the
+/// capability, OpenCode forwards a child's updates inline only while the turn
+/// that launched it runs, and drops them once it has answered
+/// (`cli/src/acp/turn.ts` `interpret`, `turn.background`, 2.2.0).
+///
+/// The notification names no `sessionId` — it carries `rootSessionId`,
+/// `childSessionId` and `parentSessionId` — so no session router ever claims
+/// it, and the runtime drops it as unhandled. It has to be taken here, in the
+/// builder chain, the way [`GrokModelCatalogBroadcasts`] takes grok's catalog.
+/// Rather than handling it in place, it is REWRITTEN into the `session/update`
+/// it stands for and passed on (`Handled::No` hands the next handler the
+/// mutated message): the per-session router then delivers it to the session's
+/// own loop, which owns the live-stream state a sub-agent frame is routed with
+/// ([`opencode_frame_route`]). A rewritten update names its session, so it is
+/// parked for retry like any other if the session's router does not exist yet.
+struct OpenCodeChildSessionUpdates {
+    agent_type: AgentType,
+}
+
+impl<Counterpart: Role> HandleDispatchFrom<Counterpart> for OpenCodeChildSessionUpdates {
+    async fn handle_dispatch_from(
+        &mut self,
+        message: Dispatch,
+        _connection: ConnectionTo<Counterpart>,
+    ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
+        match message {
+            Dispatch::Notification(notification)
+                if self.agent_type == AgentType::OpenCode
+                    && notification.method() == OPENCODE_CHILD_UPDATE_METHOD =>
+            {
+                match opencode_child_update_as_session_update(notification.params()) {
+                    Some(params) => Ok(Handled::No {
+                        message: Dispatch::Notification(UntypedMessage::new(
+                            "session/update",
+                            params,
+                        )?),
+                        retry: false,
+                    }),
+                    None => Ok(Handled::Yes),
+                }
+            }
+            message => Ok(Handled::No {
+                message,
+                retry: false,
+            }),
+        }
+    }
+
+    fn describe_chain(&self) -> impl std::fmt::Debug {
+        "OpenCodeChildSessionUpdates"
     }
 }
 
@@ -22391,8 +23603,34 @@ async fn emit_conversation_update(
         SessionUpdate::AgentMessageChunk(ContentChunk {
             content: ContentBlock::Text(text),
             meta,
+            message_id,
             ..
         }) => {
+            // An OpenCode sub-agent's latest words are the answer its
+            // background launch settles with, kept whether or not the frame
+            // renders below (`OpenCodeChildAnswer`).
+            if let Some(child) = opencode_child_session(agent_type, meta.as_ref()) {
+                cb_state.opencode.child_text(
+                    &child,
+                    message_id.as_ref().map(|id| &*id.0),
+                    &text.text,
+                );
+            }
+            // An OpenCode sub-agent's reply arrives on THIS session, marked with
+            // its child session: it belongs inside the Agent card of the call
+            // that launched it, or nowhere (see `opencode_frame_route`). No-op
+            // for every other agent.
+            let opencode_parent =
+                match opencode_frame_route(agent_type, meta.as_ref(), state, &mut cb_state.opencode)
+                    .await
+                {
+                    OpenCodeFrameRoute::Main => None,
+                    OpenCodeFrameRoute::Subagent {
+                        parent_tool_call_id,
+                        ..
+                    } => Some(parent_tool_call_id),
+                    OpenCodeFrameRoute::Drop => return,
+                };
             // Gemini reports an approval-mode switch as a prose chunk reading
             // `[MODE_UPDATE] <mode>`. Turn it back into the mode event it should
             // have been — see `gemini_mode_update_chunk` for the two guards that
@@ -22449,9 +23687,10 @@ async fn emit_conversation_update(
                         // Claude subagent chunks (claude-agent-acp ≥0.63 with the
                         // `subagent-transcript` capability) are NOT suppressed: they
                         // emit with their parent id so the frontend can route them
-                        // into the live Agent capsule.
-                        let parent_tool_use_id =
-                            claude_chunk_parent_tool_use_id(agent_type, meta.as_ref());
+                        // into the live Agent capsule. An OpenCode sub-agent's take
+                        // the same route.
+                        let parent_tool_use_id = opencode_parent
+                            .or_else(|| claude_chunk_parent_tool_use_id(agent_type, meta.as_ref()));
                         // The adapter's own answer to a `/remote-control`
                         // prompt is one top-level chunk.
                         let remote_control =
@@ -22489,13 +23728,26 @@ async fn emit_conversation_update(
             meta,
             ..
         }) => {
+            // Same routing for an OpenCode sub-agent's reasoning.
+            let opencode_parent =
+                match opencode_frame_route(agent_type, meta.as_ref(), state, &mut cb_state.opencode)
+                    .await
+                {
+                    OpenCodeFrameRoute::Main => None,
+                    OpenCodeFrameRoute::Subagent {
+                        parent_tool_call_id,
+                        ..
+                    } => Some(parent_tool_call_id),
+                    OpenCodeFrameRoute::Drop => return,
+                };
             // Same suppression for a sub-agent's interleaved reasoning.
             if !should_suppress_subagent_chunk(
                 agent_type,
                 !cb_state.open_subagents.is_empty(),
                 meta.as_ref(),
             ) {
-                let parent_tool_use_id = claude_chunk_parent_tool_use_id(agent_type, meta.as_ref());
+                let parent_tool_use_id = opencode_parent
+                    .or_else(|| claude_chunk_parent_tool_use_id(agent_type, meta.as_ref()));
                 emit_with_state(
                     state,
                     emitter,
@@ -22518,6 +23770,64 @@ async fn emit_conversation_update(
             tc.meta = cb_state
                 .air_tool_call_meta
                 .open(agent_type, &tool_call_id, tc.meta.take());
+            // OpenCode: whose call this is (a sub-agent's belongs in its Agent
+            // card, or nowhere — see `opencode_frame_route`), which tool it is
+            // (only this opening frame names it), and its input in the keys the
+            // cards read (`opencode_canonical_input`). No-op for every other
+            // agent.
+            let mut opencode_parent: Option<String> = None;
+            let mut opencode_name: Option<String> = None;
+            if agent_type == AgentType::OpenCode {
+                // A sub-agent's call ends the message it was writing, rendered
+                // or not (`OpenCodeChildAnswer`).
+                if let Some(child) = opencode_child_session(agent_type, tc.meta.as_ref()) {
+                    cb_state.opencode.child_called_tool(&child);
+                }
+                let route = opencode_frame_route(
+                    agent_type,
+                    tc.meta.as_ref(),
+                    state,
+                    &mut cb_state.opencode,
+                )
+                .await;
+                let owner = match route {
+                    OpenCodeFrameRoute::Drop => return,
+                    OpenCodeFrameRoute::Subagent {
+                        parent_tool_call_id,
+                        child,
+                    } => {
+                        tc.title = strip_opencode_child_title(&tc.title, &child).to_string();
+                        opencode_parent = Some(parent_tool_call_id);
+                        Some(child.id)
+                    }
+                    OpenCodeFrameRoute::Main => None,
+                };
+                opencode_name = cb_state.opencode.note_call(
+                    &tool_call_id,
+                    tc.name.as_deref(),
+                    tc.raw_input.as_ref(),
+                );
+                if opencode_name.is_none()
+                    && opencode_looks_like_subagent_input(tc.raw_input.as_ref())
+                {
+                    opencode_name = Some("subagent".to_string());
+                }
+                if opencode_name.as_deref() == Some("subagent") {
+                    let description = tc
+                        .raw_input
+                        .as_ref()
+                        .and_then(|input| input.get("description"))
+                        .and_then(serde_json::Value::as_str);
+                    cb_state
+                        .opencode
+                        .note_subagent(&tool_call_id, description, owner.as_deref());
+                }
+                if let Some(canonical) =
+                    opencode_canonical_input(opencode_name.as_deref(), tc.raw_input.as_ref())
+                {
+                    tc.raw_input = Some(canonical);
+                }
+            }
             if agent_type == AgentType::Codex
                 && crate::acp::codex_context::is_web_search_input(tc.raw_input.as_ref())
             {
@@ -22699,10 +24009,15 @@ async fn emit_conversation_update(
                 // with JSON source (see pi_live_tool_output).
                 pi_live_tool_output(&content, &tc.raw_output)
             } else if matches!(agent_type, AgentType::OpenCode) {
-                // OpenCode's rawOutput is the `{output, metadata}` envelope
-                // around the SAME text `content` already carries; shipping it
-                // shadows the clean text (see opencode_live_tool_output).
-                opencode_live_tool_output(&content, &tc.raw_output)
+                // OpenCode's rawOutput is `{metadata}` beside the result text
+                // `content` already carries; shipping it would shadow the text
+                // (see opencode_live_tool_output).
+                opencode_live_tool_output(
+                    opencode_name.as_deref(),
+                    tc.raw_input.as_ref(),
+                    &content,
+                    &tc.raw_output,
+                )
             } else if matches!(agent_type, AgentType::Kiro) {
                 kiro_live_tool_output(&tc.raw_output, kiro_tool.as_ref())
             } else if let Some(answers) =
@@ -22757,14 +24072,28 @@ async fn emit_conversation_update(
                 }
             }
             // OpenCode's only authoritative statement of WHICH tool this is
-            // arrives on this opening frame's title (see fn doc).
+            // arrives on this opening frame (see fn doc).
             let meta = stamp_opencode_tool_name(
                 agent_type,
                 &status,
                 &tc.raw_input,
+                tc.name.as_deref(),
                 &tc.title,
                 tc.meta,
             );
+            // A sub-agent's call names the call that launched it, for the
+            // frontend to nest it in that call's Agent card.
+            let meta = match opencode_parent.as_deref() {
+                Some(parent) => {
+                    let mut meta = meta.unwrap_or_default();
+                    meta.insert(
+                        PARENT_TOOL_CALL_META_KEY.to_string(),
+                        serde_json::Value::String(parent.to_string()),
+                    );
+                    Some(meta)
+                }
+                None => meta,
+            };
             let meta = stamp_codex_search_action(agent_type, &tc.kind, hosted_shell, meta);
             let meta = stamp_kiro_tool_name(agent_type, kiro_tool.as_ref(), meta);
             // Later frames hand the frontend the MERGED `_meta`, which it takes
@@ -22874,6 +24203,102 @@ async fn emit_conversation_update(
             tcu.meta = cb_state
                 .air_tool_call_meta
                 .update(agent_type, &tool_call_id, tcu.meta.take());
+            // Symmetric with the `ToolCall` arm: whose call this is, which tool
+            // (remembered from the opening frame — OpenCode's updates name
+            // none), and its input in the keys the cards read. The completion
+            // carries no input at all, so the latest one is kept for the result
+            // that needs it (a question's answers are read against its
+            // questions). No-op for every other agent.
+            let mut opencode_parent: Option<String> = None;
+            let mut opencode_name: Option<String> = None;
+            let mut opencode_input: Option<serde_json::Value> = None;
+            let mut opencode_background: Option<OpenCodeBackgroundReport> = None;
+            if agent_type == AgentType::OpenCode {
+                let route = opencode_frame_route(
+                    agent_type,
+                    tcu.meta.as_ref(),
+                    state,
+                    &mut cb_state.opencode,
+                )
+                .await;
+                let owner = match route {
+                    OpenCodeFrameRoute::Drop => return,
+                    OpenCodeFrameRoute::Subagent {
+                        parent_tool_call_id,
+                        child,
+                    } => {
+                        if let Some(title) = tcu.fields.title.as_deref() {
+                            tcu.fields.title =
+                                Some(strip_opencode_child_title(title, &child).to_string());
+                        }
+                        opencode_parent = Some(parent_tool_call_id);
+                        Some(child.id)
+                    }
+                    OpenCodeFrameRoute::Main => None,
+                };
+                opencode_name = cb_state.opencode.note_call(
+                    &tool_call_id,
+                    tcu.fields.name.as_deref(),
+                    tcu.fields.raw_input.as_ref(),
+                );
+                if opencode_name.is_none()
+                    && opencode_looks_like_subagent_input(tcu.fields.raw_input.as_ref())
+                {
+                    opencode_name = Some("subagent".to_string());
+                }
+                if opencode_name.as_deref() == Some("subagent") {
+                    let description = tcu
+                        .fields
+                        .raw_input
+                        .as_ref()
+                        .and_then(|input| input.get("description"))
+                        .and_then(serde_json::Value::as_str);
+                    cb_state
+                        .opencode
+                        .note_subagent(&tool_call_id, description, owner.as_deref());
+                    // The completion names the child session the launch ran
+                    // (`metadata.sessionID`), which settles any guess.
+                    if let Some(child) = tcu
+                        .fields
+                        .raw_output
+                        .as_ref()
+                        .and_then(|raw| raw.pointer("/metadata/sessionID"))
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        cb_state.opencode.bind_child(&tool_call_id, child);
+                    }
+                    // …and whether the child runs on in the background, which
+                    // makes it work this connection owes a settle for (see
+                    // `OpenCodeLiveState::subagent_completed`). Reported once
+                    // the completion itself has been emitted, below.
+                    if matches!(
+                        tcu.fields.status,
+                        Some(
+                            agent_client_protocol::schema::v1::ToolCallStatus::Completed
+                                | agent_client_protocol::schema::v1::ToolCallStatus::Failed
+                        )
+                    ) {
+                        opencode_background = cb_state.opencode.subagent_completed(
+                            &tool_call_id,
+                            opencode_subagent_went_background(
+                                tcu.fields.status.as_ref(),
+                                tcu.fields.raw_output.as_ref(),
+                            ),
+                        );
+                    }
+                }
+                if let Some(canonical) = opencode_canonical_input(
+                    opencode_name.as_deref(),
+                    tcu.fields.raw_input.as_ref(),
+                ) {
+                    tcu.fields.raw_input = Some(canonical);
+                }
+                opencode_input = tcu
+                    .fields
+                    .raw_input
+                    .clone()
+                    .or_else(|| cb_state.opencode.input_of(&tool_call_id).cloned());
+            }
             // codex-acp repeats a search's `rawInput` on its completion frame, so
             // either frame marks the request — one whose opening frame never
             // came still counts (a repeat mark is a no-op).
@@ -23120,7 +24545,12 @@ async fn emit_conversation_update(
                 // Symmetric with the ToolCall arm — and the arm that matters:
                 // OpenCode delivers every result on the completion update (see
                 // opencode_live_tool_output).
-                opencode_live_tool_output(&content, &tcu.fields.raw_output)
+                opencode_live_tool_output(
+                    opencode_name.as_deref(),
+                    opencode_input.as_ref(),
+                    &content,
+                    &tcu.fields.raw_output,
+                )
             } else if matches!(agent_type, AgentType::Kiro) {
                 // Kiro delivers every result on the completion update.
                 kiro_live_tool_output(&tcu.fields.raw_output, kiro_tool.as_ref())
@@ -23176,11 +24606,34 @@ async fn emit_conversation_update(
                 || codex_subagent_launch;
             let meta_marks_background = codebuddy_meta_marks_background(agent_type, tcu.meta.as_ref());
             let grok_spawn = grok_meta_marks_spawn_subagent(agent_type, tcu.meta.as_ref());
-            let meta = frame_had_meta
-                .then(|| tcu.meta.clone())
-                .flatten()
-                .map(serde_json::Value::Object);
+            let frame_meta = frame_had_meta.then(|| tcu.meta.clone()).flatten();
+            let meta = if agent_type == AgentType::OpenCode {
+                opencode_update_meta(
+                    state,
+                    &tool_call_id,
+                    frame_meta,
+                    opencode_name.as_deref(),
+                    opencode_parent.as_deref(),
+                    opencode_completion_meta(opencode_name.as_deref(), &tcu.fields.raw_output),
+                )
+                .await
+            } else {
+                frame_meta
+            }
+            .map(serde_json::Value::Object);
             let status = tcu.fields.status.map(|s| format!("{:?}", s).to_lowercase());
+            // OpenCode unwinds a dismissed question through the tool's error;
+            // like the history parser, the card shows it as the user's answer
+            // (declined), not as a failed call (see
+            // `opencode_question_dismissed`).
+            let status = if opencode_name.as_deref() == Some("question")
+                && status.as_deref() == Some("failed")
+                && opencode_question_dismissed(&tcu.fields.raw_output)
+            {
+                Some("completed".to_string())
+            } else {
+                status
+            };
             raw_output_cache.remove_if_final(&tool_call_id, status.as_deref());
             // Same lifetime as the output cache — and deliberately NOT mirrored in
             // the ToolCall arm: pi's `session/load` replay opens the call ALREADY
@@ -23193,6 +24646,7 @@ async fn emit_conversation_update(
                 cb_state.hosted_terminal_calls.remove(&tool_call_id);
                 cb_state.qoder_ask_questions.remove(&tool_call_id);
                 cb_state.kiro_calls.remove(&tool_call_id);
+                cb_state.opencode.call_settled(&tool_call_id);
             }
             // Symmetric with the ToolCall arm: an update may carry the terminal
             // status (and, on grok, usually re-carries the `x.ai/tool` meta).
@@ -23304,6 +24758,11 @@ async fn emit_conversation_update(
                 },
             )
             .await;
+            // An OpenCode launch that went to the background, after the
+            // completion that shows it there.
+            if let Some(report) = opencode_background {
+                emit_opencode_background_report(state, emitter, report).await;
+            }
         }
         SessionUpdate::CurrentModeUpdate(update) => {
             let mode_id = update.current_mode_id.to_string();
@@ -23412,6 +24871,57 @@ async fn emit_conversation_update(
             .await;
         }
         SessionUpdate::SessionInfoUpdate(info) => {
+            // OpenCode 2 speaks two things on this channel, both under `_meta`
+            // (`cli/src/acp/translate.ts`, 2.2.0), and codeg one more:
+            // - a sub-agent's lifecycle, which codeg synthesizes from
+            //   `opencode/session/child_update` (see
+            //   `opencode_child_update_as_session_update`). A `created` child is
+            //   bound to its launch at once, before any frame of its own
+            //   arrives. Its end settles a launch that went to the background:
+            //   once the turn that launched it has answered, it is the one live
+            //   sign that the child is done (see
+            //   `OpenCodeLiveState::child_ended`). Nothing else about a child
+            //   session belongs to the main conversation — its retries
+            //   included.
+            // - its retry announcement, which becomes the shared retry banner
+            //   (see `opencode_retry_event`).
+            // The compaction marker it sends a client without
+            // `session.compaction` never comes: codeg advertises it, and the
+            // standard `compaction_update` is consumed before this point
+            // (`session_compaction_event`).
+            if agent_type == AgentType::OpenCode {
+                if let Some(child) = opencode_child_session(agent_type, info.meta.as_ref()) {
+                    let lifecycle = info
+                        .meta
+                        .as_ref()
+                        .and_then(|meta| meta.get(OPENCODE_CHILD_STATUS_META_KEY));
+                    match lifecycle
+                        .and_then(|lifecycle| lifecycle.get("status"))
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        Some("created") => cb_state.opencode.child_created(&child),
+                        Some(status @ ("completed" | "failed" | "interrupted")) => {
+                            let end = OpenCodeChildEnd {
+                                status: status.to_string(),
+                                error: lifecycle
+                                    .and_then(|lifecycle| lifecycle.pointer("/error/message"))
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::trim)
+                                    .filter(|message| !message.is_empty())
+                                    .map(str::to_string),
+                            };
+                            if let Some(report) = cb_state.opencode.child_ended(&child.id, end) {
+                                emit_opencode_background_report(state, emitter, report).await;
+                            }
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+                if let Some(event) = opencode_retry_event(info.meta.as_ref(), chrono::Utc::now()) {
+                    emit_with_state(state, emitter, event).await;
+                }
+            }
             // codex-acp v1.1.0 (#263) reports `/goal` transitions as structured
             // session metadata instead of live "Goal updated (…)" agent text.
             // The goal object rides under ONE of two meta keys, selected per
@@ -27362,6 +28872,46 @@ mod tests {
         assert_eq!(classify_session_load_error(&not_1001), None);
     }
 
+    /// OpenCode 2.2.0 answers `session/load` of a session it does not have —
+    /// one only the 1.x tables hold — with -32602 and the session id (the body
+    /// below as the real binary sent it, id aside). That is the banner, not a
+    /// silent `session/new` over the row's history.
+    #[test]
+    fn classify_load_error_takes_opencode_session_not_found_as_not_found() {
+        let error = |body: serde_json::Value| -> agent_client_protocol::Error {
+            serde_json::from_value(body).expect("an ACP error body")
+        };
+        let not_found = error(serde_json::json!({
+            "code": -32602,
+            "message": "Invalid params: session not found: ses_2a1e8a8d6ffeCtz2V8G7aJ6Qx3",
+            "data": { "sessionId": "ses_2a1e8a8d6ffeCtz2V8G7aJ6Qx3" }
+        }));
+        assert_eq!(
+            classify_session_load_error(&not_found),
+            Some("resource_not_found")
+        );
+        // OpenCode's history is its own database, not codeg's transcript.
+        assert!(!recovers_load_failure_locally(
+            AgentType::OpenCode,
+            Some("resource_not_found")
+        ));
+
+        // Its other -32602 answers keep the old ladder: a session that does
+        // exist in another directory is not one OpenCode forgot.
+        let elsewhere = error(serde_json::json!({
+            "code": -32602,
+            "message": "Invalid params: session ses_x does not belong to cwd: /p",
+            "data": { "sessionId": "ses_x", "cwd": "/p" }
+        }));
+        assert_eq!(classify_session_load_error(&elsewhere), None);
+        let no_id = error(serde_json::json!({
+            "code": -32602,
+            "message": "Invalid params: session not found",
+            "data": {}
+        }));
+        assert_eq!(classify_session_load_error(&no_id), None);
+    }
+
     #[test]
     fn classify_load_failure_keeps_existing_behavior_for_recoverable_errors() {
         // "Method not found" (agent lacks resume) and "Authentication required"
@@ -29034,6 +30584,20 @@ mod tests {
         let qoder = caps_of(AgentType::Qoder);
         assert!(qoder.get("elicitation").is_some());
         assert!(qoder.get("_meta").is_none());
+
+        // OpenCode 2: form elicitation (its `question` tool asks only that
+        // way), the sub-agent notifications (strict boolean, the way
+        // `cli/src/acp/capabilities.ts` reads it), and `session.compaction`
+        // alone — it implements no notices.
+        let opencode = caps_of(AgentType::OpenCode);
+        assert!(opencode["elicitation"]["form"].is_object(), "{opencode}");
+        assert_eq!(
+            opencode["_meta"]["opencode/child-session-updates"],
+            serde_json::Value::Bool(true)
+        );
+        assert!(opencode["_meta"].get("jetbrains").is_none());
+        assert!(opencode["session"]["compaction"].is_object(), "{opencode}");
+        assert!(opencode["session"].get("notices").is_none(), "{opencode}");
 
         // Cursor: parameterized model picker only (no elicitation / AIR).
         let cursor = caps_of(AgentType::Cursor);
@@ -30927,13 +32491,14 @@ mod tests {
         assert_eq!(meta, None, "a summary chunk must not touch the meta");
     }
 
-    /// `session` reaches the two agents that built these, and NOBODY else.
+    /// `session` reaches the agents that read it — Claude and Codex both
+    /// members, OpenCode 2 `compaction` alone — and NOBODY else.
     /// Both members must serialize as OBJECTS: claude tests `typeof notices ===
     /// "object" && !== null && !Array.isArray`, and codex's compaction gate is
     /// `!= null` — so an empty struct serializing to `null`, or being skipped,
     /// would silently withhold the capability.
     #[test]
-    fn the_session_capability_block_reaches_only_its_two_agents() {
+    fn the_session_capability_block_reaches_only_the_agents_that_read_it() {
         let session_of = |agent| {
             serde_json::to_value(build_client_capabilities(agent, HostToolsPolicy::Default))
                 .unwrap()
@@ -30947,12 +32512,18 @@ mod tests {
                 "{agent:?}"
             );
         }
+        // OpenCode 2 reads `session.compaction` (`cli/src/acp/capabilities.ts`,
+        // 2.2.0) and sends its compaction frames once it is there; it has no
+        // notices.
+        assert_eq!(
+            session_of(AgentType::OpenCode),
+            Some(serde_json::json!({"compaction": {}}))
+        );
         for agent in [
             AgentType::Gemini,
             AgentType::Pi,
             AgentType::Grok,
             AgentType::DeepSeek,
-            AgentType::OpenCode,
             // A custom agent wrapping either adapter is deliberately NOT
             // advertised to: the id it resolves through is the user's, so
             // codeg cannot know what binary is behind it.
@@ -34444,7 +36015,7 @@ mod tests {
                 .to_string(),
         );
         assert_eq!(
-            opencode_live_tool_output(&content, &Some(opencode_ask_raw_output())),
+            opencode_live_tool_output(None, None, &content, &Some(opencode_ask_raw_output())),
             None
         );
     }
@@ -34457,11 +36028,11 @@ mod tests {
         let expected =
             "The user answered your question(s):\n1. [框架] 选一个前端框架\n   → 选项 A\n";
         assert_eq!(
-            opencode_live_tool_output(&None, &raw).as_deref(),
+            opencode_live_tool_output(None, None, &None, &raw).as_deref(),
             Some(expected)
         );
         assert_eq!(
-            opencode_live_tool_output(&Some("   ".to_string()), &raw).as_deref(),
+            opencode_live_tool_output(None, None, &Some("   ".to_string()), &raw).as_deref(),
             Some(expected)
         );
     }
@@ -34476,7 +36047,7 @@ mod tests {
             "metadata": {},
         }));
         assert_eq!(
-            opencode_live_tool_output(&None, &failed).as_deref(),
+            opencode_live_tool_output(None, None, &None, &failed).as_deref(),
             Some("The tool call was aborted")
         );
 
@@ -34485,7 +36056,7 @@ mod tests {
             "metadata": {"output": "boom\n", "exit": 1},
         }));
         assert_eq!(
-            opencode_live_tool_output(&None, &stderr_only).as_deref(),
+            opencode_live_tool_output(None, None, &None, &stderr_only).as_deref(),
             Some("boom\n")
         );
     }
@@ -34496,10 +36067,10 @@ mod tests {
     fn opencode_live_tool_output_keeps_unknown_payloads() {
         let unknown = Some(serde_json::json!({"weird": {"shape": 1}}));
         assert_eq!(
-            opencode_live_tool_output(&None, &unknown).as_deref(),
+            opencode_live_tool_output(None, None, &None, &unknown).as_deref(),
             Some(r#"{"weird":{"shape":1}}"#)
         );
-        assert_eq!(opencode_live_tool_output(&None, &None), None);
+        assert_eq!(opencode_live_tool_output(None, None, &None, &None), None);
     }
 
     /// The `read` exception to the "let `content` render" parity rule: OpenCode
@@ -34528,7 +36099,7 @@ mod tests {
         // live and another after a reload.
         let content = Some("hello world\nsecond line".to_string());
         assert_eq!(
-            opencode_live_tool_output(&content, &raw).as_deref(),
+            opencode_live_tool_output(None, None, &content, &raw).as_deref(),
             Some(r#"{"start_line":1,"content":"hello world\nsecond line"}"#)
         );
     }
@@ -34571,11 +36142,14 @@ mod tests {
 
     #[test]
     fn opencode_tool_name_is_stamped_only_on_the_arg_less_opening_frame() {
+        // Without an ACP `name` (OpenCode 1.x) the title is the name only on
+        // the argument-less opening frame.
         let stamped = |status: &str, raw_input: serde_json::Value, title: &str| {
             stamp_opencode_tool_name(
                 AgentType::OpenCode,
                 status,
                 &Some(raw_input),
+                None,
                 title,
                 None,
             )
@@ -34614,6 +36188,7 @@ mod tests {
                     agent,
                     "pending",
                     &Some(serde_json::json!({})),
+                    Some("glob"),
                     "glob",
                     None
                 ),
@@ -34626,6 +36201,7 @@ mod tests {
             AgentType::OpenCode,
             "pending",
             &None,
+            None,
             "read",
             Some(
                 serde_json::json!({ "vendor": { "x": 1 } })
@@ -34642,6 +36218,7 @@ mod tests {
             AgentType::OpenCode,
             "pending",
             &None,
+            Some("read"),
             "read",
             Some(
                 serde_json::json!({ "opencode": { "toolName": "theirs" } })
@@ -34741,6 +36318,1363 @@ mod tests {
             raw_output.as_deref(),
             Some(r#"{"output":"hi","metadata":{"truncated":false}}"#)
         );
+    }
+
+    // ---- OpenCode 2.2.0 live wire -------------------------------------------
+    //
+    // The frames below are what `opencode acp` 2.2.0 put on the wire when driven
+    // over stdio by a scripted model (task 443 capture; only the sandbox paths
+    // are shortened to `/w`). Each test feeds them, in order, through
+    // `emit_conversation_update` on one connection's state.
+
+    async fn opencode_emit_all(
+        frames: &[serde_json::Value],
+    ) -> (Arc<RwLock<SessionState>>, Vec<AcpEvent>) {
+        let state = Arc::new(RwLock::new(SessionState::new(
+            "conn-opencode".to_string(),
+            AgentType::OpenCode,
+            None,
+            "win".to_string(),
+            None,
+        )));
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let events = opencode_emit_more(&state, &mut cache, &mut cb, frames).await;
+        (state, events)
+    }
+
+    /// Feed more frames on an existing connection; returns only the events
+    /// they produced.
+    async fn opencode_emit_more(
+        state: &Arc<RwLock<SessionState>>,
+        cache: &mut ToolCallOutputCache,
+        cb: &mut CodeBuddyLiveState,
+        frames: &[serde_json::Value],
+    ) -> Vec<AcpEvent> {
+        let before = state
+            .read()
+            .await
+            .recent_events_after(0)
+            .map(|events| events.len())
+            .unwrap_or_default();
+        for frame in frames {
+            let update: SessionUpdate =
+                serde_json::from_value(frame.clone()).expect("OpenCode 2.2.0 wire shape");
+            emit_conversation_update(
+                state,
+                &EventEmitter::Noop,
+                AgentType::OpenCode,
+                update,
+                Some("/w"),
+                cache,
+                cb,
+            )
+            .await;
+        }
+        state
+            .read()
+            .await
+            .recent_events_after(0)
+            .map(|events| events.iter().skip(before).map(|e| e.payload.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    const OC_ROOT: &str = "ses_e8267c824ffe6NWsy77YDestM5";
+    const OC_CHILD: &str = "ses_e8267be71ffeC80gJzN200uuKr";
+
+    fn oc_child_meta(id: &str, title: &str) -> serde_json::Value {
+        serde_json::json!({
+            "opencode/child-session": {"id": id, "parentID": OC_ROOT, "depth": 1, "title": title}
+        })
+    }
+
+    /// The `subagent` launch of the capture: opening frame, two running frames,
+    /// then — after the child's own frames — its completion.
+    fn oc_subagent_launch(id: &str, description: &str) -> Vec<serde_json::Value> {
+        let input = serde_json::json!({
+            "agent": "general",
+            "description": description,
+            "prompt": "Read hello.txt and report.",
+        });
+        vec![
+            serde_json::json!({
+                "sessionUpdate": "tool_call", "toolCallId": id, "name": "subagent",
+                "title": "subagent", "kind": "think", "status": "pending",
+                "locations": [], "rawInput": {},
+            }),
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": id, "status": "in_progress",
+                "kind": "think", "title": "subagent", "locations": [], "rawInput": input,
+            }),
+        ]
+    }
+
+    fn oc_child_frames(child: &str, title: &str) -> Vec<serde_json::Value> {
+        let meta = oc_child_meta(child, title);
+        let call = format!("{child}:call_sub_0_12");
+        vec![
+            serde_json::json!({
+                "sessionUpdate": "agent_thought_chunk",
+                "messageId": "msg_17d9841a0001CyawuhY5pxRsXh:reasoning:0",
+                "content": {"type": "text", "text": "Child thinking."},
+                "_meta": meta,
+            }),
+            serde_json::json!({
+                "sessionUpdate": "tool_call", "toolCallId": call, "name": "read",
+                "title": format!("{title}: read"), "kind": "read", "status": "pending",
+                "locations": [], "rawInput": {}, "_meta": meta,
+            }),
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": call, "status": "in_progress",
+                "kind": "read", "title": format!("{title}: read"),
+                "locations": [{"path": "/w/hello.txt"}], "rawInput": {"path": "hello.txt"},
+                "_meta": meta,
+            }),
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": call, "status": "completed",
+                "locations": [{"path": "/w/hello.txt"}],
+                "content": [{"type": "content", "content": {"type": "text",
+                    "text": "Read file hello.txt, lines 1-1\n1: hello world"}}],
+                "rawOutput": {"metadata": {"truncated": false}}, "_meta": meta,
+            }),
+            serde_json::json!({
+                "sessionUpdate": "agent_message_chunk",
+                "messageId": "msg_17d98429b00125QWQ0AIhbDzmp",
+                "content": {"type": "text", "text": "Child report: hello.txt read."},
+                "_meta": meta,
+            }),
+        ]
+    }
+
+    fn oc_subagent_completion(id: &str, child: &str) -> serde_json::Value {
+        serde_json::json!({
+            "sessionUpdate": "tool_call_update", "toolCallId": id, "status": "completed",
+            "locations": [],
+            "content": [{"type": "content", "content": {"type": "text", "text": format!(
+                "<subagent sessionID=\"{child}\" state=\"completed\">\nChild report: hello.txt read.\n</subagent>"
+            )}}],
+            "rawOutput": {"metadata": {"sessionID": child, "status": "completed", "truncated": false}},
+        })
+    }
+
+    fn event_meta(event: &AcpEvent) -> Option<&serde_json::Value> {
+        match event {
+            AcpEvent::ToolCall { meta, .. } | AcpEvent::ToolCallUpdate { meta, .. } => {
+                meta.as_ref()
+            }
+            _ => None,
+        }
+    }
+
+    /// OpenCode 2 sends a sub-agent's frames on the PARENT's session, marked
+    /// only with `_meta["opencode/child-session"]`. Routed, the child's
+    /// thoughts and reply land inside the launch's Agent card (the Claude
+    /// `parent_tool_use_id` route) and its tool calls nest under it, named
+    /// and titled as they would be at the top level; the launch itself is an
+    /// Agent card from its opening frame, and its result is the sub-agent's
+    /// answer without the `<subagent>` wrapper.
+    #[tokio::test]
+    async fn opencode_subagent_frames_land_in_the_launch_card() {
+        let launch = "call_main_9_11";
+        let mut frames = oc_subagent_launch(launch, "Probe child task");
+        frames.extend(oc_child_frames(OC_CHILD, "Probe child task"));
+        frames.push(oc_subagent_completion(launch, OC_CHILD));
+        let (_, events) = opencode_emit_all(&frames).await;
+
+        // Nothing of the child's reaches the main thread.
+        for event in &events {
+            match event {
+                AcpEvent::ContentDelta {
+                    parent_tool_use_id, ..
+                }
+                | AcpEvent::Thinking {
+                    parent_tool_use_id, ..
+                } => assert_eq!(parent_tool_use_id.as_deref(), Some(launch), "{event:?}"),
+                _ => {}
+            }
+        }
+        assert!(events.iter().any(|e| matches!(e,
+            AcpEvent::Thinking { text, parent_tool_use_id: Some(p) }
+                if text == "Child thinking." && p == launch)));
+        assert!(events.iter().any(|e| matches!(e,
+            AcpEvent::ContentDelta { text, parent_tool_use_id: Some(p) }
+                if text == "Child report: hello.txt read." && p == launch)));
+
+        // The launch: named `subagent` on its opening frame (the frontend
+        // aliases it to the Agent card), then the `agent` sentinel with the
+        // `subagent_type` the Agent card reads, kept through the completion.
+        let launch_events: Vec<&AcpEvent> = events
+            .iter()
+            .filter(|e| match e {
+                AcpEvent::ToolCall { tool_call_id, .. }
+                | AcpEvent::ToolCallUpdate { tool_call_id, .. } => tool_call_id == launch,
+                _ => false,
+            })
+            .collect();
+        assert_eq!(launch_events.len(), 3, "{launch_events:#?}");
+        assert_eq!(
+            event_meta(launch_events[0]).unwrap()["opencode"]["toolName"],
+            "subagent"
+        );
+        let AcpEvent::ToolCallUpdate {
+            title, raw_input, ..
+        } = launch_events[1]
+        else {
+            panic!("running update: {:?}", launch_events[1]);
+        };
+        assert_eq!(title.as_deref(), Some("agent"));
+        let input: serde_json::Value = serde_json::from_str(raw_input.as_deref().unwrap()).unwrap();
+        assert_eq!(input["subagent_type"], "general");
+        assert_eq!(input["agent"], "general");
+        let AcpEvent::ToolCallUpdate {
+            title, raw_output, ..
+        } = launch_events[2]
+        else {
+            panic!("completion: {:?}", launch_events[2]);
+        };
+        assert_eq!(title.as_deref(), Some("agent"));
+        assert_eq!(raw_output.as_deref(), Some("Child report: hello.txt read."));
+
+        // The child's call: its own name and title, nested under the launch.
+        let child_call = format!("{OC_CHILD}:call_sub_0_12");
+        let child_events: Vec<&AcpEvent> = events
+            .iter()
+            .filter(|e| match e {
+                AcpEvent::ToolCall { tool_call_id, .. }
+                | AcpEvent::ToolCallUpdate { tool_call_id, .. } => *tool_call_id == child_call,
+                _ => false,
+            })
+            .collect();
+        assert_eq!(child_events.len(), 3, "{child_events:#?}");
+        for event in &child_events {
+            let meta = event_meta(event).expect("every child frame carries its meta");
+            assert_eq!(meta["codeg.parentToolCallId"], launch, "{event:?}");
+            assert_eq!(meta["opencode"]["toolName"], "read", "{event:?}");
+        }
+        let AcpEvent::ToolCall { title, .. } = child_events[0] else {
+            panic!("child opening: {:?}", child_events[0]);
+        };
+        assert_eq!(title, "read");
+        let AcpEvent::ToolCallUpdate { title, .. } = child_events[1] else {
+            panic!("child running: {:?}", child_events[1]);
+        };
+        assert_eq!(title.as_deref(), Some("read"));
+        let AcpEvent::ToolCallUpdate { raw_output, .. } = child_events[2] else {
+            panic!("child completion: {:?}", child_events[2]);
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(raw_output.as_deref().unwrap()).unwrap(),
+            serde_json::json!({"start_line": 1, "content": "hello world"})
+        );
+    }
+
+    /// A sub-agent's frames with no launch on screen — none seen, or one from
+    /// a turn that already ended (a background sub-agent) — are dropped: there
+    /// is no card to put them in, and rendered at the top level they would read
+    /// as the main agent's own reply. The history parser restores them inside
+    /// the launch's card on reload.
+    #[tokio::test]
+    async fn opencode_subagent_frames_without_a_live_launch_are_dropped() {
+        let (_, events) = opencode_emit_all(&oc_child_frames(OC_CHILD, "Probe child task")).await;
+        assert!(events.is_empty(), "{events:#?}");
+
+        let state = Arc::new(RwLock::new(SessionState::new(
+            "conn-opencode".to_string(),
+            AgentType::OpenCode,
+            None,
+            "win".to_string(),
+            None,
+        )));
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let launch = "call_bgsub_0_2";
+        opencode_emit_more(
+            &state,
+            &mut cache,
+            &mut cb,
+            &oc_subagent_launch(launch, "Background child"),
+        )
+        .await;
+        // The turn ends (`TurnComplete` clears the turn's calls) while the
+        // background child keeps working.
+        state.write().await.active_tool_calls.clear();
+        let late =
+            opencode_emit_more(&state, &mut cache, &mut cb, &oc_child_frames(OC_CHILD, "Background child"))
+                .await;
+        assert!(late.is_empty(), "{late:#?}");
+    }
+
+    /// Two sub-agents running at once: a child is bound to the launch whose
+    /// `description` is its title (OpenCode titles the child session with it),
+    /// not merely to the newest launch; the completion's `metadata.sessionID`
+    /// then settles the binding for certain.
+    #[tokio::test]
+    async fn opencode_concurrent_subagents_bind_by_description() {
+        let mut frames = oc_subagent_launch("call_a", "alpha task");
+        frames.extend(oc_subagent_launch("call_b", "beta task"));
+        frames.extend(oc_child_frames("ses_child_a", "alpha task"));
+        frames.extend(oc_child_frames("ses_child_b", "beta task"));
+        let (_, events) = opencode_emit_all(&frames).await;
+        let parent_of = |child: &str| {
+            events
+                .iter()
+                .find_map(|e| match e {
+                    AcpEvent::ToolCall {
+                        tool_call_id, meta, ..
+                    } if tool_call_id.starts_with(child) => meta
+                        .as_ref()
+                        .and_then(|m| m["codeg.parentToolCallId"].as_str())
+                        .map(str::to_string),
+                    _ => None,
+                })
+                .expect("child call emitted")
+        };
+        assert_eq!(parent_of("ses_child_a"), "call_a");
+        assert_eq!(parent_of("ses_child_b"), "call_b");
+
+        // A launch whose completion names a child it was not guessed for
+        // takes that child over.
+        let mut state = OpenCodeLiveState::default();
+        state.note_subagent("call_x", Some("same"), None);
+        state.note_subagent("call_y", Some("same"), None);
+        let child = OpenCodeChildSession {
+            id: "ses_c".to_string(),
+            parent_id: Some(OC_ROOT.to_string()),
+            title: Some("same".to_string()),
+        };
+        assert_eq!(state.parent_of_child(&child).as_deref(), Some("call_y"));
+        state.bind_child("call_x", "ses_c");
+        assert_eq!(state.parent_of_child(&child).as_deref(), Some("call_x"));
+    }
+
+    /// A nested sub-agent (a child's own `subagent` call) owns the grandchild
+    /// sessions: their frames nest under the nested launch, which itself
+    /// nests under the outer one.
+    #[tokio::test]
+    async fn opencode_nested_subagent_owns_its_grandchildren() {
+        let mut opencode = OpenCodeLiveState::default();
+        opencode.note_subagent("call_outer", Some("outer"), None);
+        let child = OpenCodeChildSession {
+            id: "ses_child".to_string(),
+            parent_id: Some(OC_ROOT.to_string()),
+            title: Some("outer".to_string()),
+        };
+        assert_eq!(opencode.parent_of_child(&child).as_deref(), Some("call_outer"));
+        opencode.note_subagent("ses_child:call_inner", Some("inner"), Some("ses_child"));
+        let grandchild = OpenCodeChildSession {
+            id: "ses_grandchild".to_string(),
+            parent_id: Some("ses_child".to_string()),
+            title: Some("inner".to_string()),
+        };
+        assert_eq!(
+            opencode.parent_of_child(&grandchild).as_deref(),
+            Some("ses_child:call_inner")
+        );
+    }
+
+    /// With `opencode/child-session-updates` advertised, a child's frames come
+    /// as `opencode/session/child_update` (OpenCode 2.2.0 capture): a status, or
+    /// the child's own update wrapped whole. Each becomes the `session/update`
+    /// on the ROOT session it stands for; a child's compaction is dropped.
+    #[test]
+    fn opencode_child_update_becomes_the_session_update_it_carries() {
+        let created = serde_json::json!({
+            "rootSessionId": "ses_e826307d6ffepX5ltg2opas3fw",
+            "childSessionId": "ses_e8262f8d8ffe0wvkTrRBVfg0hJ",
+            "parentSessionId": "ses_e826307d6ffepX5ltg2opas3fw",
+            "depth": 1, "title": "Probe child task", "type": "status", "status": "created",
+        });
+        assert_eq!(
+            opencode_child_update_as_session_update(&created),
+            Some(serde_json::json!({
+                "sessionId": "ses_e826307d6ffepX5ltg2opas3fw",
+                "update": {
+                    "sessionUpdate": "session_info_update",
+                    "_meta": {
+                        "opencode/child-session": {
+                            "id": "ses_e8262f8d8ffe0wvkTrRBVfg0hJ",
+                            "parentID": "ses_e826307d6ffepX5ltg2opas3fw",
+                            "depth": 1,
+                            "title": "Probe child task",
+                        },
+                        "codeg.opencodeChildStatus": {"status": "created"},
+                    },
+                },
+            }))
+        );
+        let update = serde_json::json!({
+            "sessionUpdate": "agent_message_chunk",
+            "messageId": "msg_17d9d080d0016QSZY7AlmeeSUm",
+            "content": {"type": "text", "text": "Child report: hello.txt read."},
+            "_meta": {"opencode/child-session": {
+                "id": "ses_e8262f8d8ffe0wvkTrRBVfg0hJ",
+                "parentID": "ses_e826307d6ffepX5ltg2opas3fw", "depth": 1, "title": "Probe child task",
+            }},
+        });
+        let wrapped = serde_json::json!({
+            "rootSessionId": "ses_e826307d6ffepX5ltg2opas3fw",
+            "childSessionId": "ses_e8262f8d8ffe0wvkTrRBVfg0hJ",
+            "parentSessionId": "ses_e826307d6ffepX5ltg2opas3fw",
+            "depth": 1, "title": "Probe child task", "type": "update", "update": update,
+        });
+        assert_eq!(
+            opencode_child_update_as_session_update(&wrapped),
+            Some(serde_json::json!({
+                "sessionId": "ses_e826307d6ffepX5ltg2opas3fw",
+                "update": update,
+            }))
+        );
+        let compaction = serde_json::json!({
+            "rootSessionId": "ses_root", "childSessionId": "ses_child",
+            "parentSessionId": "ses_root", "depth": 1, "type": "update",
+            "update": {"sessionUpdate": "compaction_update", "compactionId": "msg_1", "status": "in_progress"},
+        });
+        assert_eq!(opencode_child_update_as_session_update(&compaction), None);
+        assert_eq!(
+            opencode_child_update_as_session_update(&serde_json::json!({"type": "status"})),
+            None,
+            "no root session, nothing to route"
+        );
+    }
+
+    /// Claims every message that reaches it, recording the notifications — the
+    /// tail of a test builder chain.
+    struct RecordNotifications(Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>);
+
+    impl<Counterpart: Role> HandleDispatchFrom<Counterpart> for RecordNotifications {
+        async fn handle_dispatch_from(
+            &mut self,
+            message: Dispatch,
+            _connection: ConnectionTo<Counterpart>,
+        ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
+            if let Dispatch::Notification(notification) = &message {
+                self.0.lock().unwrap().push((
+                    notification.method().to_string(),
+                    notification.params().clone(),
+                ));
+                return Ok(Handled::Yes);
+            }
+            Ok(Handled::No {
+                message,
+                retry: false,
+            })
+        }
+
+        fn describe_chain(&self) -> impl std::fmt::Debug {
+            "RecordNotifications"
+        }
+    }
+
+    /// Over the real runtime: `opencode/session/child_update` is no ACP method
+    /// and carries no `sessionId` (and no `_` prefix, which the typed layer would
+    /// need to read it as an extension), yet it reaches the builder chain as an
+    /// untyped notification, and what the next handler sees is the rewritten
+    /// `session/update` — the message a session router claims.
+    #[tokio::test]
+    async fn opencode_child_update_reaches_the_chain_as_a_session_update() {
+        let (client_end, agent_end) = agent_client_protocol::Channel::duplex();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = RecordNotifications(Arc::clone(&seen));
+        let client = tokio::spawn(
+            Client
+                .builder()
+                .with_handler(OpenCodeChildSessionUpdates {
+                    agent_type: AgentType::OpenCode,
+                })
+                .with_handler(recorder)
+                .connect_with(client_end, async |_cx: ConnectionTo<Agent>| {
+                    std::future::pending::<Result<(), agent_client_protocol::Error>>().await
+                }),
+        );
+        let agent_seen = Arc::clone(&seen);
+        Agent
+            .builder()
+            .connect_with(agent_end, async move |cx: ConnectionTo<Client>| {
+                for params in [
+                    serde_json::json!({
+                        "rootSessionId": "ses_root", "childSessionId": "ses_child",
+                        "parentSessionId": "ses_root", "depth": 1, "title": "t",
+                        "type": "status", "status": "running",
+                    }),
+                    serde_json::json!({
+                        "rootSessionId": "ses_root", "childSessionId": "ses_child",
+                        "parentSessionId": "ses_root", "depth": 1, "type": "update",
+                        "update": {"sessionUpdate": "compaction_update",
+                            "compactionId": "msg_1", "status": "in_progress"},
+                    }),
+                    serde_json::json!({
+                        "rootSessionId": "ses_root", "childSessionId": "ses_child",
+                        "parentSessionId": "ses_root", "depth": 1, "type": "update",
+                        "update": {"sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": "hi"}},
+                    }),
+                ] {
+                    cx.send_notification(UntypedMessage::new(
+                        OPENCODE_CHILD_UPDATE_METHOD,
+                        params,
+                    )?)?;
+                }
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+                while agent_seen.lock().unwrap().len() < 2
+                    && tokio::time::Instant::now() < deadline
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Ok(())
+            })
+            .await
+            .expect("agent connection");
+        client.abort();
+
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2, "the child's compaction is dropped: {seen:#?}");
+        assert!(seen.iter().all(|(method, params)| method == "session/update"
+            && params["sessionId"] == "ses_root"));
+        assert_eq!(seen[0].1["update"]["sessionUpdate"], "session_info_update");
+        assert_eq!(seen[1].1["update"]["content"]["text"], "hi");
+    }
+
+    /// The synthesized `created` status binds the child to its launch at once,
+    /// before any frame of the child's own (and renders nothing itself).
+    #[tokio::test]
+    async fn opencode_child_created_status_binds_the_child_early() {
+        let state = Arc::new(RwLock::new(SessionState::new(
+            "conn-opencode".to_string(),
+            AgentType::OpenCode,
+            None,
+            "win".to_string(),
+            None,
+        )));
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let mut frames = oc_subagent_launch("call_a", "alpha task");
+        frames.extend(oc_subagent_launch("call_b", "beta task"));
+        let launches = opencode_emit_more(&state, &mut cache, &mut cb, &frames).await;
+        let created = opencode_emit_more(
+            &state,
+            &mut cache,
+            &mut cb,
+            &[serde_json::json!({
+                "sessionUpdate": "session_info_update",
+                "_meta": {
+                    "opencode/child-session": {
+                        "id": "ses_child", "parentID": OC_ROOT, "depth": 1, "title": "alpha task",
+                    },
+                    "codeg.opencodeChildStatus": {"status": "created"},
+                },
+            })],
+        )
+        .await;
+        assert_eq!(launches.len(), 4);
+        assert!(created.is_empty(), "{created:#?}");
+        let bound = |id: &str| {
+            cb.opencode
+                .subagents
+                .iter()
+                .find(|launch| launch.tool_call_id == id)
+                .and_then(|launch| launch.child_id().map(str::to_string))
+        };
+        assert_eq!(bound("call_a").as_deref(), Some("ses_child"));
+        assert_eq!(bound("call_b"), None);
+
+        // A child whose title matches no launch (a retitled session) goes to
+        // the newest launch still without a child.
+        let mut opencode = OpenCodeLiveState::default();
+        opencode.note_subagent("call_a", Some("alpha task"), None);
+        opencode.note_subagent("call_b", Some("beta task"), None);
+        let renamed = OpenCodeChildSession {
+            id: "ses_renamed".to_string(),
+            parent_id: Some(OC_ROOT.to_string()),
+            title: Some("renamed".to_string()),
+        };
+        assert_eq!(opencode.parent_of_child(&renamed).as_deref(), Some("call_b"));
+        let alpha = OpenCodeChildSession {
+            id: "ses_alpha".to_string(),
+            parent_id: Some(OC_ROOT.to_string()),
+            title: Some("alpha task".to_string()),
+        };
+        assert_eq!(opencode.parent_of_child(&alpha).as_deref(), Some("call_a"));
+    }
+
+    // ---- OpenCode 2.2.0 background sub-agent ----------------------------------
+    //
+    // `subagent` with `background: true`, captured from `opencode acp` 2.2.0
+    // with `opencode/child-session-updates` advertised (task 443 capture F;
+    // sandbox paths shortened to `/w`): the launch completes at once, the turn
+    // answers, and the child's work and end arrive afterwards as
+    // `opencode/session/child_update` notifications.
+
+    const OC_BG_ROOT: &str = "ses_e82570332ffeM8aWU2r19lLW4X";
+    const OC_BG_CHILD: &str = "ses_e82570260ffeUoRkJNwoOFwhxy";
+    const OC_BG_LAUNCH: &str = "call_bgsub_0_2";
+    const OC_BG_TITLE: &str = "Background child";
+    /// What the child says last, its answer.
+    const OC_BG_REPORT: &str = "Background child report.";
+
+    /// A child's `opencode/session/child_update` status, as the session update
+    /// `OpenCodeChildSessionUpdates` rewrites it into.
+    fn oc_child_status(
+        root: &str,
+        child: &str,
+        title: &str,
+        event: serde_json::Value,
+    ) -> serde_json::Value {
+        let mut params = serde_json::json!({
+            "rootSessionId": root, "childSessionId": child, "parentSessionId": root,
+            "depth": 1, "title": title, "type": "status",
+        });
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(event.as_object().unwrap().clone());
+        opencode_child_update_as_session_update(&params).expect("a child status")["update"].clone()
+    }
+
+    /// Capture F's child's status.
+    fn oc_bg_status(status: &str) -> serde_json::Value {
+        oc_child_status(
+            OC_BG_ROOT,
+            OC_BG_CHILD,
+            OC_BG_TITLE,
+            serde_json::json!({ "status": status }),
+        )
+    }
+
+    /// Capture F up to the prompt's answer: the launch's opening and running
+    /// frames around the child's `created`, the completion that sends the
+    /// child to the background, its `running`, and the main agent's reply.
+    fn oc_background_launch_turn() -> Vec<serde_json::Value> {
+        let running = serde_json::json!({
+            "sessionUpdate": "tool_call_update", "toolCallId": OC_BG_LAUNCH,
+            "status": "in_progress", "kind": "think", "title": "subagent", "locations": [],
+            "rawInput": {
+                "agent": "general", "description": OC_BG_TITLE, "background": true,
+                "prompt": "[[SCRIPT slowsub]] Read hello.txt slowly.",
+            },
+        });
+        vec![
+            serde_json::json!({
+                "sessionUpdate": "tool_call", "toolCallId": OC_BG_LAUNCH, "name": "subagent",
+                "title": "subagent", "kind": "think", "status": "pending", "locations": [],
+                "rawInput": {},
+            }),
+            running.clone(),
+            oc_bg_status("created"),
+            running,
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": OC_BG_LAUNCH,
+                "status": "completed", "locations": [],
+                "content": [{"type": "content", "content": {"type": "text", "text": format!(
+                    "The subagent is working in the background (sessionID: {OC_BG_CHILD}). You will be notified automatically when it finishes.\nDO NOT sleep, poll for progress, ask the subagent for status, or duplicate this subagent's work; avoid working with the same files or topics it is using.\nWork on non-overlapping tasks, or briefly tell the user what you launched and end your response."
+                )}}],
+                "rawOutput": {"metadata": {"sessionID": OC_BG_CHILD, "status": "running", "truncated": false}},
+            }),
+            oc_bg_status("running"),
+            serde_json::json!({
+                "sessionUpdate": "agent_message_chunk", "messageId": "msg_17da8fdbd001sMOQKRx8LnNMWi",
+                "content": {"type": "text", "text": "Launched a background subagent."},
+            }),
+        ]
+    }
+
+    /// …and the child's work once the turn has answered: a `read`, its report,
+    /// and its `completed`.
+    fn oc_background_child_work() -> Vec<serde_json::Value> {
+        let meta = serde_json::json!({"opencode/child-session": {
+            "id": OC_BG_CHILD, "parentID": OC_BG_ROOT, "depth": 1, "title": OC_BG_TITLE,
+        }});
+        let call = format!("{OC_BG_CHILD}:call_slowsub_0_3");
+        vec![
+            serde_json::json!({
+                "sessionUpdate": "tool_call", "toolCallId": call, "name": "read",
+                "title": "Background child: read", "kind": "read", "status": "pending",
+                "locations": [], "rawInput": {}, "_meta": meta,
+            }),
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": call, "status": "in_progress",
+                "kind": "read", "title": "Background child: read",
+                "locations": [{"path": "/w/hello.txt"}], "rawInput": {"path": "hello.txt"},
+                "_meta": meta,
+            }),
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": call, "status": "completed",
+                "locations": [{"path": "/w/hello.txt"}],
+                "content": [{"type": "content", "content": {"type": "text",
+                    "text": "Read file hello.txt, lines 1-1\n1: hello world"}}],
+                "rawOutput": {"metadata": {"truncated": false}}, "_meta": meta,
+            }),
+            serde_json::json!({
+                "sessionUpdate": "agent_message_chunk", "messageId": "msg_17da90652001beSHGbdK8zBgrv",
+                "content": {"type": "text", "text": OC_BG_REPORT}, "_meta": meta,
+            }),
+            oc_bg_status("completed"),
+        ]
+    }
+
+    /// A connection on capture F's session, which a settle names.
+    async fn oc_background_connection() -> Arc<RwLock<SessionState>> {
+        let state = Arc::new(RwLock::new(SessionState::new(
+            "conn-opencode".to_string(),
+            AgentType::OpenCode,
+            None,
+            "win".to_string(),
+            None,
+        )));
+        state.write().await.external_id = Some(OC_BG_ROOT.to_string());
+        state
+    }
+
+    /// `(outstanding, settled)` of each `BackgroundActivity` among `events`,
+    /// checking the parts every OpenCode report shares.
+    fn oc_background_reports(
+        events: &[AcpEvent],
+    ) -> Vec<(u32, Vec<crate::acp::types::BackgroundSettledInfo>)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                AcpEvent::BackgroundActivity {
+                    session_id,
+                    turns,
+                    outstanding,
+                    settled,
+                    watermark,
+                } => {
+                    assert_eq!(session_id, OC_BG_ROOT);
+                    assert!(turns.is_empty() && *watermark == 0, "{event:?}");
+                    Some((*outstanding, settled.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn oc_background_settled(
+        status: &str,
+        summary: Option<&str>,
+        result: Option<&str>,
+    ) -> crate::acp::types::BackgroundSettledInfo {
+        crate::acp::types::BackgroundSettledInfo {
+            task_id: OC_BG_CHILD.to_string(),
+            status: status.to_string(),
+            summary: summary.map(str::to_string),
+            tool_use_id: Some(OC_BG_LAUNCH.to_string()),
+            result: result.map(str::to_string),
+            interim: false,
+        }
+    }
+
+    /// The launch completes into the background, which is reported as work
+    /// still out, right after the completion that shows the card running in
+    /// the background. The child works on after the turn has answered — none of
+    /// it renders, as no card is on screen for it — and its `completed`
+    /// settles the card with the child's report: one settle, naming the child
+    /// and the launch, and nothing left out.
+    #[tokio::test]
+    async fn opencode_background_subagent_settles_its_card_after_the_turn() {
+        let state = oc_background_connection().await;
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let turn =
+            opencode_emit_more(&state, &mut cache, &mut cb, &oc_background_launch_turn()).await;
+        assert_eq!(oc_background_reports(&turn), vec![(1, vec![])]);
+        let completion = turn
+            .iter()
+            .position(|event| {
+                matches!(event, AcpEvent::ToolCallUpdate { tool_call_id, status: Some(status), .. }
+                    if tool_call_id == OC_BG_LAUNCH && status == "completed")
+            })
+            .expect("the launch's completion");
+        assert!(
+            matches!(turn[completion + 1], AcpEvent::BackgroundActivity { .. }),
+            "{turn:#?}"
+        );
+        assert_eq!(state.read().await.background_outstanding, 1);
+
+        // The turn answers (`TurnComplete` clears its calls).
+        state.write().await.active_tool_calls.clear();
+        let after =
+            opencode_emit_more(&state, &mut cache, &mut cb, &oc_background_child_work()).await;
+        assert_eq!(after.len(), 1, "only the settle: {after:#?}");
+        assert_eq!(
+            oc_background_reports(&after),
+            vec![(
+                0,
+                vec![oc_background_settled("completed", None, Some(OC_BG_REPORT))]
+            )]
+        );
+        assert_eq!(state.read().await.background_outstanding, 0);
+    }
+
+    /// A background child that ends while the turn that launched it still
+    /// runs: its work renders inside the launch's card, and its end settles the
+    /// card all the same (the frontend holds the settle until the turn's
+    /// message is promoted).
+    #[tokio::test]
+    async fn opencode_background_subagent_that_ends_inside_its_turn_settles_too() {
+        let state = oc_background_connection().await;
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let mut frames = oc_background_launch_turn();
+        frames.extend(oc_background_child_work());
+        let events = opencode_emit_more(&state, &mut cache, &mut cb, &frames).await;
+        assert!(events.iter().any(|event| matches!(event,
+            AcpEvent::ContentDelta { text, parent_tool_use_id: Some(parent) }
+                if text == OC_BG_REPORT && parent == OC_BG_LAUNCH)));
+        assert_eq!(
+            oc_background_reports(&events),
+            vec![
+                (1, vec![]),
+                (
+                    0,
+                    vec![oc_background_settled("completed", None, Some(OC_BG_REPORT))]
+                ),
+            ]
+        );
+    }
+
+    /// A blocking launch's child ends before the launch completes, and the
+    /// completion carries the child's answer itself: no background report, no
+    /// settle, and nothing of the child kept.
+    #[tokio::test]
+    async fn opencode_blocking_subagent_settles_nothing() {
+        let state = oc_background_connection().await;
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let launch = "call_main_9_11";
+        let title = "Probe child task";
+        let status = |status: &str| {
+            oc_child_status(
+                OC_ROOT,
+                OC_CHILD,
+                title,
+                serde_json::json!({ "status": status }),
+            )
+        };
+        let mut frames = oc_subagent_launch(launch, title);
+        frames.push(status("created"));
+        frames.push(status("running"));
+        frames.extend(oc_child_frames(OC_CHILD, title));
+        frames.push(status("completed"));
+        frames.push(oc_subagent_completion(launch, OC_CHILD));
+        let events = opencode_emit_more(&state, &mut cache, &mut cb, &frames).await;
+        assert!(oc_background_reports(&events).is_empty(), "{events:#?}");
+        assert!(events.iter().any(|event| matches!(event,
+            AcpEvent::ToolCallUpdate { tool_call_id, raw_output: Some(answer), .. }
+                if tool_call_id == launch && answer == "Child report: hello.txt read.")));
+        let child = cb.opencode.subagents[0].child.as_ref().expect("bound");
+        assert!(child.ended.is_none() && child.answer.text.is_empty());
+
+        // A late end for the same child changes nothing either.
+        state.write().await.active_tool_calls.clear();
+        let late = opencode_emit_more(&state, &mut cache, &mut cb, &[status("completed")]).await;
+        assert!(late.is_empty(), "{late:#?}");
+        assert_eq!(state.read().await.background_outstanding, 0);
+    }
+
+    /// An end no launch on this connection claims settles nothing — nor does
+    /// it touch a background launch that is still out.
+    #[tokio::test]
+    async fn opencode_unknown_child_end_settles_nothing() {
+        let state = oc_background_connection().await;
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let stray = |status: &str| {
+            oc_child_status(
+                OC_BG_ROOT,
+                "ses_unknown",
+                "Someone else",
+                serde_json::json!({"status": status}),
+            )
+        };
+        let none = opencode_emit_more(&state, &mut cache, &mut cb, &[stray("completed")]).await;
+        assert!(none.is_empty(), "{none:#?}");
+
+        opencode_emit_more(&state, &mut cache, &mut cb, &oc_background_launch_turn()).await;
+        state.write().await.active_tool_calls.clear();
+        let none = opencode_emit_more(&state, &mut cache, &mut cb, &[stray("failed")]).await;
+        assert!(none.is_empty(), "{none:#?}");
+        assert_eq!(state.read().await.background_outstanding, 1);
+        let settle =
+            opencode_emit_more(&state, &mut cache, &mut cb, &oc_background_child_work()).await;
+        assert_eq!(oc_background_reports(&settle).len(), 1);
+    }
+
+    /// A child that fails reports how (its error is the settle's summary),
+    /// with what it said last; one whose end arrives before its launch's
+    /// completion settles at the completion.
+    #[tokio::test]
+    async fn opencode_background_subagent_failure_and_early_end_settle() {
+        let state = oc_background_connection().await;
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        opencode_emit_more(&state, &mut cache, &mut cb, &oc_background_launch_turn()).await;
+        state.write().await.active_tool_calls.clear();
+        let mut work = oc_background_child_work();
+        work.pop();
+        work.push(oc_child_status(
+            OC_BG_ROOT,
+            OC_BG_CHILD,
+            OC_BG_TITLE,
+            serde_json::json!({
+                "status": "failed",
+                "error": {"type": "provider.api", "message": "Rate limited"},
+            }),
+        ));
+        let failed = opencode_emit_more(&state, &mut cache, &mut cb, &work).await;
+        assert_eq!(
+            oc_background_reports(&failed),
+            vec![(
+                0,
+                vec![oc_background_settled(
+                    "failed",
+                    Some("Rate limited"),
+                    Some(OC_BG_REPORT)
+                )]
+            )]
+        );
+
+        // The end first, then the completion that says the launch went to the
+        // background: settled at once, never counted as out.
+        let state = oc_background_connection().await;
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        let mut frames = oc_background_launch_turn();
+        let completion = frames.remove(4);
+        frames.truncate(4);
+        frames.push(serde_json::json!({
+            "sessionUpdate": "agent_message_chunk", "messageId": "msg_child_1",
+            "content": {"type": "text", "text": "Done already."},
+            "_meta": {"opencode/child-session": {
+                "id": OC_BG_CHILD, "parentID": OC_BG_ROOT, "depth": 1, "title": OC_BG_TITLE,
+            }},
+        }));
+        frames.push(oc_bg_status("interrupted"));
+        frames.push(completion);
+        let events = opencode_emit_more(&state, &mut cache, &mut cb, &frames).await;
+        assert_eq!(
+            oc_background_reports(&events),
+            vec![(
+                0,
+                vec![oc_background_settled(
+                    "interrupted",
+                    None,
+                    Some("Done already.")
+                )]
+            )]
+        );
+        assert_eq!(state.read().await.background_outstanding, 0);
+    }
+
+    /// The answer is what the child's LATEST message says — a new
+    /// `messageId`, or a tool call, starts it over — capped like every
+    /// background result.
+    #[test]
+    fn opencode_child_answer_is_its_latest_message_capped() {
+        let mut opencode = OpenCodeLiveState::default();
+        opencode.note_subagent("call_bg", Some("bg"), None);
+        let child = OpenCodeChildSession {
+            id: "ses_bg".to_string(),
+            parent_id: Some(OC_ROOT.to_string()),
+            title: Some("bg".to_string()),
+        };
+        let answer = |opencode: &mut OpenCodeLiveState| {
+            opencode.subagents[0]
+                .child
+                .as_mut()
+                .expect("bound")
+                .answer
+                .take()
+        };
+        opencode.child_text(&child, Some("msg_1"), "Let me look.");
+        opencode.child_text(&child, Some("msg_2"), "The answer ");
+        opencode.child_text(&child, Some("msg_2"), "is 42.");
+        assert_eq!(answer(&mut opencode).as_deref(), Some("The answer is 42."));
+
+        opencode.child_text(&child, Some("msg_3"), "Checking once more.");
+        opencode.child_called_tool(&child);
+        assert_eq!(
+            answer(&mut opencode),
+            None,
+            "the tool call ended that message"
+        );
+        opencode.child_text(&child, Some("msg_4"), "  \n");
+        assert_eq!(answer(&mut opencode), None, "a blank message is no answer");
+
+        let max = crate::parsers::claude::BACKGROUND_RESULT_MAX_CHARS;
+        let long = "界".repeat(max);
+        opencode.child_text(&child, Some("msg_5"), &long);
+        opencode.child_text(&child, Some("msg_5"), &long);
+        let kept = &opencode.subagents[0].child.as_ref().unwrap().answer;
+        assert_eq!(kept.chars, max + 1, "nothing kept past what the cap needs");
+        assert_eq!(kept.text.chars().count(), max + 1);
+        assert_eq!(answer(&mut opencode), Some(format!("{long}...")));
+    }
+
+    /// 2.x `read` results are the model's text (`Read file …, lines a-b` plus
+    /// `n: ` lines, a truncation notice after an `offset`/`limit` page); live
+    /// they are structured exactly as the history parser structures them.
+    #[tokio::test]
+    async fn opencode_read_result_is_structured_like_history() {
+        let frames = [
+            serde_json::json!({
+                "sessionUpdate": "tool_call", "toolCallId": "call_main_3_5", "name": "read",
+                "title": "read", "kind": "read", "status": "pending", "locations": [], "rawInput": {},
+            }),
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": "call_main_3_5",
+                "status": "in_progress", "kind": "read", "title": "read",
+                "locations": [{"path": "/w/sub/nested.txt"}],
+                "rawInput": {"path": "/w/sub/nested.txt", "offset": 2, "limit": 1},
+            }),
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": "call_main_3_5",
+                "status": "completed", "locations": [{"path": "/w/sub/nested.txt"}],
+                "content": [{"type": "content", "content": {"type": "text", "text":
+                    "Read file /w/sub/nested.txt, lines 2-2\n2: n2\n[Output truncated. Continue reading with offset: 3]"}}],
+                "rawOutput": {"metadata": {"truncated": true}},
+            }),
+        ];
+        let (_, events) = opencode_emit_all(&frames).await;
+        let raw_output = events.iter().rev().find_map(|e| match e {
+            AcpEvent::ToolCallUpdate { raw_output, .. } => raw_output.clone(),
+            _ => None,
+        });
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&raw_output.unwrap()).unwrap(),
+            serde_json::json!({"start_line": 2, "content": "n2"})
+        );
+    }
+
+    /// `skill` results lose their `<skill_content>` envelope, as in history.
+    #[tokio::test]
+    async fn opencode_skill_result_is_unwrapped_like_history() {
+        let body = "<skill_content name=\"probe-skill\">\n# Skill: probe-skill\n\n# Probe skill\n\nWhen loaded, say \"probe skill loaded\".\n\nBase directory for this skill: /w/skills/probe-skill\n</skill_content>";
+        let frames = [
+            serde_json::json!({
+                "sessionUpdate": "tool_call", "toolCallId": "call_main_10_14", "name": "skill",
+                "title": "skill", "kind": "other", "status": "pending", "locations": [], "rawInput": {},
+            }),
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": "call_main_10_14",
+                "status": "completed", "locations": [],
+                "content": [{"type": "content", "content": {"type": "text", "text": body}}],
+                "rawOutput": {"metadata": {"name": "probe-skill", "directory": "/w/skills/probe-skill", "truncated": false}},
+            }),
+        ];
+        let (_, events) = opencode_emit_all(&frames).await;
+        let raw_output = events.iter().rev().find_map(|e| match e {
+            AcpEvent::ToolCallUpdate { raw_output, .. } => raw_output.clone(),
+            _ => None,
+        });
+        assert_eq!(
+            raw_output.as_deref(),
+            Some(crate::parsers::opencode::unwrap_skill_content(body).as_str())
+        );
+        assert!(!raw_output.unwrap().contains("<skill_content"));
+    }
+
+    fn oc_question_frames(multiple: bool) -> Vec<serde_json::Value> {
+        let mut question = serde_json::json!({
+            "question": "Which color do you prefer?", "header": "Color",
+            "options": [{"label": "Red", "description": "Warm"}, {"label": "Blue", "description": "Cool"}],
+        });
+        if multiple {
+            question["multiple"] = serde_json::Value::Bool(true);
+        }
+        vec![
+            serde_json::json!({
+                "sessionUpdate": "tool_call", "toolCallId": "call_main_11_15", "name": "question",
+                "title": "question", "kind": "other", "status": "pending", "locations": [], "rawInput": {},
+            }),
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": "call_main_11_15",
+                "status": "in_progress", "kind": "other", "title": "question", "locations": [],
+                "rawInput": {"questions": [question]},
+            }),
+        ]
+    }
+
+    /// An answered OpenCode question completes with a sentence for the model
+    /// and the picks in `metadata.answers`; the card is handed the
+    /// `{declined, answers}` envelope history builds from the same data.
+    #[tokio::test]
+    async fn opencode_question_answers_reach_the_card_as_an_envelope() {
+        let mut frames = oc_question_frames(true);
+        frames.push(serde_json::json!({
+            "sessionUpdate": "tool_call_update", "toolCallId": "call_main_11_15",
+            "status": "completed", "locations": [],
+            "content": [{"type": "content", "content": {"type": "text", "text":
+                "User has answered your questions: \"Which color do you prefer?\"=\"Blue\". You can now continue with the user's answers in mind."}}],
+            "rawOutput": {"metadata": {"answers": [["Blue"]], "truncated": false}},
+        }));
+        let (_, events) = opencode_emit_all(&frames).await;
+        let running_input = events.iter().find_map(|e| match e {
+            AcpEvent::ToolCallUpdate { raw_input: Some(input), .. } => Some(input.clone()),
+            _ => None,
+        });
+        let running_input: serde_json::Value =
+            serde_json::from_str(&running_input.expect("running frame input")).unwrap();
+        assert_eq!(running_input["questions"][0]["multiSelect"], true);
+        let raw_output = events.iter().rev().find_map(|e| match e {
+            AcpEvent::ToolCallUpdate { raw_output, .. } => raw_output.clone(),
+            _ => None,
+        });
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&raw_output.unwrap()).unwrap(),
+            serde_json::json!({"declined": false, "answers": [{
+                "header": "Color", "question": "Which color do you prefer?", "selected": ["Blue"],
+            }]})
+        );
+    }
+
+    /// A dismissed question unwinds as a failure ("The user dismissed this
+    /// question"); like history, it is the user's answer — declined — not a
+    /// failed call.
+    #[tokio::test]
+    async fn opencode_dismissed_question_is_declined_not_failed() {
+        let mut frames = oc_question_frames(false);
+        frames.push(serde_json::json!({
+            "sessionUpdate": "tool_call_update", "toolCallId": "call_main_11_15",
+            "status": "failed", "kind": "other", "title": "question", "locations": [],
+            "content": [{"type": "content", "content": {"type": "text", "text": "The user dismissed this question"}}],
+            "rawOutput": {"metadata": {}, "error": "The user dismissed this question"},
+        }));
+        let (_, events) = opencode_emit_all(&frames).await;
+        let Some(AcpEvent::ToolCallUpdate {
+            status, raw_output, ..
+        }) = events.last()
+        else {
+            panic!("{events:#?}");
+        };
+        assert_eq!(status.as_deref(), Some("completed"));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(raw_output.as_deref().unwrap()).unwrap(),
+            serde_json::json!({"declined": true, "answers": []})
+        );
+    }
+
+    fn oc_execute_frames() -> Vec<serde_json::Value> {
+        let code = "const r = await tools.probe.echo({ text: 'hi from code mode' });\nreturn r";
+        vec![
+            serde_json::json!({
+                "sessionUpdate": "tool_call", "toolCallId": "call_main_13_17", "name": "execute",
+                "title": "execute", "kind": "other", "status": "pending", "locations": [], "rawInput": {},
+            }),
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": "call_main_13_17",
+                "status": "in_progress", "kind": "other", "title": "execute", "locations": [],
+                "rawInput": {"code": code},
+            }),
+        ]
+    }
+
+    fn oc_execute_completion() -> serde_json::Value {
+        serde_json::json!({
+            "sessionUpdate": "tool_call_update", "toolCallId": "call_main_13_17",
+            "status": "completed", "locations": [],
+            "content": [{"type": "content", "content": {"type": "text", "text": "{\n  \"echoed\": \"hi from code mode\"\n}"}}],
+            "rawOutput": {"metadata": {
+                "toolCalls": [{"tool": "probe.echo", "status": "completed", "input": {"text": "hi from code mode"}}],
+                "truncated": false,
+            }},
+        })
+    }
+
+    /// OpenCode 2 runs every MCP tool through `execute` and reports the calls a
+    /// script made only in the completion's `metadata.toolCalls`. They reach the
+    /// card on the call's `_meta` (`codeg.codeModeCalls`, verbatim), alongside —
+    /// not instead of — what the call's `_meta` already held, and the result
+    /// text stays the card's output.
+    #[tokio::test]
+    async fn opencode_execute_completion_carries_its_calls_on_the_meta() {
+        let mut frames = oc_execute_frames();
+        frames.push(oc_execute_completion());
+        let (_, events) = opencode_emit_all(&frames).await;
+        let Some(AcpEvent::ToolCallUpdate {
+            meta, raw_output, ..
+        }) = events.last()
+        else {
+            panic!("{events:#?}");
+        };
+        assert!(raw_output.is_none(), "the result text renders as content");
+        let meta = meta.as_ref().expect("the completion carries the calls");
+        assert_eq!(
+            meta["codeg.codeModeCalls"],
+            serde_json::json!([{"tool": "probe.echo", "status": "completed", "input": {"text": "hi from code mode"}}])
+        );
+        assert_eq!(meta["opencode"]["toolName"], "execute");
+
+        // The running frames carry no meta at all: the opening frame's stays.
+        assert!(events[1..events.len() - 1].iter().all(|e| event_meta(e).is_none()));
+    }
+
+    /// A code-mode delegation's card holds the broker's `codeg.delegation`
+    /// meta; the completion's meta, which REPLACES the call's, must keep it.
+    #[tokio::test]
+    async fn opencode_execute_completion_keeps_the_delegation_meta() {
+        let state = Arc::new(RwLock::new(SessionState::new(
+            "conn-opencode".to_string(),
+            AgentType::OpenCode,
+            None,
+            "win".to_string(),
+            None,
+        )));
+        let mut cache = ToolCallOutputCache::default();
+        let mut cb = CodeBuddyLiveState::default();
+        opencode_emit_more(&state, &mut cache, &mut cb, &oc_execute_frames()).await;
+        // What `ConnectionManagerMetaWriter::write_meta` emits.
+        let delegation = serde_json::json!({"status": "running", "child_connection_id": "conn-child"});
+        emit_with_state(
+            &state,
+            &EventEmitter::Noop,
+            AcpEvent::ToolCallUpdate {
+                tool_call_id: "call_main_13_17".to_string(),
+                title: None,
+                status: None,
+                content: None,
+                raw_input: None,
+                raw_output: None,
+                raw_output_append: None,
+                locations: None,
+                meta: Some(serde_json::json!({ "codeg.delegation": delegation })),
+                images: None,
+            },
+        )
+        .await;
+        let events =
+            opencode_emit_more(&state, &mut cache, &mut cb, &[oc_execute_completion()]).await;
+        let meta = event_meta(events.last().unwrap()).expect("completion meta");
+        assert_eq!(meta["codeg.delegation"], delegation);
+        assert!(meta["codeg.codeModeCalls"].is_array());
+    }
+
+    /// OpenCode completes a command that exited non-zero successfully, the
+    /// exit code in `metadata.exit` and a closing "Exited with code N" block;
+    /// the code reaches the card as `codeg.exitCode`.
+    #[tokio::test]
+    async fn opencode_shell_exit_code_reaches_the_meta() {
+        let frames = [
+            serde_json::json!({
+                "sessionUpdate": "tool_call", "toolCallId": "call_main_1_3", "name": "shell",
+                "title": "shell", "kind": "execute", "status": "pending",
+                "locations": [{"path": "/w"}], "rawInput": {"cwd": "/w"},
+            }),
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": "call_main_1_3",
+                "status": "in_progress", "kind": "execute", "title": "ls /definitely-not-here",
+                "locations": [{"path": "/w/sub"}], "rawInput": {"command": "ls /definitely-not-here", "workdir": "sub"},
+            }),
+            serde_json::json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": "call_main_1_3",
+                "status": "completed", "locations": [{"path": "/w/sub"}],
+                "content": [
+                    {"type": "content", "content": {"type": "text", "text": "ls: /definitely-not-here: No such file or directory\n"}},
+                    {"type": "content", "content": {"type": "text", "text": "Exited with code 1"}},
+                ],
+                "rawOutput": {"metadata": {"status": "completed", "truncated": false, "exit": 1}},
+            }),
+        ];
+        let (_, events) = opencode_emit_all(&frames).await;
+        // The opening frame is stamped from its ACP `name`, though its input
+        // (`{cwd}`) is not empty.
+        assert_eq!(event_meta(&events[0]).unwrap()["opencode"]["toolName"], "shell");
+        let meta = event_meta(events.last().unwrap()).expect("completion meta");
+        assert_eq!(meta["codeg.exitCode"], 1);
+        assert_eq!(meta["opencode"]["toolName"], "shell");
+
+        // A clean exit says nothing new: the call's meta is left alone.
+        let mut clean = frames.to_vec();
+        clean[2]["rawOutput"]["metadata"]["exit"] = serde_json::json!(0);
+        let (_, events) = opencode_emit_all(&clean).await;
+        assert!(event_meta(events.last().unwrap()).is_none());
+    }
+
+    /// OpenCode 2.2.0's retry announcement (capture): the shared retry banner,
+    /// numbered by retry, with the error and the wait; the `null` that follows
+    /// emits nothing (the banner clears when the retried step streams).
+    #[test]
+    fn opencode_retry_announcement_is_the_retry_banner() {
+        let meta = serde_json::json!({
+            "opencode/retry": {
+                "attempt": 2,
+                "nextRetryAt": "2026-10-27T13:46:53.539Z",
+                "error": {
+                    "type": "provider.internal",
+                    "message": "probe forced error 503",
+                    "status": 503,
+                    "response": {"body": "{\"error\": {\"message\": \"probe forced error 503\"}}"},
+                },
+            }
+        });
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-27T13:46:51.539Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let Some(AcpEvent::TurnRetrying {
+            message,
+            error_status,
+            attempt,
+            max_retries,
+            retry_delay_ms,
+        }) = opencode_retry_event(meta.as_object(), now)
+        else {
+            panic!("retry banner expected");
+        };
+        assert_eq!(message, "probe forced error 503");
+        assert_eq!(error_status, Some(503));
+        assert_eq!(attempt, Some(1));
+        assert_eq!(max_retries, None);
+        assert_eq!(retry_delay_ms, Some(2000));
+        let cleared = serde_json::json!({"opencode/retry": null});
+        assert!(opencode_retry_event(cleared.as_object(), now).is_none());
+    }
+
+    /// The retry announcement reaches the banner through the live path; a
+    /// child session's own retry does not.
+    #[tokio::test]
+    async fn opencode_retry_frames_reach_the_banner_from_the_main_session_only() {
+        let retry = serde_json::json!({
+            "attempt": 2,
+            "nextRetryAt": "2026-10-27T13:46:53.539Z",
+            "error": {"type": "provider.internal", "message": "probe forced error 503", "status": 503},
+        });
+        let (_, events) = opencode_emit_all(&[
+            serde_json::json!({"sessionUpdate": "session_info_update", "_meta": {"opencode/retry": retry}}),
+            serde_json::json!({"sessionUpdate": "session_info_update", "_meta": {"opencode/retry": null}}),
+            serde_json::json!({"sessionUpdate": "session_info_update", "_meta": {
+                "opencode/retry": retry,
+                "opencode/child-session": {"id": "ses_child", "parentID": OC_ROOT, "depth": 1},
+            }}),
+        ])
+        .await;
+        assert_eq!(events.len(), 1, "{events:#?}");
+        assert!(matches!(events[0], AcpEvent::TurnRetrying { .. }));
+    }
+
+    /// A tool call's name comes from the ACP `name` whenever OpenCode 2 sends
+    /// one — on a replayed frame that already carries input too, and under a
+    /// sub-agent's prefixed title.
+    #[test]
+    fn opencode_tool_name_is_stamped_from_the_acp_name() {
+        let replayed = stamp_opencode_tool_name(
+            AgentType::OpenCode,
+            "pending",
+            &Some(serde_json::json!({"pattern": "*.txt"})),
+            Some("glob"),
+            "glob",
+            None,
+        )
+        .expect("stamped");
+        assert_eq!(replayed["opencode"]["toolName"], "glob");
+        let child = stamp_opencode_tool_name(
+            AgentType::OpenCode,
+            "pending",
+            &Some(serde_json::json!({})),
+            Some("read"),
+            "Probe child task: read",
+            None,
+        )
+        .expect("stamped");
+        assert_eq!(child["opencode"]["toolName"], "read");
     }
 
     /// A finished Grok terminal `tool_call_update` carries the readable output in
@@ -45164,6 +48098,17 @@ mod wire_mcp_gate_tests {
         assert!(agent_delivers_wire_mcp(AgentType::CommandCode));
         assert!(agent_reads_own_mcp_config(AgentType::CommandCode));
         assert!(load_mcp_servers_for_agent(AgentType::CommandCode).is_empty());
+    }
+
+    // OpenCode 2 loads its config's `mcp.servers` itself, and a server sent on
+    // `session/new` would replace the config entry of the same name with a
+    // copy missing its codemode, timeout and OAuth settings: the file's servers
+    // stay off the wire, the companion rides it.
+    #[test]
+    fn opencode_takes_user_servers_from_its_config_and_the_companion_from_the_wire() {
+        assert!(agent_delivers_wire_mcp(AgentType::OpenCode));
+        assert!(agent_reads_own_mcp_config(AgentType::OpenCode));
+        assert!(load_mcp_servers_for_agent(AgentType::OpenCode).is_empty());
     }
 }
 

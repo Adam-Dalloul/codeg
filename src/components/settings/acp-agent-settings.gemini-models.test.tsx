@@ -53,7 +53,6 @@ function geminiAgent(): AcpAgentInfo {
     env: { GEMINI_API_KEY: "gk-test" },
     config_json: null,
     config_file_path: null,
-    opencode_auth_json: null,
     codex_auth_json: null,
     cline_secrets_json: null,
     codex_config_toml: null,

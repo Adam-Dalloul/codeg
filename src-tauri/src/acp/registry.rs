@@ -4087,89 +4087,64 @@ pub fn get_agent_meta(agent_type: AgentType) -> AcpAgentMeta {
             supports_mcp: true,
             name: "OpenCode",
             description: "The open source coding agent",
-            // 1.18.34 is the first release whose darwin binaries are signed
-            // with a Developer ID (hardened runtime; upstream's release CI
-            // gained the signing job in this release) rather than the broken
-            // ad-hoc signature Bun leaves behind — the one macOS 27 kills
-            // binaries over (see the Cline entry). 1.18.33's darwin-arm64
-            // binary fails `codesign --verify --strict` yet ran, so nothing
-            // had happened to read its bad page. 1.19.3's darwin-arm64 and
-            // darwin-x64 binaries carry the same Developer ID signature and
-            // pass that check (still built with Bun 1.3.14).
+            // OpenCode 2. 2.2.0 (2026-10-27) is the first 2.x release on
+            // GitHub, and the ACP registry's `opencode` entry moved to it the
+            // same day (GitHub's "latest" still marks 1.19.4). The archives
+            // keep the 1.x names and layout, a single `opencode` /
+            // `opencode.exe` at the root, and the darwin binaries carry the
+            // Developer ID signature 1.18.34 introduced: 2.2.0's darwin-arm64
+            // passes `codesign --verify --strict`.
             //
-            // 1.19.0 pointed 1.x installs at OpenCode 2, and what it changed
-            // stays off the path codeg runs. `opencode upgrade --major`
-            // replaces the install with OpenCode 2, and the TUI no longer
-            // installs updates by itself; `opencode acp` never ran that update
-            // check. A PATH install moved to 2.x this way is a case
-            // `opencode_launch` already handles, by asking `acp --help` for the
-            // listen flags.
+            // codeg no longer runs 1.x (`opencode_launch` refuses it). 2.x
+            // reads only `opencode.json` / `opencode.jsonc` and normalizes the
+            // 1.x keys it still accepts in memory, keeps credentials in the
+            // `credential` table of `opencode.db` (it imports `auth.json` once,
+            // when it first upgrades a 1.x database), and stores sessions in
+            // `session_v2` / `session_message`, into which it migrates 1.x
+            // sessions once. codeg's settings write the 2.x shapes.
             //
-            // 1.19.1 discontinues session sharing, and its one functional change
-            // is that. The share service is gone from the runtime, sharing a
-            // session fails ("Session sharing has been discontinued"), `share:
-            // "auto"` no longer shares new sessions, and importing a share URL
-            // is refused; the `share` config key is still accepted. The hosted
-            // service went with it: opncd.ai answers its share pages with 410
-            // Gone, so a link an older release creates opens nothing. codeg's
-            // OpenCode settings still offer the key, with a hint saying so. The
-            // ACP bridge, session, storage, tool, config, provider, plugin and
-            // npm sources are byte-identical to 1.19.0. `initialize` and
-            // `session/new` match too, apart from the free models the binary
-            // lists (now named `OpenCode/…` rather than `OpenCode Zen/…`).
-            //
-            // 1.19.2 and 1.19.3 change only the update path and how a
-            // configured model gets its variants. The ACP bridge, session,
-            // storage, tool, plugin and npm sources are byte-identical to
-            // 1.19.1, and `initialize` and `session/new` again differ only in
-            // the free models listed. 1.19.2 keeps OpenCode 1 updates on 1.x:
-            // the installer and `opencode upgrade` find the newest 1.x through
-            // npm rather than GitHub's latest release, which upstream expects
-            // to become OpenCode 2. Neither is on the `opencode acp` path, and
-            // codeg's unreviewed-latest offer reads the ACP registry, not
-            // GitHub. 1.19.3 lets a model declared in `opencode.json` carry
-            // `reasoning_options`, the models.dev field catalog models already
-            // build their variants from. When set, they replace that model's
-            // variants (configured `variants` still apply on top), and they
-            // reach codeg as the model's `effort` choices: live, a model given
-            // `[{type: "effort", values: ["low", "high"]}]` offers
-            // `low`/`high`/`default` on 1.19.3 where 1.19.1 ignores the key and
-            // offers `low`/`medium`/`high`/`default`. codeg writes no
-            // `reasoning_options` itself.
+            // `acp` takes no options besides `--login` (an interactive `auth
+            // login`). It starts a private `serve --stdio` server on an
+            // automatic loopback port that reads no `server.*` config, so the
+            // listen flags 1.x needed (codeg#860) are gone, and the CLI would
+            // reject them. It never runs the self-updater, which only the
+            // default (TUI) command starts. The ACP bridge is byte-identical
+            // between 2.1.4 and 2.2.0 and differs from 2.0.28 only in how the
+            // server is wired up.
             distribution: AgentDistribution::Binary {
-                version: "1.19.3",
+                version: "2.2.0",
                 cmd: "opencode",
                 args: &["acp"],
                 env: &[],
                 platforms: &[
                     PlatformBinary {
                         platform: "darwin-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.19.3/opencode-darwin-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v2.2.0/opencode-darwin-arm64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "darwin-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.19.3/opencode-darwin-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v2.2.0/opencode-darwin-x64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.19.3/opencode-linux-arm64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v2.2.0/opencode-linux-arm64.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "linux-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.19.3/opencode-linux-x64.tar.gz",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v2.2.0/opencode-linux-x64.tar.gz",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-aarch64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.19.3/opencode-windows-arm64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v2.2.0/opencode-windows-arm64.zip",
                         sha256: None,
                     },
                     PlatformBinary {
                         platform: "windows-x86_64",
-                        url: "https://github.com/anomalyco/opencode/releases/download/v1.19.3/opencode-windows-x64.zip",
+                        url: "https://github.com/anomalyco/opencode/releases/download/v2.2.0/opencode-windows-x64.zip",
                         sha256: None,
                     },
                 ],
@@ -6680,7 +6655,7 @@ mod tests {
             "command-code@1.88.0",
             Some("22.0.0"),
         );
-        assert_binary_version(AgentType::OpenCode, "1.19.3", "/releases/download/v1.19.3/");
+        assert_binary_version(AgentType::OpenCode, "2.2.0", "/releases/download/v2.2.0/");
         // Hermes rides the community npm bridge (upstream retired its PyPI
         // channel at 0.19.0; see the registry entry). The npm package version
         // tracks the upstream version 1:1, and the pin must stay EXACT — the

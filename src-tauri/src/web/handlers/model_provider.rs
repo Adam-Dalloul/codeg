@@ -103,7 +103,7 @@ pub async fn list_provider_models(
     Extension(state): Extension<Arc<AppState>>,
     Json(body): Json<ListProviderModelsBody>,
 ) -> Result<Json<crate::acp::provider_models::ModelList>, AppCommandError> {
-    mp_commands::list_provider_models_core(&state.db, body.params)
+    mp_commands::list_provider_models_core(&state.db, &state.data_dir, body.params)
         .await
         .map(Json)
 }

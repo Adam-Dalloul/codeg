@@ -149,6 +149,13 @@ const EXACT_TOOL_NAME_ALIASES: Record<string, string> = {
   "mcp__codeg-mcp__check_user_feedback": "check_user_feedback",
   mcp__codeg__check_user_feedback: "check_user_feedback",
   // OpenCode
+  // OpenCode 2 renamed `apply_patch` to `patch` (the edit tool its `gpt-*`
+  // models get instead of edit/write) and `task` to `subagent`
+  // (packages/core/src/tool/plugin/{patch,subagent}.ts, 2.2.0). The live
+  // opening frame states the new name (`_meta.opencode.toolName`), so without
+  // these a patch drew a generic row and a sub-agent launch no Agent card.
+  patch: "apply_patch",
+  subagent: "agent",
   delegate_task: "task",
   call_omo_agent: "agent",
   ast_grep_search: "grep",
@@ -276,6 +283,15 @@ function tryParseInputObject(rawInput: string | null | undefined) {
     return null
   }
 }
+
+/**
+ * `_meta` key naming the tool call that launched the sub-agent a call belongs
+ * to — the agent-neutral twin of Claude's `claudeCode.parentToolUseId`, which
+ * the backend stamps where the agent states the link some other way (OpenCode
+ * 2: only the child SESSION a sub-agent's call ran in; see
+ * `opencode_frame_route` in `src-tauri/src/acp/connection.rs`).
+ */
+export const PARENT_TOOL_CALL_META_KEY = "codeg.parentToolCallId"
 
 /** The title (live) and tool name (history) of OpenCode's code-mode tool. */
 const CODE_MODE_TOOL_TITLE = "execute"

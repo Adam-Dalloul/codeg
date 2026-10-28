@@ -22,9 +22,7 @@ function renderDialog() {
         onOpenChange={() => {}}
         existingProviderIds={[]}
         catalogIds={[]}
-        configText=""
-        authJsonText=""
-        onConnect={async () => {}}
+        onSubmit={async () => {}}
       />
     </NextIntlClientProvider>
   )
