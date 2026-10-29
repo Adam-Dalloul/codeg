@@ -55,7 +55,10 @@ impl IsolatorFamily {
             Self::Codex => home.join(".codex"),
             Self::Grok => home.join(".grok"),
             Self::Gemini => home.join(".gemini"),
-            Self::OpenCode => home.join(".config").join("opencode"),
+            // OpenCode 2's own global directory: `$OPENCODE_CONFIG_DIR`, which
+            // replaces the default, else `$XDG_CONFIG_HOME/opencode`.
+            Self::OpenCode => crate::acp::opencode_config::config_dir()
+                .unwrap_or_else(|| home.join(".config").join("opencode")),
         }
     }
 }
@@ -238,6 +241,20 @@ fn shell_single_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// OpenCode 2's default directory follows `OPENCODE_CONFIG_DIR`: a slot
+    /// pointed there shares Default's config, while the fixed path it
+    /// replaced is an account of its own.
+    #[test]
+    fn opencode_default_home_follows_opencode_config_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let own = dir.path().join("own-opencode");
+        temp_env::with_var("OPENCODE_CONFIG_DIR", Some(&own), || {
+            assert!(is_default_home(IsolatorFamily::OpenCode, &own));
+            let fixed = dirs::home_dir().unwrap().join(".config").join("opencode");
+            assert!(!is_default_home(IsolatorFamily::OpenCode, &fixed));
+        });
+    }
     use crate::acp::custom_registry::{CustomDistributionKind, NpxSpec};
 
     fn def_with_env(id: &str, env: BTreeMap<String, String>) -> CustomAgentDef {
