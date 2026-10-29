@@ -129,7 +129,7 @@ export const EditRow = memo(function EditRow({ step }: { step: ToolStep }) {
         <span
           className={cn(
             "shrink-0 font-medium",
-            live ? "activity-shimmer" : "text-muted-foreground"
+            live ? "activity-shimmer" : "text-activity-secondary"
           )}
         >
           {single || files.length === 0

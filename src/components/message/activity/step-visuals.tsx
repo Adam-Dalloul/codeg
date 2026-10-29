@@ -3,6 +3,7 @@
 import { useCallback } from "react"
 import { useTranslations } from "next-intl"
 import {
+  ActivityIcon as MonitorIcon,
   ArchiveIcon,
   BotIcon,
   BrainIcon,
@@ -15,6 +16,7 @@ import {
   FileXIcon,
   FolderTreeIcon,
   GlobeIcon,
+  GlobeLockIcon,
   ImageIcon,
   KeyboardIcon,
   LayersIcon,
@@ -66,6 +68,11 @@ export function toolIcon(tool: ToolDescriptor): ActivityIcon {
       return BrainIcon
     case "command":
       return SquareTerminalIcon
+    // The same glyph as the monitor's row in the async-task strip.
+    case "monitor":
+      return MonitorIcon
+    case "network":
+      return GlobeLockIcon
     case "shell-session":
       return tool.command?.session?.verb === "stdin" ? KeyboardIcon : TimerIcon
     case "script":

@@ -60,6 +60,9 @@ pub mod mcp;
 pub mod mcp_service;
 pub mod model_provider;
 pub mod office_tools;
+/// OpenCode 2's provider credentials, through OpenCode's own API (both
+/// runtimes).
+pub mod opencode_credentials;
 pub mod open_in;
 #[cfg(feature = "tauri-runtime")]
 pub mod notification;

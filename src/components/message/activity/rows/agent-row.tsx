@@ -131,10 +131,14 @@ export const AgentRow = memo(function AgentRow({ step }: { step: ToolStep }) {
     [m.adaptedToolCalls]
   )
 
-  const output =
-    m.backgroundLifecycle?.result ??
-    (m.taskOutcome || m.isLiveBackgroundLaunch ? null : step.part.output) ??
-    null
+  // A background launch's lifecycle marker stands for its output: the result
+  // it settled with, or none — never the marker itself, which is what
+  // `part.output` holds then. A settle may carry no result at all (OpenCode's,
+  // for a sub-agent that ended without writing a reply).
+  const output = m.backgroundLifecycle
+    ? m.backgroundLifecycle.result
+    : ((m.taskOutcome || m.isLiveBackgroundLaunch ? null : step.part.output) ??
+      null)
   const latest = live
     ? (m.grokProgressLine ??
       (m.hasTimeline

@@ -309,6 +309,7 @@ function ToolStepView({ step: given }: { step: ToolStep }) {
     case "command":
     case "script":
     case "shell-session":
+    case "monitor":
       return <CommandRow step={step} />
     case "edit":
       return <EditRow step={step} />
@@ -318,6 +319,7 @@ function ToolStepView({ step: given }: { step: ToolStep }) {
     case "skill":
     case "todo":
     case "completion":
+    case "network":
       return <GenericRow step={step} />
     case "agent":
       return <AgentRow step={step} />

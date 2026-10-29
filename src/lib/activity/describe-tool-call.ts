@@ -12,10 +12,7 @@
 
 import type { AdaptedToolCallPart } from "@/lib/adapters/ai-elements-adapter"
 import { parseBackgroundLaunch } from "@/lib/background-task"
-import {
-  CODEX_SCRIPT_TOOL_NAME,
-  parseCodexScriptCard,
-} from "@/lib/codex-code-mode"
+import { CODEX_SCRIPT_TOOL_NAME } from "@/lib/codex-code-mode"
 import { isCodegMcpWorkbenchTool } from "@/lib/codeg-mcp-tool"
 import { COLLAB_AGENT_TOOL_NAME } from "@/lib/collab-tool"
 import { isContextCompactionMeta } from "@/lib/context-compaction"
@@ -39,8 +36,11 @@ import {
   toolCallMovedToBackground,
 } from "@/lib/tool-call-normalization"
 import { approvalFromMeta } from "./approval"
+import { isCodeModeScriptCall, parseScriptCard } from "./code-mode"
 import {
   detectHeredoc,
+  exitFromMeta,
+  extractAgentReportedExit,
   extractCommandExit,
   type CommandExit,
   extractDisplayCommandFromToolInput,
@@ -108,6 +108,10 @@ export function toolStepKind(part: AdaptedToolCallPart): ToolStepKind {
   if (isCodeModeDelegationCall(name, part.input ?? null)) {
     return part.toolCallId ? "delegation" : "generic"
   }
+  // Any other code-mode script — an MCP call, or several — is a script, not a
+  // command: its input is the script, which a command row would show as an
+  // empty command line.
+  if (isCodeModeScriptCall(name, part.input ?? null)) return "script"
   switch (name) {
     case "agent":
       return "agent"
@@ -129,6 +133,10 @@ export function toolStepKind(part: AdaptedToolCallPart): ToolStepKind {
     case "bash":
     case "exec_command":
       return "command"
+    case "monitor":
+      return "monitor"
+    case "sandboxnetworkaccess":
+      return "network"
     case CODEX_SCRIPT_TOOL_NAME:
       return "script"
     case "read":
@@ -319,12 +327,13 @@ function readNotes(parsed: Record<string, unknown> | null): ToolNote[] {
   return notes
 }
 
-/** The exit code the transcript kept as a field, ahead of any read from the
- *  output text. */
+/** The exit code the transcript kept as a field — or the live call's
+ *  `_meta` carries (OpenCode 2's `metadata.exit`) — ahead of any read from
+ *  the output text. */
 function structuredExit(part: AdaptedToolCallPart): CommandExit | null {
   return typeof part.exitCode === "number"
     ? { code: part.exitCode, signal: null }
-    : null
+    : exitFromMeta(part.meta)
 }
 
 function describeCommand(
@@ -361,12 +370,20 @@ function describeCommand(
     : toolCallMovedToBackground(part.meta) && isUnsettledToolCall(part)
       ? { taskId: null }
       : null
+  // A non-zero exit on a call that still reports success is, as a rule, the
+  // program's own text, not its status; only a failure gets an exit badge.
+  // The exception is an agent that reports a command's non-zero exit as a
+  // SUCCESSFUL call and says so in its own framing — OpenCode 2's closing
+  // `Exited with code N` notice, or the same code as a field on the live
+  // call's `_meta`: that is the agent's status for the command, so the call
+  // reads as the failure it is (unless the exit answers the command's
+  // question, below).
   const reported =
     base.status === "failed"
       ? (structuredExit(part) ?? extractCommandExit(payload.output))
-      : null
-  // A non-zero exit on a call that still reports success is the program's
-  // own text, not its status; only a failure gets an exit badge.
+      : base.status === "succeeded"
+        ? (exitFromMeta(part.meta) ?? extractAgentReportedExit(payload.output))
+        : null
   const exit =
     reported && (reported.code !== 0 || reported.signal)
       ? {
@@ -385,11 +402,66 @@ function describeCommand(
     ...base,
     // An exit that answers the command's question — a search that matched
     // nothing — is no failure.
-    status: isExitAnswer(exitMeaning) ? "succeeded" : base.status,
+    status: isExitAnswer(exitMeaning)
+      ? "succeeded"
+      : exit
+        ? "failed"
+        : base.status,
     command,
     background,
     exit,
     exitMeaning,
+  }
+}
+
+/**
+ * The result of a `Monitor` that started: it names the background task the
+ * events will come from, `Monitor started (task <id>, <expiry>). You will be
+ * notified on each event. …` (Claude Code 2.1.310). That task is what
+ * claude-agent-acp 0.98.0 publishes to the async-task strip, under the same id.
+ */
+const MONITOR_STARTED_RE = /^Monitor started \(task ([A-Za-z0-9_-]+)[,)]/
+
+/**
+ * Claude Code's `Monitor`: a script whose every printed line is an event to
+ * the model, or a WebSocket whose every message is. Drawn like a command — the
+ * row says what it watches for in the agent's words, the panel shows the
+ * command (or the socket) — but its result is only the CLI's note to the model
+ * that the watch began, so a started one is shown by its task id.
+ */
+function describeMonitor(
+  payload: Payload,
+  base: ToolDescriptor
+): ToolDescriptor {
+  const parsed = payload.parsed
+  const command =
+    typeof parsed?.command === "string" && parsed.command.trim()
+      ? parsed.command
+      : null
+  const ws =
+    parsed?.ws && typeof parsed.ws === "object" && !Array.isArray(parsed.ws)
+      ? (parsed.ws as Record<string, unknown>)
+      : null
+  const url = !command && typeof ws?.url === "string" ? ws.url : null
+  const display = command ?? url ?? ""
+  const described =
+    typeof parsed?.description === "string" ? parsed.description.trim() : ""
+  const started = payload.output
+    ? MONITOR_STARTED_RE.exec(payload.output.trimStart())
+    : null
+  return {
+    ...base,
+    command: {
+      display,
+      lineCount: display ? countLines(display) : 0,
+      heredoc: command ? detectHeredoc(command) : null,
+      description: described && described !== display.trim() ? described : null,
+      session: null,
+      durationMs: null,
+      announcedSession: null,
+      ...(url ? { websocket: true } : {}),
+    },
+    background: started ? { taskId: started[1]! } : null,
   }
 }
 
@@ -431,7 +503,7 @@ function describeScript(
   part: AdaptedToolCallPart,
   base: ToolDescriptor
 ): ToolDescriptor {
-  const card = parseCodexScriptCard(part.input)
+  const card = parseScriptCard(part.input, part.meta)
   const title = card?.title
     ? simplifyShellCommand(card.title).split("\n")[0]!
     : ""
@@ -572,6 +644,12 @@ function describeUncached(part: AdaptedToolCallPart): ToolDescriptor {
       return describeShellSession(part, base)
     case "script":
       return describeScript(part, base)
+    case "monitor":
+      return describeMonitor(payload, base)
+    case "network": {
+      const host = payload.field("host")
+      return { ...base, target: host ? textTarget(host, 60) : null }
+    }
     case "read": {
       const path = filePathOf(payload)
       return {
@@ -642,10 +720,13 @@ function describeUncached(part: AdaptedToolCallPart): ToolDescriptor {
     case "mcp":
       return describeMcp(part, payload, base)
     case "skill": {
+      // OpenCode 2's skill tool takes the skill as `id`
+      // (packages/core/src/tool/plugin/skill.ts, 2.2.0).
       const name =
         extractClaudeCodeSkillName(part.meta) ??
         payload.field("skill") ??
-        payload.field("name")
+        payload.field("name") ??
+        payload.field("id")
       return { ...base, target: name ? { text: name } : null }
     }
     case "todo":

@@ -27,6 +27,10 @@ mod credentials;
 
 const TTL: Duration = Duration::from_secs(30);
 const DEADLINE: Duration = Duration::from_secs(12);
+/// How long an OpenCode key read through OpenCode's own server is reused, and
+/// how long that server may take to answer (its first start can be slow).
+const STORED_KEY_TTL: Duration = Duration::from_secs(600);
+const STORED_KEY_DEADLINE: Duration = Duration::from_secs(45);
 const AGENTS: [AgentType; 5] = [
     AgentType::ClaudeCode,
     AgentType::Codex,
@@ -180,7 +184,10 @@ async fn resolve_source(
         (Some(account.name), env, true, false)
     } else {
         let setting = agent_setting_service::get_by_agent_type(&db.conn, agent).await?;
-        let provider_override = setting.as_ref().and_then(|s| s.model_provider_id).is_some();
+        let provider_override = provider_binding_applies(
+            agent,
+            setting.as_ref().and_then(|s| s.model_provider_id).is_some(),
+        );
         let local = super::acp::load_agent_local_config_json(agent);
         let mut env =
             super::acp::build_runtime_env_from_setting(agent, setting.as_ref(), local.as_deref());
@@ -198,6 +205,13 @@ async fn resolve_source(
         isolated,
         provider_override,
     })
+}
+
+/// Whether a model-provider binding saved for `agent` routes its requests.
+/// OpenCode and MiniMax Code keep their own providers and ignore one stored
+/// before that, so it says nothing about their subscription.
+fn provider_binding_applies(agent: AgentType, bound: bool) -> bool {
+    bound && !super::acp::keeps_own_providers(agent)
 }
 
 impl Source {
@@ -269,9 +283,8 @@ impl Source {
             "cursor" => self
                 .home("XDG_CONFIG_HOME", ".config")?
                 .join("cursor/auth.json"),
-            "opencode" => self
-                .home("XDG_DATA_HOME", ".local/share")?
-                .join("opencode/auth.json"),
+            // OpenCode 2 keeps credentials in its database, not a file codeg
+            // reads: see `opencode_stored_key`.
             _ => return None,
         })
     }
@@ -290,10 +303,67 @@ impl Source {
             "claude" => credentials::claude_oauth_access_token_from_credentials(&text),
             "grok" => credentials::grok_cli_bearer_from_auth_json(&text),
             "cursor" => credentials::cursor_access_token_from_auth_json(&text),
-            "opencode" => credentials::opencode_go_key_from_auth_json(&text),
             _ => None,
         }
     }
+
+    /// Whether the key comes from OpenCode's credential store: an OpenCode
+    /// subscription read with no key in the launch environment.
+    fn reads_opencode_store(&self) -> bool {
+        self.account.family == "opencode" && !self.uses_api_provider() && self.token().is_none()
+    }
+}
+
+type StoredKeys = Mutex<HashMap<u64, (Instant, Option<String>)>>;
+static STORED_KEYS: OnceLock<StoredKeys> = OnceLock::new();
+
+/// What a stored OpenCode key is cached under: the account and its launch
+/// environment, and the counters that move when codeg changes OpenCode
+/// credentials or an account's sign-in.
+fn stored_key_cache_key(source: &Source, data_dir: &Path) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    data_dir.hash(&mut hasher);
+    source.account.agent_type.hash(&mut hasher);
+    source.account.agent_account_id.hash(&mut hasher);
+    source.env.hash(&mut hasher);
+    crate::commands::opencode_credentials::credential_epoch().hash(&mut hasher);
+    account_auth::revision().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The OpenCode Go key OpenCode 2 keeps for this account (`opencode-go`, else
+/// the `opencode` key of a single-account setup), read through OpenCode's own
+/// server with the account's launch environment. OpenCode 2 reads `auth.json`
+/// only in its one-time 1.x migration, so that file no longer says which key
+/// is in use. Starting the server takes about a second, so an answer is kept
+/// for [`STORED_KEY_TTL`] unless its cache key moves; a failed read is not
+/// kept.
+async fn opencode_stored_key(source: &Source, data_dir: &Path) -> Option<String> {
+    let key = stored_key_cache_key(source, data_dir);
+    let cache = STORED_KEYS.get_or_init(Default::default);
+    if let Some((at, value)) = cache.lock().await.get(&key) {
+        if at.elapsed() < STORED_KEY_TTL {
+            return value.clone();
+        }
+    }
+    let mut found = None;
+    for integration in ["opencode-go", "opencode"] {
+        let read = crate::acp::opencode_credentials::stored_key(&source.env, data_dir, integration);
+        match tokio::time::timeout(STORED_KEY_DEADLINE, read).await {
+            Ok(Ok(Some(value))) => {
+                found = Some(value);
+                break;
+            }
+            Ok(Ok(None)) => {}
+            _ => return None,
+        }
+    }
+    let mut entries = cache.lock().await;
+    if entries.len() >= 64 {
+        entries.clear();
+    }
+    entries.insert(key, (Instant::now(), found.clone()));
+    found
 }
 
 type CacheEntry = Arc<Mutex<Option<(Instant, Option<Value>)>>>;
@@ -309,6 +379,9 @@ fn cache_key(namespace: &Path, source: &Source) -> u64 {
     source.provider_override.hash(&mut hasher);
     source.credential_path().hash(&mut hasher);
     account_auth::revision().hash(&mut hasher);
+    if source.account.family == "opencode" {
+        crate::commands::opencode_credentials::credential_epoch().hash(&mut hasher);
+    }
     hasher.finish()
 }
 
@@ -330,7 +403,14 @@ pub async fn read_core(
     };
     let mut cached = entry.lock().await;
     if cached.as_ref().is_none_or(|(at, _)| at.elapsed() >= TTL) {
-        let payload = tokio::time::timeout(DEADLINE, read_official(&source))
+        // Bounded on its own, so a slow first start of OpenCode's server does
+        // not use up the usage request's deadline.
+        let stored = if source.reads_opencode_store() {
+            opencode_stored_key(&source, namespace).await
+        } else {
+            None
+        };
+        let payload = tokio::time::timeout(DEADLINE, read_official(&source, stored))
             .await
             .ok()
             .flatten()
@@ -345,7 +425,7 @@ pub async fn read_core(
     })
 }
 
-async fn read_official(source: &Source) -> Option<Value> {
+async fn read_official(source: &Source, stored: Option<String>) -> Option<Value> {
     // A stored subscription login does not describe an API/provider override.
     if source.uses_api_provider() {
         return None;
@@ -353,7 +433,7 @@ async fn read_official(source: &Source) -> Option<Value> {
     if source.account.family == "codex" {
         return read_codex(source).await;
     }
-    let token = source.token()?;
+    let token = source.token().or(stored)?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
@@ -717,9 +797,13 @@ mod tests {
                 isolated: true,
                 provider_override: false,
             };
-            let expected = if agent == AgentType::OpenCode {
-                "data/opencode/auth.json"
-            } else if cfg!(windows) {
+            if agent == AgentType::OpenCode {
+                // OpenCode 2 keeps its credentials in its database.
+                assert_eq!(source.credential_path(), None);
+                assert!(source.reads_opencode_store());
+                continue;
+            }
+            let expected = if cfg!(windows) {
                 "appdata/Cursor/auth.json"
             } else if cfg!(target_os = "macos") {
                 ".cursor/auth.json"
@@ -740,6 +824,52 @@ mod tests {
             provider_override: false,
         };
         assert!(source.credential_path().is_none());
+    }
+
+    #[test]
+    fn a_provider_binding_opencode_ignores_does_not_hide_its_quota() {
+        assert!(!provider_binding_applies(AgentType::OpenCode, true));
+        assert!(provider_binding_applies(AgentType::ClaudeCode, true));
+        assert!(!provider_binding_applies(AgentType::ClaudeCode, false));
+    }
+
+    /// A key in the launch environment or a provider override needs no
+    /// OpenCode server, and a stored key is cached per account and launch
+    /// environment until codeg changes OpenCode credentials or a sign-in.
+    #[test]
+    fn opencode_reads_its_credential_store_only_without_a_configured_key() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut source = Source {
+            account: QuotaAccount {
+                agent_type: AgentType::OpenCode,
+                agent_account_id: Some("named".into()),
+                family: "opencode".into(),
+                name: None,
+            },
+            env: agent_accounts::isolation_env(AgentType::OpenCode, temp.path()).unwrap(),
+            isolated: true,
+            provider_override: false,
+        };
+        assert!(source.reads_opencode_store());
+        let key = stored_key_cache_key(&source, temp.path());
+        let other = Source {
+            account: QuotaAccount {
+                agent_account_id: Some("other".into()),
+                ..source.account.clone()
+            },
+            env: source.env.clone(),
+            isolated: true,
+            provider_override: false,
+        };
+        assert_ne!(key, stored_key_cache_key(&other, temp.path()));
+        account_auth::changed();
+        assert_ne!(key, stored_key_cache_key(&source, temp.path()));
+
+        source.env.insert("OPENCODE_GO_API_KEY".into(), "own-fixture-key".into());
+        assert!(!source.reads_opencode_store());
+        source.env.remove("OPENCODE_GO_API_KEY");
+        source.provider_override = true;
+        assert!(!source.reads_opencode_store());
     }
 
     #[tokio::test]
@@ -763,10 +893,10 @@ mod tests {
             assert!(!source.uses_api_provider());
             source.env.insert(key.into(), "fixture-api-key".into());
             assert!(source.uses_api_provider());
-            assert!(read_official(&source).await.is_none());
+            assert!(read_official(&source, None).await.is_none());
             source.env.clear();
             source.provider_override = true;
-            assert!(read_official(&source).await.is_none());
+            assert!(read_official(&source, None).await.is_none());
         }
     }
 }

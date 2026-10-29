@@ -72,7 +72,9 @@ export function TimelineFoot({
       <button
         type="button"
         className={cn(
-          "group/foot flex w-fit min-w-0 cursor-pointer items-baseline gap-2 rounded-sm py-0.5 text-start text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          // Its words in one ink, as a step's label and what follows it
+          // are; pointed at or focused, both darken with the ring.
+          "group/foot flex w-fit min-w-0 cursor-pointer items-baseline gap-2 rounded-sm py-0.5 text-start text-activity-secondary hover:text-foreground focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           main
             ? "-ms-8 max-w-[calc(100%+2rem)] ps-8 text-sm leading-6"
             : "-ms-7 max-w-[calc(100%+1.75rem)] ps-7 text-[0.8125rem] leading-6"
@@ -95,9 +97,7 @@ export function TimelineFoot({
         {/* The gap lays the words out; the space between them keeps them
             apart in the name a screen reader reads. */}
         <span className="shrink-0 font-medium">{t("foot.fold")}</span>{" "}
-        <span className="min-w-0 truncate text-activity-secondary group-hover/foot:text-foreground group-focus-visible/foot:text-foreground">
-          {what}
-        </span>
+        <span className="min-w-0 truncate">{what}</span>
       </button>
     </li>
   )

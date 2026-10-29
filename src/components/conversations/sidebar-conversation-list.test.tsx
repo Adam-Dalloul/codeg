@@ -1118,6 +1118,91 @@ describe("SidebarConversationList — worktree grouping (Show worktrees)", () =>
     expect(probes.folder).toBe(0)
     expect(probes.root).toBe(0)
   })
+
+  describe("while tabs follow the folder", () => {
+    beforeEach(() => resetFolderTabsStore())
+    afterEach(() => resetFolderTabsStore())
+
+    // The container's header and its root row both carry the repo's id; the
+    // worktree's header carries its own.
+    const containerHeader = () =>
+      document.querySelectorAll<HTMLElement>('[data-folder-id="1"]')[0]!
+    const rootHeader = () =>
+      document.querySelectorAll<HTMLElement>('[data-folder-id="1"]')[1]
+    const worktreeHeader = () =>
+      document.querySelector<HTMLElement>('[data-folder-id="2"]')
+    const marked = (header: HTMLElement | null | undefined) =>
+      header?.parentElement?.hasAttribute("data-scope-selected") ?? false
+
+    it("marks the root row, not the container above it, for the repo's own scope", () => {
+      act(() => {
+        useFolderTabsStore.setState({ enabled: true, scope: 1 })
+      })
+      render(wtTree(true))
+      expect(marked(rootHeader())).toBe(true)
+      expect(rootHeader()).toHaveAttribute("aria-current", "true")
+      expect(marked(containerHeader())).toBe(false)
+      expect(containerHeader()).not.toHaveAttribute("aria-current")
+
+      act(() => {
+        fireEvent.click(worktreeHeader()!)
+      })
+      expect(useFolderTabsStore.getState().scope).toBe(2)
+      expect(marked(worktreeHeader())).toBe(true)
+      expect(marked(rootHeader())).toBe(false)
+      // Selecting the container still selects its main worktree — the root
+      // row — and the container stays unmarked.
+      act(() => {
+        fireEvent.click(containerHeader())
+      })
+      expect(useFolderTabsStore.getState().scope).toBe(1)
+      expect(marked(rootHeader())).toBe(true)
+      expect(marked(containerHeader())).toBe(false)
+      expect(marked(worktreeHeader())).toBe(false)
+
+      act(() => {
+        fireEvent.click(rootHeader()!)
+      })
+      expect(useFolderTabsStore.getState().scope).toBe(1)
+      expect(marked(rootHeader())).toBe(true)
+      expect(marked(containerHeader())).toBe(false)
+    })
+
+    it("marks a folded container for the scope folded away inside it", () => {
+      act(() => {
+        useFolderTabsStore.setState({ enabled: true, scope: 2 })
+      })
+      render(wtTree(true))
+      expect(marked(containerHeader())).toBe(false)
+      // Fold the container: its disclosure button sits right after its row
+      // button.
+      act(() => {
+        fireEvent.click(containerHeader().nextElementSibling as HTMLElement)
+      })
+      expect(worktreeHeader()).toBeNull()
+      expect(rootHeader()).toBeUndefined()
+      expect(marked(containerHeader())).toBe(true)
+
+      act(() => {
+        useFolderTabsStore.setState({ scope: 1 })
+      })
+      expect(marked(containerHeader())).toBe(true)
+      act(() => {
+        useFolderTabsStore.setState({ scope: "global" })
+      })
+      expect(marked(containerHeader())).toBe(false)
+
+      // Unfolded, the rows that show the scopes take the mark back.
+      act(() => {
+        fireEvent.click(containerHeader().nextElementSibling as HTMLElement)
+      })
+      act(() => {
+        useFolderTabsStore.setState({ scope: 1 })
+      })
+      expect(marked(rootHeader())).toBe(true)
+      expect(marked(containerHeader())).toBe(false)
+    })
+  })
 })
 
 describe("SidebarConversationList — Recent section", () => {

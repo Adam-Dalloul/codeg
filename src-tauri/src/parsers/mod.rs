@@ -173,8 +173,11 @@ pub fn external_transcript_sources() -> Vec<ExternalSource> {
             indexes: &[],
         },
         ExternalSource {
+            // The default file even when `$OPENCODE_DB` moves the database the
+            // history is read from: the archive keys this entry by file name,
+            // and only a `.db` name is snapshotted as SQLite.
             agent: "opencode",
-            root: opencode::resolve_opencode_base_dir().join("opencode.db"),
+            root: opencode::resolve_opencode_base_dir().join(opencode::OPENCODE_DB_FILE),
             is_file: true,
             sqlite: true,
             include_top: None,
