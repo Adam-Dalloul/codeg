@@ -212,13 +212,15 @@ pub fn login_plan_from_env(env: &BTreeMap<String, String>) -> Option<ExtraSlotLo
     };
     let mut login_env = BTreeMap::from([(family.isolator_key().into(), home.to_string_lossy().into_owned())]);
     if family == IsolatorFamily::OpenCode {
-        // OPENCODE_CONFIG_DIR does not move auth.json. Only offer isolated
-        // sign-in when the selected distribution isolates its data as well.
+        // OPENCODE_CONFIG_DIR does not move OpenCode's credentials, which
+        // OpenCode 2 keeps in the database in its data dir. Only offer
+        // isolated sign-in when the selected distribution isolates its data
+        // as well, and sign in to the database its sessions open.
         let data = env.get("XDG_DATA_HOME").filter(|s| !s.trim().is_empty())?;
         let default_data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from)
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local/share"));
         if paths_equivalent(Path::new(data), &default_data) { return None; }
-        for key in ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"] {
+        for key in ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "OPENCODE_DB"] {
             if let Some(value) = env.get(key).filter(|s| !s.trim().is_empty()) {
                 login_env.insert(key.into(), value.clone());
             }
@@ -418,6 +420,9 @@ mod tests {
         let plan = login_plan_from_env(&env).unwrap();
         assert_eq!(plan.env.get("XDG_DATA_HOME"), env.get("XDG_DATA_HOME"));
         assert!(command_for_platform(&plan.env, &["opencode", "auth", "login"], false).unwrap().contains("XDG_DATA_HOME"));
+        env.insert("OPENCODE_DB".into(), "work.db".into());
+        let plan = login_plan_from_env(&env).unwrap();
+        assert_eq!(plan.env.get("OPENCODE_DB").map(String::as_str), Some("work.db"));
     }
 
     #[test]
