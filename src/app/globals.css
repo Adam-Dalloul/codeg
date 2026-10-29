@@ -1021,14 +1021,27 @@
     var(--muted-foreground) 85%,
     transparent
   );
-  /* 「执行过程」头部胶囊的底：同用户消息气泡（bg-secondary），悬停向前景色收 4%
-     （暗色下是提亮）。胶囊里的次要文字因此改用 --activity-muted-strong。开图时同气泡
-     一样转半透明，见 [data-workspace-bg="on"]。 */
-  --activity-capsule: var(--secondary);
+  /* 「执行过程」头部胶囊的底：步骤次要文字的那种灰（--activity-secondary）淡铺一层，
+     亮色 12%、暗色 24%（暗底上要多一点才同样看得出），悬停各深一档。是灰、不带主题
+     色调：彩色预设的 --secondary（用户气泡）偏粉、偏橙，胶囊不跟它。本身半透明，叠在
+     背景图上也是这一层灰，另加细线（见 [data-workspace-bg="on"] .activity-capsule）。
+     胶囊里的次要文字用 --activity-muted-strong，12 套预设明暗下都 ≥ 4.9:1。 */
+  --activity-capsule: color-mix(
+    in oklab,
+    var(--activity-secondary) 12%,
+    transparent
+  );
   --activity-capsule-hover: color-mix(
     in oklab,
-    var(--secondary),
-    var(--foreground) 4%
+    var(--activity-secondary) 18%,
+    transparent
+  );
+  /* 胶囊里「N 次失败」的红：--destructive 在亮色白底上只有约 4.7:1，铺了灰就跌破 4.5，
+     向前景色收 15%（暗色下是提亮），胶囊静止和悬停时都 ≥ 5.1:1。 */
+  --activity-capsule-danger: color-mix(
+    in oklab,
+    var(--tone-danger) 85%,
+    var(--foreground)
   );
   --tone-success: oklch(0.52 0.13 150);
   --tone-danger: var(--destructive);
@@ -1057,6 +1070,16 @@
 }
 
 .dark {
+  --activity-capsule: color-mix(
+    in oklab,
+    var(--activity-secondary) 24%,
+    transparent
+  );
+  --activity-capsule-hover: color-mix(
+    in oklab,
+    var(--activity-secondary) 32%,
+    transparent
+  );
   --tone-success: oklch(0.74 0.15 150);
   --tone-danger-surface: color-mix(
     in oklab,
@@ -1162,6 +1185,7 @@
   --color-activity-secondary: var(--activity-secondary);
   --color-activity-capsule: var(--activity-capsule);
   --color-activity-capsule-hover: var(--activity-capsule-hover);
+  --color-activity-capsule-danger: var(--activity-capsule-danger);
   --color-tone-success: var(--tone-success);
   --color-tone-danger: var(--tone-danger);
   --color-tone-danger-surface: var(--tone-danger-surface);
@@ -1411,22 +1435,8 @@
   box-shadow: inset 0 0 0 1px var(--border);
 }
 
-/* 「执行过程」头部胶囊（元素自带 bg-activity-capsule）：开图时同用户消息气泡（上面的
-   .is-user .ws-msg-secondary）——同一句半透明 --muted 加 inset 细线，悬停不透明度高一档。
-   改的是令牌、不是 background-color：直接写 unlayered 的 background-color 会盖掉元素上的
-   hover:bg-activity-capsule-hover，开图就没了悬停反馈。 */
-[data-workspace-bg="on"] {
-  --activity-capsule: color-mix(
-    in oklch,
-    var(--muted) calc(var(--ws-msg-alpha) * 100%),
-    transparent
-  );
-  --activity-capsule-hover: color-mix(
-    in oklch,
-    var(--muted) calc((var(--ws-msg-alpha) + 0.25) * 100%),
-    transparent
-  );
-}
+/* 「执行过程」头部胶囊（元素自带 bg-activity-capsule）：底色令牌本来就是半透明的灰，开图
+   不换，只像用户消息气泡（上面的 .is-user .ws-msg-secondary）一样加一圈 inset 细线。 */
 [data-workspace-bg="on"] .activity-capsule {
   box-shadow: inset 0 0 0 1px var(--border);
 }
@@ -1586,16 +1596,16 @@
 /* 老引擎无 color-mix 时回落到主题 --border（仍随主题，至少不崩）。消息细线 --ws-msg-border 同理：
    不回落的话，消息里的 --border 会是一句作废的 color-mix，边框退成 currentColor 的黑线。 */
 @supports not (background: color-mix(in oklch, white, transparent)) {
-  /* 「执行过程」胶囊同理：令牌作废的话底色是透明的，退回气泡的 --secondary（气泡在这里
-     也是它，开图那句 color-mix 被丢掉了）。 */
+  /* 「执行过程」胶囊同理：令牌作废的话底色是透明的，退回 --secondary（明暗都跟主题；
+     写在 .dark 之后，同权重后写的生效）。 */
   :root {
+    --activity-capsule: var(--secondary);
     --activity-capsule-hover: var(--secondary);
+    --activity-capsule-danger: var(--tone-danger);
   }
   [data-workspace-bg="on"] {
     --ws-chrome-border: var(--border);
     --ws-msg-border: var(--border);
-    --activity-capsule: var(--secondary);
-    --activity-capsule-hover: var(--secondary);
   }
 }
 /* 组合式 utility（无 base 规则）：挂在已带 border-* / border-border* 的 chrome 元素上，开图时用加强色

@@ -34,7 +34,6 @@ import {
 } from "@/lib/activity/__fixtures__/mockup-turn"
 import type { MessageTurn } from "@/lib/types"
 import { mockTruncateLayout } from "@/test-layout"
-import { Message, MessageContent } from "@/components/ai-elements/message"
 import { CompletedTurnContent } from "../completed-turn-content"
 import { MessageScrollProvider } from "../message-scroll-context"
 import { resetDisclosureStore } from "./disclosure-store"
@@ -428,28 +427,24 @@ describe("activity timeline: the reference turn", () => {
     expect(header.querySelector("span[aria-hidden='true'].flex-1")).toBeNull()
   })
 
-  it("fills the header like the user's message bubble, its figures in the ink that reads on it", () => {
-    // `--muted` at 60% all but vanished on the page. The capsule takes the
-    // bubble's fill — opaque, and over a background image the same
-    // translucent tint and ring — with the summary and the time in the
-    // stronger muted ink, which keeps 4.5:1 on it.
+  it("fills the header with the steps' secondary grey, its words in inks that read on it", () => {
+    // The bubble's `--secondary` is tinted in the coloured presets (pink under
+    // red, peach under orange); the capsule is a translucent wash of the grey
+    // the steps' secondary words are set in, grey in every preset. The
+    // summary and the time take the stronger muted ink and a failure the
+    // stronger red, both keeping 4.5:1 on it.
     renderSettled(partsOf(MOCKUP_ASSISTANT_TURN))
     const header = activityHeader()
     const classes = header.className.split(/\s+/)
     expect(classes).toContain("bg-activity-capsule")
     expect(classes).toContain("hover:bg-activity-capsule-hover")
-    expect(classes.filter((name) => /bg-muted/.test(name))).toEqual([])
+    expect(classes.filter((name) => /bg-(muted|secondary)/.test(name))).toEqual(
+      []
+    )
     for (const figure of header.querySelectorAll(".activity-mono")) {
       expect(figure).toHaveClass("text-activity-muted-strong")
       expect(figure).not.toHaveClass("text-muted-foreground")
     }
-    // The bubble's fill.
-    const bubble = render(
-      <Message from="user">
-        <MessageContent>hello</MessageContent>
-      </Message>
-    ).getByText("hello")
-    expect(bubble.className).toContain("group-[.is-user]:bg-secondary")
     // The tokens, outside the fallback for engines without color-mix.
     const flat = (value: string | undefined) =>
       (value ?? "")
@@ -466,15 +461,18 @@ describe("activity timeline: the reference turn", () => {
         tokens.set(`${rule.selector} ${decl.prop}`, flat(decl.value))
       })
     })
-    expect(tokens.get(":root --activity-capsule")).toBe("var(--secondary)")
-    // Over a background image, the bubble's translucent fill, word for word.
-    expect(tokens.get('[data-workspace-bg="on"] --activity-capsule')).toBe(
-      flat(
-        globalsDecl(
-          '[data-workspace-bg="on"] .is-user .ws-msg-secondary',
-          "background-color"
-        )
-      )
+    const wash = (share: number) =>
+      `color-mix(in oklab, var(--activity-secondary) ${share}%, transparent)`
+    // A light wash, a deeper one on a dark page; hovered, a step deeper in
+    // either.
+    expect(tokens.get(":root --activity-capsule")).toBe(wash(12))
+    expect(tokens.get(":root --activity-capsule-hover")).toBe(wash(18))
+    expect(tokens.get(".dark --activity-capsule")).toBe(wash(24))
+    expect(tokens.get(".dark --activity-capsule-hover")).toBe(wash(32))
+    // Translucent already: over a background image the same wash, with the
+    // bubble's ring.
+    expect(tokens.has('[data-workspace-bg="on"] --activity-capsule')).toBe(
+      false
     )
     expect(
       globalsDecl('[data-workspace-bg="on"] .activity-capsule', "box-shadow")
@@ -484,13 +482,26 @@ describe("activity timeline: the reference turn", () => {
         "box-shadow"
       )
     )
-    // Hovered, a step deeper in either: set through the tokens, so the hover
-    // utility keeps working over the image too.
-    for (const scope of [":root", '[data-workspace-bg="on"]']) {
-      const hover = tokens.get(`${scope} --activity-capsule-hover`)
-      expect(hover).toMatch(/^color-mix\(/)
-      expect(hover).not.toBe(tokens.get(`${scope} --activity-capsule`))
+    expect(tokens.get(":root --activity-capsule-danger")).toBe(
+      "color-mix(in oklab, var(--tone-danger) 85%, var(--foreground))"
+    )
+  })
+
+  it("sets an unrecovered failure in the capsule's own red", () => {
+    const FAILED: MessageTurn = {
+      id: "capsule-failure",
+      role: "assistant",
+      timestamp: "2026-10-22T09:00:00Z",
+      blocks: [
+        toolUse("f1", "Bash", { command: "pnpm test" }),
+        toolResult("f1", "Exit code 1\n1 failed", true),
+        { type: "text", text: "The tests fail." },
+      ],
     }
+    renderSettled(partsOf(FAILED))
+    const failure = within(activityHeader()).getByText("1 failed")
+    expect(failure).toHaveClass("text-activity-capsule-danger")
+    expect(failure).not.toHaveClass("text-tone-danger")
   })
 
   it("makes the header a block 2rem tall", () => {
@@ -592,19 +603,32 @@ describe("activity timeline: the reference turn", () => {
     }
   })
 
-  it("sets a row's verb and a group's title in the light ink, the file it acts on a step lighter", () => {
+  it("sets a row's verb and a group's title in the ink of the words after them", () => {
     renderSettled(partsOf(MOCKUP_ASSISTANT_TURN))
-    for (const label of ["Explored", "Ran 2 commands", "Edited"]) {
-      expect(screen.getAllByText(label)[0]).toHaveClass("text-muted-foreground")
+    for (const label of ["Thought", "Explored", "Ran 2 commands", "Edited"]) {
+      const verb = screen.getAllByText(label)[0]!
+      expect(verb).toHaveClass("text-activity-secondary", "font-medium")
+      expect(verb).not.toHaveClass("text-muted-foreground")
     }
     // The edited file: its folder and its name alike.
     const name = screen.getByText("query_tasks.py")
     expect(name).not.toHaveClass("text-foreground")
     expect(name.closest(".text-activity-secondary")).toBe(name.parentElement)
-    // A file an explore group read.
+    // A group's members: the verb column and the file it read.
     fireEvent.click(within(rowOf("Explored")).getAllByRole("button")[0]!)
-    const read = within(rowOf(/\/Makefile$/)).getByText(/\/Makefile$/)
-    expect(read).toHaveClass("text-activity-secondary")
+    const member = rowOf(/\/Makefile$/)
+    expect(within(member).getByText(/\/Makefile$/)).toHaveClass(
+      "text-activity-secondary"
+    )
+    expect(within(member).getByText("read")).toHaveClass(
+      "text-activity-secondary"
+    )
+    // The fold at the foot of the open list reads the same.
+    const foot = document.querySelector<HTMLElement>(
+      "li[data-marker='foot'] > button"
+    )!
+    expect(foot).toHaveClass("text-activity-secondary")
+    expect(foot).not.toHaveClass("text-muted-foreground")
   })
 
   it("spaces a group's members like the rows around the group", () => {
@@ -1318,7 +1342,7 @@ describe("activity timeline: commands", () => {
     const header = within(row).getAllByRole("button")[0]!
     expect(header.textContent).toBe("CommandInstall and run the web tests")
     expect(within(header).getByText("Command")).toHaveClass(
-      "text-muted-foreground"
+      "text-activity-secondary"
     )
     expect(
       within(header).getByText("Install and run the web tests")

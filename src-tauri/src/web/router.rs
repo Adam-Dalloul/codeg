@@ -1278,6 +1278,18 @@ pub fn build_router_with_proxy_auth(
             post(handlers::acp::codex_bundled_catalog),
         )
         .route(
+            "/opencode_list_integrations",
+            post(handlers::opencode_credentials::opencode_list_integrations),
+        )
+        .route(
+            "/opencode_connect_key",
+            post(handlers::opencode_credentials::opencode_connect_key),
+        )
+        .route(
+            "/opencode_disconnect_provider",
+            post(handlers::opencode_credentials::opencode_disconnect_provider),
+        )
+        .route(
             "/codex_fetch_endpoint_catalog",
             post(handlers::acp::codex_fetch_endpoint_catalog),
         )
@@ -1302,12 +1314,12 @@ pub fn build_router_with_proxy_auth(
             post(handlers::acp::codex_refresh_endpoint_catalog),
         )
         .route(
-            "/opencode_install_plugins",
-            post(handlers::acp::opencode_install_plugins),
+            "/opencode_add_plugin",
+            post(handlers::acp::opencode_add_plugin),
         )
         .route(
-            "/opencode_uninstall_plugin",
-            post(handlers::acp::opencode_uninstall_plugin),
+            "/opencode_remove_plugin",
+            post(handlers::acp::opencode_remove_plugin),
         )
         .route(
             "/codex_request_device_code",

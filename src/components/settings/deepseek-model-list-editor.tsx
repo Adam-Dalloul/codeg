@@ -26,10 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import {
-  FetchedModelPicker,
-  ProviderModelsStatus,
-} from "@/components/settings/provider-models"
+import { FetchedModelPicker } from "@/components/settings/provider-models"
 import { useProviderModels } from "@/hooks/use-provider-models"
 import { loadDeepSeekModelCatalog, updateDeepSeekModelCatalog } from "@/lib/api"
 import type {
@@ -714,23 +711,17 @@ export function DeepSeekModelListEditor({
               {t("addModel")}
             </Button>
             {endpoint && (
-              <>
-                <FetchedModelPicker
-                  state={providerModels}
-                  configured={draft.map((m) => m.id.trim()).filter(Boolean)}
-                  onConfirm={(ids) => {
-                    setDraft((prev) =>
-                      rowsForPicks(prev, ids, providerModels.models)
-                    )
-                    setExpanded(null)
-                  }}
-                  disabled={saving}
-                />
-                <ProviderModelsStatus
-                  state={providerModels}
-                  quietWhileIncomplete
-                />
-              </>
+              <FetchedModelPicker
+                state={providerModels}
+                configured={draft.map((m) => m.id.trim()).filter(Boolean)}
+                onConfirm={(ids) => {
+                  setDraft((prev) =>
+                    rowsForPicks(prev, ids, providerModels.models)
+                  )
+                  setExpanded(null)
+                }}
+                disabled={saving}
+              />
             )}
           </div>
 

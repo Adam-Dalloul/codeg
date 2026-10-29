@@ -259,6 +259,8 @@ const FolderHeader = memo(function FolderHeader({
   variant = "repo",
   worktreeBranch = null,
   rootBranch = null,
+  scopeShownBelow = false,
+  foldedScopes,
 }: {
   folderId: number
   folderName: string
@@ -359,6 +361,19 @@ const FolderHeader = memo(function FolderHeader({
    * bare "root" this row carried before there was a branch to show.
    */
   rootBranch?: string | null
+  /**
+   * While tabs follow the folder, a container's own scope is its main
+   * worktree's, and the "root" row under it wears the selected mark: true
+   * while that row is in the list, so the container does not wear it too.
+   * Folded away (or filtered out), the container wears it again.
+   */
+  scopeShownBelow?: boolean
+  /**
+   * The worktree scopes folded away inside this container: while one of them
+   * is the scope, the container wears the mark for it, there being no row of
+   * its own to show it. Must be referentially stable to preserve the memo.
+   */
+  foldedScopes?: readonly number[]
 }) {
   // Own the translations here rather than receiving `t` as a prop: next-intl
   // returns a fresh `t` on every parent render, so passing it down would defeat
@@ -366,7 +381,10 @@ const FolderHeader = memo(function FolderHeader({
   const t = useTranslations("Folder.sidebar")
   const tabsFollowFolder = useFolderTabsStore((s) => s.enabled)
   const scopeSelected = useFolderTabsStore(
-    (s) => s.enabled && s.scope === folderId
+    (s) =>
+      s.enabled &&
+      ((s.scope === folderId && !scopeShownBelow) ||
+        (typeof s.scope === "number" && !!foldedScopes?.includes(s.scope)))
   )
   const tTags = useTranslations("ConversationTags")
   const ime = useImeGuard()
@@ -1670,6 +1688,17 @@ export function SidebarConversationList({
     ]
   )
 
+  // Containers whose "root" row is in the list: while tabs follow the folder,
+  // that row — not the container above it — wears the container's selected
+  // mark.
+  const rootGroupRowIds = useMemo(
+    () =>
+      new Set(
+        rows.flatMap((row) => (row.kind === "root-group" ? [row.folderId] : []))
+      ),
+    [rows]
+  )
+
   // Latest snapshots for the imperative scroll/drag code paths, refreshed every
   // render so the window listeners and scrollToActive read current values
   // without being torn down and re-subscribed.
@@ -2866,6 +2895,13 @@ export function SidebarConversationList({
       : opts.collapsed
         ? false
         : (folderExpanded[folderId] ?? true)
+    // While tabs follow the folder, the row that shows a scope wears its mark:
+    // a container's own is its "root" row's, and a container folded over its
+    // worktrees wears theirs, their rows gone with the fold.
+    const scopeShownBelow =
+      isContainer && expanded && rootGroupRowIds.has(folderId)
+    const foldedScopes =
+      isContainer && !expanded ? containerChildren.get(folderId) : undefined
     return (
       <FolderHeader
         folderId={folderId}
@@ -2920,6 +2956,8 @@ export function SidebarConversationList({
             ? (branches.get(folderId) ?? folderEntry?.gitBranch ?? null)
             : null
         }
+        scopeShownBelow={scopeShownBelow}
+        foldedScopes={foldedScopes}
       />
     )
   }

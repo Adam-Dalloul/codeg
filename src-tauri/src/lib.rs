@@ -594,6 +594,11 @@ mod tauri_app {
         // flush on a graceful exit.
         let _log_guard = crate::logging::init::init_desktop();
 
+        // macOS must not pause the process every agent session runs through
+        // when memory runs out (see the function).
+        #[cfg(target_os = "macos")]
+        process::opt_out_of_low_swap_suspension();
+
         if let Err(err) = fix_path_env::fix() {
             tracing::error!("[PATH] fix_path_env failed: {err}");
         }
@@ -2216,14 +2221,17 @@ mod tauri_app {
                 acp_commands::opencode_list_plugins,
                 acp_commands::opencode_provider_catalog,
                 acp_commands::codex_bundled_catalog,
+                crate::commands::opencode_credentials::opencode_list_integrations,
+                crate::commands::opencode_credentials::opencode_connect_key,
+                crate::commands::opencode_credentials::opencode_disconnect_provider,
                 crate::commands::codex_catalog::codex_catalog_plan_preview,
                 crate::commands::codex_catalog::codex_fetch_endpoint_catalog,
                 crate::commands::codex_catalog::codex_endpoint_catalog_published,
                 crate::commands::codex_catalog::codex_endpoint_catalog_cached,
                 crate::commands::codex_catalog::codex_endpoint_catalog_status,
                 crate::commands::codex_catalog::codex_refresh_endpoint_catalog,
-                acp_commands::opencode_install_plugins,
-                acp_commands::opencode_uninstall_plugin,
+                acp_commands::opencode_add_plugin,
+                acp_commands::opencode_remove_plugin,
                 acp_commands::codex_request_device_code,
                 acp_commands::codex_poll_device_code,
                 experts_commands::experts_list,

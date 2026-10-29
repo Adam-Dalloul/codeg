@@ -194,11 +194,12 @@ pub struct AsyncTaskRecord {
     pub name: String,
     /// Already FRIENDLY, not the SDK's raw type: claude maps
     /// `local_bash`→`"shell"`, `local_workflow`→`"workflow"`,
-    /// `local_monitor`/`mcp`→`"monitor"`, and anything else to `"task"`, and
-    /// from 0.97.0 names a turn Claude Code started on its own `"turn"`; codex
-    /// publishes `"shell"` for every background terminal. Kept a plain string so
-    /// an unmapped future type renders as itself instead of failing to
-    /// deserialize.
+    /// `local_monitor`/`mcp`→`"monitor"`, and anything else to `"task"`; from
+    /// 0.97.0 it names a turn Claude Code started on its own `"turn"`, and from
+    /// 0.98.0 the task of a `Monitor` call (which the SDK reports as
+    /// `local_bash`) `"monitor"`. codex publishes `"shell"` for every
+    /// background terminal. Kept a plain string so an unmapped future type
+    /// renders as itself instead of failing to deserialize.
     pub task_type: String,
     pub description: String,
     /// Whether this task earns its own transcript card upstream. codeg renders
@@ -208,9 +209,10 @@ pub struct AsyncTaskRecord {
     /// distinguish a task already drawn as an ordinary tool call (a background
     /// `Bash` is one) from a standalone job doesn't need a wire change.
     pub show_in_transcript: bool,
-    /// Whether `_session/async_task/stop` is offered. The adapter announces
-    /// `true` for every task it publishes; it is carried rather than assumed so
-    /// a future adapter can withdraw the affordance without a codeg release.
+    /// Whether `_session/async_task/stop` is offered. Carried rather than
+    /// assumed: claude-agent-acp 0.98.0 announces `false` for a monitor
+    /// (stopping one would only end the agent's wait) and refuses the request,
+    /// while every other task it publishes is `true`.
     pub can_stop: bool,
     /// `running` | `paused` | `completed` | `failed` | `stopped`. Plain string
     /// for the same forward-compatibility reason as `task_type`; treat anything
@@ -1725,7 +1727,6 @@ pub struct AcpAgentInfo {
     pub host_tools_agent_mode: bool,
     pub config_json: Option<String>,
     pub config_file_path: Option<String>,
-    pub opencode_auth_json: Option<String>,
     pub codex_auth_json: Option<String>,
     pub codex_config_toml: Option<String>,
     /// Compact structured codex model-catalog source (the `codeg` custom-model

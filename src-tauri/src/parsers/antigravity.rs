@@ -429,11 +429,12 @@ struct AntigravityAskOption {
 }
 
 /// `exa.cortex_pb.AskQuestionEntry`: one question of an `ask_question` step and
-/// the user's answer to it. Checked against the 1.4.1 descriptors and a live
-/// run: options are numbered `"1"`, `"2"`, …; a question the user dismissed (or
-/// never reached, once an earlier one was dismissed) is `skipped` with nothing
-/// chosen; a multi-select question is still answered with one option, because
-/// the ACP server asks it as a single-choice permission request.
+/// the user's answer to it. Checked against the 1.4.1 and 1.4.3 descriptors
+/// and live runs: options are numbered `"1"`, `"2"`, …; a question the user
+/// dismissed (or never reached, once an earlier one was dismissed) is
+/// `skipped` with nothing chosen; a multi-select question is still answered
+/// with one option, because the ACP server asks it as a single-choice
+/// permission request.
 #[derive(Clone, PartialEq, ::prost::Message)]
 struct AntigravityAskItem {
     #[prost(string, tag = "1")]

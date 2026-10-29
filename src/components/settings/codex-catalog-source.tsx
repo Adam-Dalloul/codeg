@@ -9,11 +9,11 @@ import {
   type ComponentProps,
 } from "react"
 import { useLocale, useTranslations } from "next-intl"
-import { AlertTriangle, Download, Info, Loader2, RefreshCw } from "lucide-react"
+import { AlertTriangle, ChevronRight, Info, RefreshCw } from "lucide-react"
+import { RadioGroup as RadioGroupPrimitive } from "radix-ui"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import {
   ModelPickerDialog,
   type ModelPickerItem,
@@ -245,171 +245,217 @@ function formatBytes(n: number | undefined): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
-/** "Codex built-in list / From the provider", the list URL, "Fetch models". */
-export function CodexCatalogSourceSection({
-  endpoint,
-  source,
-  list,
-  readOnly,
-  onSourceChange,
-  onFetch,
-  onRepick,
+/** "Codex built-in | From the provider": where the model list comes from,
+ *  as two segments of one control. */
+export function CodexSourceSwitch({
+  value,
+  disabled,
+  onChange,
 }: {
-  endpoint: CodexCatalogEndpoint
-  source: CodexCatalogSource | undefined
-  list: CodexProviderList
-  readOnly: boolean
-  onSourceChange: (next: CodexCatalogSource | undefined) => void
-  onFetch: () => void
-  onRepick: () => void
+  value: "builtin" | "provider"
+  disabled: boolean
+  onChange: (next: "builtin" | "provider") => void
 }) {
   const t = useTranslations("CodexModelEditor.catalogSource")
-  const tt = t as unknown as CodexCatalogTranslator
-  const derived = deriveCatalogUrl(endpoint.baseUrl)
-  const listUrl = source?.url?.trim() || derived || ""
-  const baseHost = hostOf(endpoint.baseUrl)
-  const listHost = source?.url?.trim() ? hostOf(source.url) : null
-  const managed = !!endpoint.managedBy
-
   return (
-    <section className="space-y-2 rounded-md border bg-muted/10 p-2.5">
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-xs font-semibold">{t("title")}</p>
-        {managed && (
-          <span className="truncate text-2xs text-muted-foreground">
-            {t("managedBy", { name: endpoint.managedBy ?? "" })}
-          </span>
-        )}
-      </div>
-      <RadioGroup
-        value={source ? "provider" : "builtin"}
-        onValueChange={(next) =>
-          onSourceChange(next === "provider" ? (source ?? {}) : undefined)
-        }
-        disabled={readOnly || managed}
-        className="gap-1.5"
-      >
-        <label className="flex items-center gap-2 text-xs">
-          <RadioGroupItem value="builtin" />
-          {t("builtin")}
-        </label>
-        <label className="flex items-center gap-2 text-xs">
-          <RadioGroupItem value="provider" />
-          {t("provider")}
-        </label>
-      </RadioGroup>
+    <RadioGroupPrimitive.Root
+      value={value}
+      onValueChange={(next) => onChange(next as "builtin" | "provider")}
+      disabled={disabled}
+      aria-label={t("title")}
+      className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-muted p-0.5"
+    >
+      {(["builtin", "provider"] as const).map((option) => (
+        <RadioGroupPrimitive.Item
+          key={option}
+          value={option}
+          className="h-7 rounded-full px-3 text-xs text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:hover:text-muted-foreground data-[state=checked]:bg-background data-[state=checked]:text-foreground data-[state=checked]:shadow-sm"
+        >
+          {t(option)}
+        </RadioGroupPrimitive.Item>
+      ))}
+    </RadioGroupPrimitive.Root>
+  )
+}
 
-      {source && (
-        <div className="space-y-2">
-          {!managed && !readOnly && (
-            <div className="space-y-1">
-              <label className="text-2xs text-muted-foreground">
-                {t("listUrl")}
-              </label>
-              <Input
-                value={source.url ?? ""}
-                placeholder={derived ?? t("listUrlPlaceholder")}
-                onChange={(e) =>
-                  onSourceChange({
-                    ...source,
-                    url: e.target.value || undefined,
-                  })
-                }
-                className="h-8 font-mono text-2xs"
-              />
-              {listHost && baseHost && listHost !== baseHost && (
-                <p className="flex items-start gap-1 text-2xs text-amber-500">
-                  <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
-                  {t("keySentTo", { host: listHost })}
-                </p>
-              )}
-            </div>
+/** The list URL, folded away until it is wanted: `base_url + /models` serves
+ *  most providers, so the field opens on its own only when one is set. */
+export function CodexListUrlField({
+  endpoint,
+  source,
+  onSourceChange,
+}: {
+  endpoint: CodexCatalogEndpoint
+  source: CodexCatalogSource
+  onSourceChange: (next: CodexCatalogSource) => void
+}) {
+  const t = useTranslations("CodexModelEditor.catalogSource")
+  const derived = deriveCatalogUrl(endpoint.baseUrl)
+  const baseHost = hostOf(endpoint.baseUrl)
+  const listHost = source.url?.trim() ? hostOf(source.url) : null
+  const [open, setOpen] = useState(() => !!source.url?.trim())
+  const shown = open || !!source.url?.trim()
+  return (
+    <div className="space-y-1.5">
+      <button
+        type="button"
+        className="flex items-center gap-1 rounded-sm text-2xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        aria-expanded={shown}
+        onClick={() => setOpen(!shown)}
+      >
+        <ChevronRight
+          className={cn(
+            "size-3 transition-transform rtl:-scale-x-100",
+            shown && "rotate-90"
           )}
-          {managed && listUrl && (
-            <p className="truncate font-mono text-2xs text-muted-foreground">
-              {listUrl}
+        />
+        {t("listUrl")}
+      </button>
+      {shown && (
+        <div className="space-y-1">
+          <Input
+            value={source.url ?? ""}
+            placeholder={derived ?? t("listUrlPlaceholder")}
+            aria-label={t("listUrl")}
+            onChange={(e) =>
+              onSourceChange({
+                ...source,
+                url: e.target.value || undefined,
+              })
+            }
+            className="h-8 font-mono text-2xs"
+          />
+          {listHost && baseHost && listHost !== baseHost && (
+            <p className="flex items-start gap-1 text-2xs text-amber-600 dark:text-amber-400">
+              <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+              {t("keySentTo", { host: listHost })}
             </p>
-          )}
-          {!managed && !readOnly && (
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-7 text-xs"
-                disabled={!list.request || list.fetching}
-                onClick={onFetch}
-              >
-                {list.fetching ? (
-                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Download className="mr-1 h-3.5 w-3.5" />
-                )}
-                {t("fetch")}
-              </Button>
-              {!endpoint.keySource && (
-                <span className="text-2xs text-muted-foreground">
-                  {t("needKey")}
-                </span>
-              )}
-              {endpoint.keySource && !derived && (
-                <span className="text-2xs text-muted-foreground">
-                  {t("needBaseUrl")}
-                </span>
-              )}
-            </div>
-          )}
-          {list.error && (
-            <p className="text-2xs text-destructive">
-              {codexCatalogErrorText(list.error, tt)}
-            </p>
-          )}
-          {list.rows && (
-            <p className="text-2xs text-muted-foreground">
-              {t("listSummary", {
-                format: t(
-                  list.rows.format === "native"
-                    ? "formatNative"
-                    : "formatOpenai"
-                ),
-                usable: list.rows.counts.usable,
-                total: list.rows.counts.total,
-              })}
-              {list.origin !== "fetched" &&
-                ` · ${t(list.origin === "published" ? "fromPublished" : "fromCache")}`}
-            </p>
-          )}
-          {list.rows?.warnings.includes("no_usable_models") && (
-            <p className="text-2xs text-amber-500">
-              {t("codexCatalog.no_usable_models")}
-            </p>
-          )}
-          {list.formatChanged && !readOnly && !managed && (
-            <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5 text-2xs text-amber-500">
-              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-              <span className="flex-1">
-                {t("formatChanged", {
-                  format: t(
-                    list.formatChanged.format === "native"
-                      ? "formatNative"
-                      : "formatOpenai"
-                  ),
-                })}
-              </span>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-6 text-2xs"
-                onClick={onRepick}
-              >
-                {t("repick")}
-              </Button>
-            </div>
           )}
         </div>
       )}
-    </section>
+    </div>
+  )
+}
+
+/** What the provider's list needs saying above its rows: a list in another
+ *  shape than the one in use (with "Pick again"), or one with no usable
+ *  model. */
+export function CodexListNotices({
+  list,
+  editable,
+  onRepick,
+}: {
+  list: CodexProviderList
+  editable: boolean
+  onRepick: () => void
+}) {
+  const t = useTranslations("CodexModelEditor.catalogSource")
+  return (
+    <>
+      {list.rows?.warnings.includes("no_usable_models") && (
+        <p className="flex items-start gap-1.5 text-2xs text-amber-600 dark:text-amber-400">
+          <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+          {t("codexCatalog.no_usable_models")}
+        </p>
+      )}
+      {list.formatChanged && editable && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-1.5 text-2xs text-amber-600 dark:text-amber-400">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+          <span className="flex-1">
+            {t("formatChanged", {
+              format: t(
+                list.formatChanged.format === "native"
+                  ? "formatNative"
+                  : "formatOpenai"
+              ),
+            })}
+          </span>
+          <Button type="button" variant="outline" size="xs" onClick={onRepick}>
+            {t("repick")}
+          </Button>
+        </div>
+      )}
+    </>
+  )
+}
+
+/** What the rows of a list are, for the line above them: ids picked from an
+ *  OpenAI list (`picked` of the `offered` ids it returns now), or a
+ *  catalog's models (`shown`, the `removed` ones taken out apart). */
+export type CodexListTally =
+  | { kind: "picked"; picked: number; offered: number }
+  | { kind: "models"; shown: number; removed: number }
+
+/** The line atop the provider's rows: how many models it offers and from
+ *  where — or that the list is on its way, what the form still needs before
+ *  it can ask, or why the last fetch failed. */
+export function CodexProviderListSummary({
+  endpoint,
+  list,
+  tally,
+}: {
+  endpoint: CodexCatalogEndpoint
+  list: CodexProviderList
+  tally: CodexListTally
+}) {
+  const t = useTranslations("CodexModelEditor.catalogSource")
+  const tp = useTranslations("ProviderModels")
+  const tt = t as unknown as CodexCatalogTranslator
+  // The refresh beside it turns meanwhile.
+  if (list.fetching) {
+    return (
+      <span className="min-w-0 truncate text-muted-foreground" role="status">
+        {tp("fetching")}
+      </span>
+    )
+  }
+  if (list.error) {
+    return (
+      <span className="min-w-0 break-words text-destructive" role="alert">
+        {codexCatalogErrorText(list.error, tt)}
+      </span>
+    )
+  }
+  const rows = list.rows
+  if (!rows) {
+    const missing = !endpoint.keySource
+      ? t("needKey")
+      : !deriveCatalogUrl(endpoint.baseUrl)
+        ? t("needBaseUrl")
+        : null
+    return missing ? (
+      <span className="min-w-0 text-muted-foreground">{missing}</span>
+    ) : null
+  }
+  // With its port, as the other agents' lists name their host.
+  const host = hostOf(rows.url) ?? rows.host
+  const parts = [
+    tally.kind === "picked"
+      ? t("summaryPicked", {
+          picked: tally.picked,
+          total: tally.offered,
+          host,
+        })
+      : t("summaryModels", { count: tally.shown, host }),
+  ]
+  if (tally.kind === "models" && tally.removed > 0)
+    parts.push(t("summaryRemoved", { count: tally.removed }))
+  if (list.origin === "published") parts.push(t("fromPublished"))
+  if (list.origin === "cached") parts.push(t("fromCache"))
+  return (
+    <span
+      className="min-w-0 truncate text-muted-foreground"
+      // The shape of the list, and how much of it Codex can use.
+      title={[
+        t(rows.format === "native" ? "formatNative" : "formatOpenai"),
+        t("countsShort", {
+          usable: rows.counts.usable,
+          total: rows.counts.total,
+        }),
+      ].join(" · ")}
+    >
+      {parts.join(" · ")}
+    </span>
   )
 }
 
@@ -577,18 +623,17 @@ export function CodexCatalogStatusLine({
     lines.push({ tone: "muted", text: t("catalogUrlHint") })
 
   return (
-    <div className="space-y-1 rounded-md border px-2.5 py-2">
-      <div className="flex items-center justify-between gap-2">
+    <div className="overflow-hidden rounded-xl border">
+      <div className="flex min-h-9 items-center justify-between gap-2 border-b bg-muted/30 ps-3 pe-1.5 py-1">
         <p className="text-2xs font-medium text-muted-foreground">
           {t("publishedTitle")}
         </p>
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1">
           {status.pendingLocalChanges && (
             <Button
               type="button"
               variant="outline"
-              size="sm"
-              className="h-6 text-2xs"
+              size="xs"
               disabled={refreshing}
               onClick={refresh}
             >
@@ -599,14 +644,12 @@ export function CodexCatalogStatusLine({
             <Button
               type="button"
               variant="ghost"
-              size="sm"
-              className="h-6 gap-1 text-2xs"
+              size="xs"
               disabled={refreshing || status.refresh.inProgress}
               onClick={refresh}
             >
               <RefreshCw
                 className={cn(
-                  "h-3 w-3",
                   (refreshing || status.refresh.inProgress) && "animate-spin"
                 )}
               />
@@ -615,25 +658,27 @@ export function CodexCatalogStatusLine({
           )}
         </div>
       </div>
-      {status.pendingLocalChanges && (
-        <p className="flex items-start gap-1 text-2xs text-amber-500">
-          <Info className="mt-0.5 h-3 w-3 shrink-0" />
-          {t("pendingLocalChanges")}
-        </p>
-      )}
-      {lines.map((line, i) => (
-        <p
-          key={i}
-          className={cn(
-            "text-2xs",
-            line.tone === "muted" && "text-muted-foreground",
-            line.tone === "warn" && "text-amber-500",
-            line.tone === "error" && "text-destructive"
-          )}
-        >
-          {line.text}
-        </p>
-      ))}
+      <div className="space-y-1 px-3 py-2">
+        {status.pendingLocalChanges && (
+          <p className="flex items-start gap-1 text-2xs text-amber-600 dark:text-amber-400">
+            <Info className="mt-0.5 h-3 w-3 shrink-0" />
+            {t("pendingLocalChanges")}
+          </p>
+        )}
+        {lines.map((line, i) => (
+          <p
+            key={i}
+            className={cn(
+              "text-2xs",
+              line.tone === "muted" && "text-muted-foreground",
+              line.tone === "warn" && "text-amber-600 dark:text-amber-400",
+              line.tone === "error" && "text-destructive"
+            )}
+          >
+            {line.text}
+          </p>
+        ))}
+      </div>
     </div>
   )
 }

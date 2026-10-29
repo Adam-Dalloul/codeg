@@ -49,8 +49,6 @@ import { useProviderModels } from "@/hooks/use-provider-models"
 import {
   ModelIdInputWithFetch,
   ModelIdListField,
-  ProviderModelsFetchButton,
-  ProviderModelsStatus,
 } from "@/components/settings/provider-models"
 import type { ProviderModelsProtocol } from "@/lib/types"
 import {
@@ -1349,25 +1347,16 @@ export function PiConfigPanel({
         )}
 
         <div className="space-y-1.5">
-          <div className="flex items-center justify-between gap-2">
-            <label className="text-2xs text-muted-foreground">
-              {t("pi.modelLabel")}
-            </label>
-            {isCustom && (
-              <ProviderModelsFetchButton
-                state={providerModels}
-                disabled={savingCreds || loadingCreds}
-              />
-            )}
-          </div>
+          <label className="text-2xs text-muted-foreground">
+            {t("pi.modelLabel")}
+          </label>
           <ModelIdInputWithFetch
             value={model}
             onChange={setModel}
-            models={providerModels.models}
+            state={providerModels}
             placeholder="claude-sonnet-5-5"
             disabled={savingCreds || loadingCreds}
           />
-          {isCustom && <ProviderModelsStatus state={providerModels} />}
         </div>
 
         {isCustom && (

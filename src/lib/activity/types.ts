@@ -32,6 +32,12 @@ export type ToolStepKind =
   | "command"
   | "shell-session"
   | "script"
+  // A watch left running in the background (Claude Code's `Monitor`): drawn
+  // like a command, never folded with them — it reports on its own schedule.
+  | "monitor"
+  // A sandbox's request to reach a host (Claude Code's
+  // `SandboxNetworkAccess`): a question to the user, not a call that runs.
+  | "network"
   // Changes to files.
   | "edit"
   // Anything else that is just a call with arguments and a result.
@@ -103,6 +109,9 @@ export interface CommandInfo {
   /** The background shell session the command's own output announced
    *  (`SESSION_ID=…`), which later `wait` calls address by id. */
   announcedSession: string | null
+  /** A monitor watching a WebSocket rather than a command's output:
+   *  `display` is then the socket's URL, not a command line. */
+  websocket?: boolean
 }
 
 export interface ToolTarget {
@@ -135,7 +144,8 @@ export interface ToolDescriptor {
   command: CommandInfo | null
   files: EditFileChange[] | null
   mcp: McpIdentity | null
-  /** A command whose process was moved to the background. */
+  /** A command whose process was moved to the background, or a monitor's
+   *  background task, by the id the agent gave it. */
   background: { taskId: string | null } | null
   /** How the call's permission request was answered, when a reopened
    *  conversation's detail load stamped it on the call. The live record of the
