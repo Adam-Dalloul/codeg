@@ -51,26 +51,6 @@ pub fn cursor_access_token_from_auth_json(text: &str) -> Option<String> {
         })
 }
 
-pub fn opencode_go_key_from_auth_json(text: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(text).ok()?;
-    let obj = value.as_object()?;
-    // `opencode-go` wins when present, but a plain `opencode` entry is the
-    // common single-account shape, so a missing provider skips to the next one
-    // instead of ending the search.
-    for provider in ["opencode-go", "opencode"] {
-        let Some(entry) = obj.get(provider).and_then(Value::as_object) else {
-            continue;
-        };
-        let Some(key) = entry.get("key").and_then(Value::as_str) else {
-            continue;
-        };
-        if !key.is_empty() {
-            return Some(key.to_string());
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

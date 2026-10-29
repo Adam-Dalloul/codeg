@@ -11178,7 +11178,7 @@ pub(crate) fn build_runtime_env_from_setting(
 /// integration would otherwise pick up the bound provider's key from the
 /// `OPENAI_*` env the generic binding writes. Binding one is refused, and a
 /// binding stored earlier is ignored at launch.
-fn keeps_own_providers(agent_type: AgentType) -> bool {
+pub(crate) fn keeps_own_providers(agent_type: AgentType) -> bool {
     matches!(agent_type, AgentType::MiniMaxCode | AgentType::OpenCode)
 }
 
