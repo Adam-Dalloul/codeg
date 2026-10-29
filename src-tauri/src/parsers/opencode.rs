@@ -3063,6 +3063,58 @@ mod account_home_tests {
             },
         );
     }
+
+    /// The account's OpenCode 2 sessions (`session_v2`) are its history; an
+    /// account without a database has none.
+    #[test]
+    fn an_account_parser_lists_the_sessions_of_its_own_database() {
+        use crate::parsers::AgentParser;
+
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("work");
+        let personal = dir.path().join("personal");
+        let data = work.join("data").join("opencode");
+        std::fs::create_dir_all(&data).unwrap();
+        let db_path = data.join(OPENCODE_DB_FILE);
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let conn = Database::connect(format!("sqlite:{}?mode=rwc", db_path.display()))
+                    .await
+                    .unwrap();
+                for sql in [
+                    "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, parent_id TEXT, \
+                     directory TEXT NOT NULL, title TEXT, time_created INTEGER NOT NULL, \
+                     time_updated INTEGER NOT NULL)",
+                    "CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, \
+                     type TEXT NOT NULL, seq INTEGER NOT NULL, time_created INTEGER NOT NULL, \
+                     time_updated INTEGER NOT NULL, data TEXT NOT NULL)",
+                    "INSERT INTO session_v2 (id, parent_id, directory, title, time_created, \
+                     time_updated) VALUES ('ses_work', NULL, '/work/app', 'Work account', \
+                     1790612421000, 1790612429000)",
+                    "INSERT INTO session_message (id, session_id, type, seq, time_created, \
+                     time_updated, data) VALUES ('msg_01', 'ses_work', 'user', 1, 1790612421010, \
+                     1790612421010, '{\"time\":{\"created\":1790612421010},\"text\":\"hello\"}')",
+                ] {
+                    conn.execute_unprepared(sql).await.unwrap();
+                }
+                conn.close().await.unwrap();
+            });
+
+        let sessions = OpenCodeParser::with_account_home(&work)
+            .list_conversations()
+            .unwrap();
+        assert_eq!(
+            sessions.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            ["ses_work"]
+        );
+        assert!(OpenCodeParser::with_account_home(&personal)
+            .list_conversations()
+            .map(|sessions| sessions.is_empty())
+            .unwrap_or(true));
+    }
 }
 
 #[cfg(test)]
