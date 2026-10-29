@@ -28,7 +28,12 @@ fn destinations(agent: AgentType) -> &'static [Option<&'static str>] {
             &[Some("skills")]
         }
         AgentType::Codex => &[Some("skills"), Some("skills/.system"), None],
-        AgentType::OpenCode => &[Some("config/opencode/skills"), Some(".agents/skills")],
+        // OpenCode 2 reads `skills/` and `skill/` under its config directory.
+        AgentType::OpenCode => &[
+            Some("config/opencode/skills"),
+            Some("config/opencode/skill"),
+            Some(".agents/skills"),
+        ],
         // Gemini 0.60's Storage.getGlobalAgentsDir and getGlobalGeminiDir both
         // use its GEMINI_CLI_HOME-aware homedir helper.
         AgentType::Gemini => &[Some(".gemini/skills"), Some(".agents/skills")],
