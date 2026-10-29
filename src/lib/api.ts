@@ -202,8 +202,11 @@ import type {
   WebhookConfig,
   ModelProviderInfo,
   UpdateModelProviderResult,
-  PluginCheckSummary,
+  OpencodePluginList,
   OpenCodeCatalogProvider,
+  OpenCodeConnectKeyRequest,
+  OpenCodeCredentialChange,
+  OpenCodeIntegration,
   QuickMessage,
   OfficecliInfo,
   OfficecliSkill,
@@ -639,7 +642,6 @@ export async function acpUpdateAgentPreferences(
     enabled: boolean
     env: Record<string, string>
     config_json?: string | null
-    opencode_auth_json?: string | null
     codex_auth_json?: string | null
     codex_config_toml?: string | null
   }
@@ -649,7 +651,6 @@ export async function acpUpdateAgentPreferences(
     enabled: params.enabled,
     env: params.env,
     configJson: params.config_json ?? null,
-    opencodeAuthJson: params.opencode_auth_json ?? null,
     codexAuthJson: params.codex_auth_json ?? null,
     codexConfigToml: params.codex_config_toml ?? null,
   })
@@ -679,7 +680,6 @@ export async function acpUpdateAgentConfig(
   agentType: AgentType,
   params: {
     config_json?: string | null
-    opencode_auth_json?: string | null
     codex_auth_json?: string | null
     codex_config_toml?: string | null
     /** The config.toml text the draft was loaded from: a key codeg manages
@@ -708,7 +708,6 @@ export async function acpUpdateAgentConfig(
   return getTransport().call("acp_update_agent_config", {
     agentType,
     configJson: params.config_json ?? null,
-    opencodeAuthJson: params.opencode_auth_json ?? null,
     codexAuthJson: params.codex_auth_json ?? null,
     codexConfigToml: params.codex_config_toml ?? null,
     codexConfigTomlBaseline: params.codex_config_toml_baseline ?? null,
@@ -1471,7 +1470,7 @@ export async function acpPreflight(
   })
 }
 
-export async function opencodeListPlugins(): Promise<PluginCheckSummary> {
+export async function opencodeListPlugins(): Promise<OpencodePluginList> {
   return getTransport().call("opencode_list_plugins", {})
 }
 
@@ -1492,6 +1491,33 @@ export async function codexBundledCatalog(
 ): Promise<CodexModelInfo[]> {
   return getTransport().call("codex_bundled_catalog", {
     forceRefresh: forceRefresh ?? null,
+  })
+}
+
+/** Every integration OpenCode 2 knows (providers, mostly), with how each is
+ *  connected. Asked of OpenCode itself, with the environment a session would
+ *  launch it with; never carries a secret. Needs OpenCode 2 installed. */
+export async function opencodeListIntegrations(): Promise<
+  OpenCodeIntegration[]
+> {
+  return getTransport().call("opencode_list_integrations", {})
+}
+
+/** Store an API key for an OpenCode integration in OpenCode's own credential
+ *  store. Returns the integrations as that leaves them, and how many running
+ *  OpenCode sessions need a restart to use it. */
+export async function opencodeConnectKey(
+  request: OpenCodeConnectKeyRequest
+): Promise<OpenCodeCredentialChange> {
+  return getTransport().call("opencode_connect_key", { request })
+}
+
+/** Remove every credential OpenCode stores for an integration. */
+export async function opencodeDisconnectProvider(
+  integrationId: string
+): Promise<OpenCodeCredentialChange> {
+  return getTransport().call("opencode_disconnect_provider", {
+    integrationId,
   })
 }
 
@@ -1539,20 +1565,19 @@ export async function codexRefreshEndpointCatalog(): Promise<CodexCatalogStatus>
   return getTransport().call("codex_refresh_endpoint_catalog", {})
 }
 
-export async function opencodeInstallPlugins(
-  taskId: string,
-  names?: string[] | null
-): Promise<void> {
-  return getTransport().call("opencode_install_plugins", {
-    names: names ?? null,
-    taskId,
-  })
+/** Declare `spec` in OpenCode's `plugins`; OpenCode installs a package plugin
+ *  itself the next time a session starts. */
+export async function opencodeAddPlugin(
+  spec: string
+): Promise<OpencodePluginList> {
+  return getTransport().call("opencode_add_plugin", { spec })
 }
 
-export async function opencodeUninstallPlugin(
-  name: string
-): Promise<PluginCheckSummary> {
-  return getTransport().call("opencode_uninstall_plugin", { name })
+/** Remove every declaration of `spec` from OpenCode's plugin lists. */
+export async function opencodeRemovePlugin(
+  spec: string
+): Promise<OpencodePluginList> {
+  return getTransport().call("opencode_remove_plugin", { spec })
 }
 
 export async function acpListAgentSkills(params: {

@@ -187,12 +187,12 @@ function BackgroundTaskRowView({
       }
     >
       <span className="flex min-w-0 items-baseline gap-2">
-        <span className="shrink-0 font-medium text-muted-foreground">
+        <span className="shrink-0 font-medium text-activity-secondary">
           {label}
         </span>
         {shortId ? (
           <span
-            className="shrink-0 font-mono text-[0.8125rem] text-foreground"
+            className="shrink-0 font-mono text-[0.8125rem] text-activity-secondary"
             dir="ltr"
           >
             #{shortId}

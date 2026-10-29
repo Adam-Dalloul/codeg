@@ -12,9 +12,11 @@ import { useElapsedLabel } from "@/hooks/use-elapsed-label"
 import { useTruncation } from "@/hooks/use-truncation"
 import { normalizeCommandOutput } from "@/lib/activity/command"
 import {
-  parseCodexScriptCard,
-  parseCodexScriptMeta,
-} from "@/lib/codex-code-mode"
+  codeModeCalls,
+  parseScriptCard,
+  type CodeModeCall,
+} from "@/lib/activity/code-mode"
+import { parseCodexScriptMeta } from "@/lib/codex-code-mode"
 import { countLines } from "@/lib/activity/format"
 import type { StepStatus } from "@/lib/activity/types"
 import { describeStdinChars } from "@/lib/shell-session-tool"
@@ -75,9 +77,14 @@ function useCommandOutput(step: ToolStep): CommandOutput | null {
   const { part, tool } = step
   return useMemo(() => {
     if (tool.background?.taskId && part.output) {
-      const text = t("backgroundTask.launchNote", {
-        id: tool.background.taskId,
-      })
+      // The result is the CLI's note to the model that the work went on in
+      // the background; the reader gets which task it is.
+      const text = t(
+        tool.kind === "monitor"
+          ? "backgroundTask.monitorNote"
+          : "backgroundTask.launchNote",
+        { id: tool.background.taskId }
+      )
       return { text, lines: 1, truncated: 0 }
     }
     const source = part.output ?? part.errorText ?? null
@@ -99,7 +106,7 @@ function useCommandOutput(step: ToolStep): CommandOutput | null {
       }
     }
     return { text, lines, truncated: 0 }
-  }, [part.output, part.errorText, tool.background, tool.status, t])
+  }, [part.output, part.errorText, tool.background, tool.kind, tool.status, t])
 }
 
 /** What a command row says: a fixed "Command", then the agent's description
@@ -139,7 +146,7 @@ function CommandLabel({
           : "")
     return (
       <span className="flex min-w-0 items-baseline gap-2">
-        <span className="shrink-0 font-medium text-muted-foreground">
+        <span className="shrink-0 font-medium text-activity-secondary">
           {verb}
         </span>
         <span
@@ -155,7 +162,7 @@ function CommandLabel({
   if (step.tool.kind === "script") {
     return (
       <span className="flex min-w-0 items-baseline gap-2">
-        <span className="shrink-0 font-medium text-muted-foreground">
+        <span className="shrink-0 font-medium text-activity-secondary">
           {t("row.codexScript")}
         </span>
         {command.display ? (
@@ -188,10 +195,10 @@ function CommandLabel({
       <span
         className={cn(
           "shrink-0 font-medium",
-          live ? "activity-shimmer" : "text-muted-foreground"
+          live ? "activity-shimmer" : "text-activity-secondary"
         )}
       >
-        {t("row.command")}
+        {step.tool.kind === "monitor" ? t("row.monitor") : t("row.command")}
       </span>
       {command.description ? (
         <span dir="auto" className="min-w-0 truncate text-activity-secondary">
@@ -253,13 +260,61 @@ function expandTabs(line: string): string {
   return out
 }
 
+/** Longest argument preview a script call's line shows. */
+const CALL_INPUT_CHARS = 160
+
+function callInputPreview(input: Record<string, unknown> | null): string {
+  if (!input || Object.keys(input).length === 0) return ""
+  const text = JSON.stringify(input)
+  return text.length > CALL_INPUT_CHARS
+    ? `${text.slice(0, CALL_INPUT_CHARS - 1)}…`
+    : text
+}
+
+/** The tools a code-mode script called, one per line, with how each ended. */
+function ScriptCalls({ calls }: { calls: CodeModeCall[] }) {
+  return (
+    <ul
+      className="border-b border-foreground/5 px-4 py-2 font-mono text-[0.78125rem] leading-relaxed"
+      dir="ltr"
+    >
+      {calls.map((call, index) => (
+        <li key={index} className="flex min-w-0 items-baseline gap-2">
+          <span
+            aria-hidden
+            className={cn(
+              "shrink-0",
+              call.status === "error"
+                ? "text-destructive"
+                : call.status === "running"
+                  ? "text-muted-foreground"
+                  : "text-emerald-500"
+            )}
+          >
+            {call.status === "error"
+              ? "✕"
+              : call.status === "running"
+                ? "…"
+                : "✓"}
+          </span>
+          <span className="shrink-0 text-foreground">{call.tool}</span>
+          <span className="min-w-0 truncate text-activity-secondary">
+            {callInputPreview(call.input)}
+          </span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 /**
- * A codex script, set in its panel the way a command is: flush, at the
- * output's size, in the colours of the app's code blocks. Its lines wrap, as
- * the command's and the output's do, so all of a line reads without a
- * sideways scroll; a wrapped line hangs two columns in from its own indent,
- * so it never reads as the next line. A long script scrolls on its own under
- * a lower cap than the output's, which keeps its full height beneath it.
+ * A code-mode script (codex's or OpenCode's), set in its panel the way a
+ * command is: flush, at the output's size, in the colours of the app's code
+ * blocks. Its lines wrap, as the command's and the output's do, so all of a
+ * line reads without a sideways scroll; a wrapped line hangs two columns in
+ * from its own indent, so it never reads as the next line. A long script
+ * scrolls on its own under a lower cap than the output's, which keeps its
+ * full height beneath it.
  */
 function ScriptSource({ source }: { source: string }) {
   const code = useMemo(
@@ -325,8 +380,14 @@ function CommandDetail({
     !!command.display
   const fullCommand = command?.display ?? ""
   const script = useMemo(
-    () => (isScript ? parseCodexScriptCard(step.part.input) : null),
-    [isScript, step.part.input]
+    () => (isScript ? parseScriptCard(step.part.input, step.part.meta) : null),
+    [isScript, step.part.input, step.part.meta]
+  )
+  // The calls the script made, when the agent reports them (OpenCode's
+  // `execute`; see `CODE_MODE_CALLS_META_KEY`).
+  const calls = useMemo(
+    () => (isScript ? codeModeCalls(step.part.meta) : []),
+    [isScript, step.part.meta]
   )
   const scriptMeta = useMemo(
     () => parseCodexScriptMeta(step.part.meta),
@@ -385,6 +446,7 @@ function CommandDetail({
       }
     >
       {script ? <ScriptSource source={script.source} /> : null}
+      {calls.length > 0 ? <ScriptCalls calls={calls} /> : null}
       {scriptMeta?.sharedWith.length ? (
         <p className="border-b border-foreground/5 px-4 py-2 text-xs text-muted-foreground">
           {tParts("codexScript.sharedWith", {
@@ -406,7 +468,9 @@ function CommandDetail({
           className="whitespace-pre-wrap break-words border-b border-foreground/5 px-4 py-3 font-mono text-[0.78125rem] leading-relaxed"
           dir="ltr"
         >
-          <span className="select-none text-muted-foreground">$ </span>
+          {command?.websocket ? null : (
+            <span className="select-none text-muted-foreground">$ </span>
+          )}
           {fullCommand}
         </pre>
       ) : null}
@@ -507,7 +571,7 @@ export const CommandRow = memo(function CommandRow({
           icon={toolIcon(tool)}
           status={tool.status}
           size={inGroup ? "sm" : "md"}
-          label={`${t("kind.command")}, ${statusText(tool.status, tool.exit)}`}
+          label={`${t(tool.kind === "monitor" ? "kind.monitor" : "kind.command")}, ${statusText(tool.status, tool.exit)}`}
         />
       }
       expandable={expandable}
@@ -634,7 +698,7 @@ export const CommandGroupRow = memo(function CommandGroupRow({
       <span
         className={cn(
           "font-medium",
-          live ? "activity-shimmer" : "text-muted-foreground"
+          live ? "activity-shimmer" : "text-activity-secondary"
         )}
       >
         {live || awaited

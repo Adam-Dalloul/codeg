@@ -129,8 +129,8 @@ export const ActivityHeader = memo(function ActivityHeader({
   return (
     <div
       ref={ref}
-      // `activity-capsule`: filled like the user's message bubble, over a
-      // workspace background image too — translucent there, with its ring
+      // `activity-capsule`: a translucent wash of the steps' secondary grey,
+      // grey in every theme, with a ring over a workspace background image
       // (globals.css). A block, not inline: no line box around it adds room
       // under it, so what follows starts at its bottom edge.
       className={cn(
@@ -172,7 +172,7 @@ export const ActivityHeader = memo(function ActivityHeader({
                   {failureClause.danger && onJumpToFailure ? (
                     <button
                       type="button"
-                      className="rounded-sm text-tone-danger underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="rounded-sm text-activity-capsule-danger underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       title={t("header.jumpToFailure")}
                       onClick={onJumpToFailure}
                     >
@@ -181,7 +181,9 @@ export const ActivityHeader = memo(function ActivityHeader({
                   ) : (
                     <span
                       className={
-                        failureClause.danger ? "text-tone-danger" : undefined
+                        failureClause.danger
+                          ? "text-activity-capsule-danger"
+                          : undefined
                       }
                     >
                       {failureClause.text}

@@ -127,7 +127,7 @@ function renderEditor(
   )
 }
 
-const PROVIDER_RADIO = { name: "From the provider (API URL + /models)" }
+const PROVIDER_RADIO = { name: "From the provider" }
 
 describe("CodexModelListEditor — the provider's list", () => {
   beforeEach(() => {
@@ -157,14 +157,115 @@ describe("CodexModelListEditor — the provider's list", () => {
       keySource: { kind: "inline", apiKey: "sk-test" },
     })
     expect(latest.catalog).toEqual({ format: "native" })
-    expect(screen.getByText("Provider models")).toBeInTheDocument()
+    expect(screen.getByRole("radio", PROVIDER_RADIO)).toBeChecked()
+    // How many the provider lists, and from where, atop its rows.
+    expect(screen.getByText("2 models · relay.test")).toBeVisible()
     // codex's own officials are not the rows any more.
     expect(screen.queryByText("GPT-5.5")).toBeNull()
 
     // The bin hides a provider model the way it hides an official.
-    const row = screen.getByText("R1").closest("div.rounded-md") as HTMLElement
+    const row = screen
+      .getByText("R1")
+      .closest("[data-model-row]") as HTMLElement
     await user.click(within(row).getByRole("button", { name: "Remove" }))
     expect(latest.excludedOfficials).toEqual(["r1"])
+  })
+
+  it("heads codex's own list with its count and a refresh from codex", async () => {
+    renderEditor({ customs: [] })
+    expect(await screen.findByText("2 models · from codex")).toBeVisible()
+    expect(screen.getByRole("radio", { name: "Codex built-in" })).toBeChecked()
+    expect(
+      screen.getByRole("button", { name: "Refresh from codex" })
+    ).toBeEnabled()
+    // No provider is asked while codex's own list is the source.
+    expect(codexFetchEndpointCatalog).not.toHaveBeenCalled()
+  })
+
+  it("counts only the picks the provider still returns, and what was removed", async () => {
+    vi.mocked(codexEndpointCatalogPublished).mockResolvedValue({
+      catalog: openAiView(["glm-5.2", "kimi-k3"]),
+      mismatch: null,
+    })
+    const picks = renderEditor({
+      customs: [],
+      catalog: {
+        format: "openai_list",
+        selected: ["glm-5.2", "kimi-k3", "qwen-4"],
+      },
+    })
+    // A pick it stopped returning is a row of its own, marked; not "3 of 2".
+    expect(
+      await screen.findByText("2 of 2 picked · relay.test · as applied")
+    ).toBeVisible()
+    const gone = screen.getByText("qwen-4").closest("[data-model-row]")!
+    expect(
+      within(gone as HTMLElement).getByText("No longer returned")
+    ).toBeVisible()
+    picks.unmount()
+
+    vi.mocked(codexEndpointCatalogPublished).mockResolvedValue({
+      catalog: view(),
+      mismatch: null,
+    })
+    renderEditor({
+      customs: [],
+      catalog: { format: "native" },
+      excludedOfficials: ["r1"],
+    })
+    expect(
+      await screen.findByText("1 model · relay.test · 1 removed · as applied")
+    ).toBeVisible()
+  })
+
+  it("says a bound provider manages the list, whatever its source", async () => {
+    renderEditor(
+      { customs: [] },
+      {
+        readOnly: true,
+        endpoint: {
+          ...ENDPOINT,
+          keySource: { kind: "provider", providerId: 7 },
+          managedBy: "Relay",
+        },
+      }
+    )
+    expect(await screen.findByText("Managed by provider “Relay”")).toBeVisible()
+    expect(screen.getByText("2 models · from codex")).toBeVisible()
+    expect(
+      screen.getByRole("radio", { name: "From the provider" })
+    ).toBeDisabled()
+  })
+
+  it("keeps the list URL folded until it is wanted", async () => {
+    const user = userEvent.setup()
+    renderEditor({ customs: [], catalog: { format: "native" } })
+    const toggle = await screen.findByRole("button", {
+      name: "List URL (optional)",
+    })
+    expect(toggle).toHaveAttribute("aria-expanded", "false")
+    expect(
+      screen.queryByRole("textbox", { name: "List URL (optional)" })
+    ).toBeNull()
+
+    await user.click(toggle)
+    const field = screen.getByRole("textbox", { name: "List URL (optional)" })
+    expect(field).toHaveAttribute("placeholder", "https://relay.test/v1/models")
+    await user.type(field, "https://other.test/models")
+    expect(latest.catalog?.url).toBe("https://other.test/models")
+    expect(
+      screen.getByText("The API key will be sent to other.test.")
+    ).toBeVisible()
+  })
+
+  it("opens the list URL on its own when one is set", async () => {
+    renderEditor({
+      customs: [],
+      catalog: { format: "native", url: "https://relay.test/catalog" },
+    })
+    expect(
+      await screen.findByRole("textbox", { name: "List URL (optional)" })
+    ).toHaveValue("https://relay.test/catalog")
   })
 
   it("drops an answer that arrives after the editor went away", async () => {
@@ -242,7 +343,7 @@ describe("CodexModelListEditor — the provider's list", () => {
     )
 
     const dialog = await screen.findByRole("dialog")
-    expect(within(dialog).getByText("Pick models")).toBeVisible()
+    expect(within(dialog).getByText("Choose models")).toBeVisible()
     const glm = within(dialog).getByText("glm-5.2").closest("label")!
     await user.click(within(glm).getByRole("checkbox"))
     await user.click(
@@ -257,7 +358,7 @@ describe("CodexModelListEditor — the provider's list", () => {
     expect(screen.getByText("Generic compatible template")).toBeVisible()
 
     // The bin takes an id out of the allowlist.
-    const row = screen.getByText("glm-5.2").closest("div.rounded-md")!
+    const row = screen.getByText("glm-5.2").closest("[data-model-row]")!
     await user.click(
       within(row as HTMLElement).getByRole("button", { name: "Remove" })
     )
@@ -340,7 +441,7 @@ describe("CodexModelListEditor — the provider's list", () => {
       }
     )
     expect(await screen.findByText("R2")).toBeVisible()
-    expect(screen.getByText("Managed by provider “Relay”")).toBeVisible()
+    expect(screen.getByText(/Managed by provider “Relay”/)).toBeVisible()
     expect(screen.queryByRole("button", { name: "Fetch models" })).toBeNull()
     expect(screen.getByRole("radio", PROVIDER_RADIO)).toBeDisabled()
     await waitFor(() =>

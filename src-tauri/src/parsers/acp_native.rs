@@ -433,8 +433,8 @@ pub fn is_recorded_update(update: &SessionUpdate) -> bool {
 /// not the per-turn input/output counts `MessageTurn::usage` holds — so it
 /// feeds the session footer's context-window trio, exactly like the built-in
 /// parsers derive it from their own stores, and never a turn's token usage.
-/// (A turn's usage comes only from what its turn end records, today ZCode's
-/// per-window reports, see `acp::zcode_turn`; otherwise it stays `None`.
+/// (A turn's usage comes only from its recorded prompt response or ZCode's
+/// native turn metrics, see `acp::zcode_turn`; otherwise it stays `None`.
 /// Inventing one from occupancy deltas would be a guess rendered as fact.)
 ///
 /// Matched on the raw payload rather than by deserializing: the answer is
@@ -532,10 +532,13 @@ pub fn project_turns(entries: &[TranscriptEntry]) -> Vec<MessageTurn> {
                     // prompt; the part's own span (`flush`) is the honest one.
                     apply_turn_end(p, &entry.p, !steered);
                     p.last_at_ms = entry.t;
-                } else if steered {
-                    // Nothing came after the last steer, so the usage and model
-                    // the turn end reports go on the part before it — never on
-                    // a reply to an earlier prompt.
+                } else {
+                    // Nothing came after the last user message of this turn —
+                    // a steer, or one the agent relayed from another client
+                    // (claude-agent-acp forwards Remote Control messages as
+                    // `user_message_chunk`). The usage and model the turn end
+                    // reports go on the part before it — never on a reply to an
+                    // earlier prompt.
                     if let Some(last) = turns
                         .iter_mut()
                         .skip(prompt_start.unwrap_or(usize::MAX))
@@ -550,6 +553,20 @@ pub fn project_turns(entries: &[TranscriptEntry]) -> Vec<MessageTurn> {
                             last.usage = usage;
                         }
                     }
+                }
+                // A paid attempt can finish without emitting any text or
+                // tools. Keep its reported usage without inventing content,
+                // and never attach an unprompted footer to an earlier turn.
+                if pending.is_none()
+                    && prompt_start.is_some()
+                    && !turns.iter().skip(prompt_start.unwrap_or(usize::MAX))
+                        .any(|turn| matches!(turn.role, TurnRole::Assistant))
+                    && turn_end_model_and_usage(&entry.p).1.is_some()
+                {
+                    let mut turn = PendingTurn::new(turn_start_hint.unwrap_or(entry.t));
+                    apply_turn_end(&mut turn, &entry.p, !steered);
+                    turn.last_at_ms = entry.t;
+                    pending = Some(turn);
                 }
                 flush(&mut pending, &mut turns, &mut seq);
                 prompt_just_recorded = false;
@@ -593,7 +610,7 @@ pub fn project_turns(entries: &[TranscriptEntry]) -> Vec<MessageTurn> {
 
 fn flush(pending: &mut Option<PendingTurn>, turns: &mut Vec<MessageTurn>, seq: &mut usize) {
     let Some(p) = pending.take() else { return };
-    if !p.has_content {
+    if !p.has_content && p.usage.is_none() {
         return;
     }
     turns.push(MessageTurn {
@@ -641,7 +658,7 @@ fn turn_end_model_and_usage(payload: &serde_json::Value) -> (Option<String>, Opt
     (model, usage)
 }
 
-/// Read an ACP usage object. Field names follow the `unstable_session_usage`
+/// Read an ACP usage object. Field names follow `unstable_end_turn_token_usage`
 /// shape, with snake_case accepted as well since agents differ.
 fn parse_usage(value: &serde_json::Value) -> Option<TurnUsage> {
     let get = |keys: &[&str]| -> u64 {
@@ -1166,6 +1183,46 @@ mod tests {
             "sessionUpdate": kind,
             "content": { "type": "text", "text": text }
         })
+    }
+
+    #[test]
+    fn reported_usage_survives_a_turn_without_output_but_not_an_orphan_footer() {
+        let footer = entry(200, EntryKind::TurnEnd, serde_json::json!({
+            "stopReason":"end_turn", "durationMs":100,
+            "usage":{"inputTokens":3,"outputTokens":0,"cachedReadTokens":4,"totalTokens":7}
+        }));
+        let turns = project_turns(&[prompt(100, "attempt"), footer.clone()]);
+        assert_eq!(turns.len(), 2);
+        assert!(turns[1].blocks.is_empty());
+        assert_eq!(turns[1].usage.as_ref().unwrap().input_tokens, 3);
+        assert_eq!(turns[1].usage.as_ref().unwrap().cache_read_input_tokens, 4);
+        assert_eq!(turns[1].duration_ms, Some(100));
+        assert!(project_turns(&[footer]).is_empty());
+    }
+
+    /// A message typed in another client of the session reaches codeg as a
+    /// `user_message_chunk` while the prompt is still open. It closes the
+    /// reply so far, and when nothing follows it the turn end's usage still
+    /// belongs to that reply.
+    #[test]
+    fn a_relayed_user_message_does_not_drop_the_turn_end_usage() {
+        let turns = project_turns(&[
+            prompt(100, "P"),
+            update(150, text_chunk("agent_message_chunk", "Reply")),
+            update(200, text_chunk("user_message_chunk", "Remote follow-up")),
+            entry(
+                300,
+                EntryKind::TurnEnd,
+                serde_json::json!({
+                    "stopReason": "end_turn", "model": "opus",
+                    "usage": {"inputTokens": 4000, "outputTokens": 10, "totalTokens": 4010}
+                }),
+            ),
+        ]);
+        assert_eq!(roles(&turns), ["User", "Assistant", "User"]);
+        assert_eq!(turns[1].usage.as_ref().map(|u| u.input_tokens), Some(4000));
+        assert_eq!(turns[1].model.as_deref(), Some("opus"));
+        assert_eq!(turns[2].usage, None);
     }
 
     fn attachment_prompt() -> serde_json::Value {
@@ -2071,9 +2128,13 @@ mod tests {
             steer(2_500, "make it blue"),
             reported_turn_end(3_000, 990),
         ]);
-        assert_eq!(roles(&silent), ["User", "Assistant", "User", "User"]);
+        // The second prompt's reported spend belongs to its own empty result,
+        // never to the reply produced for the first prompt.
+        assert_eq!(roles(&silent), ["User", "Assistant", "User", "User", "Assistant"]);
         assert_eq!(silent[1].usage, None);
         assert_eq!(silent[1].model, None);
+        assert!(silent[4].blocks.is_empty());
+        assert_eq!(silent[4].usage.as_ref().map(|usage| usage.input_tokens), Some(10));
     }
 
     /// A call the reply started before a steer can report after it: a command

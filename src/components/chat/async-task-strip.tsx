@@ -12,7 +12,8 @@
  * claim "running" because a transcript can't tell a live task from one whose
  * CLI died, and codex's launching call simply never settles. This strip is the
  * authoritative answer, and it is the only surface that can offer a stop (Grok
- * has no stop request, so its rows never offer one).
+ * has no stop request, so its rows never offer one; nor does a Claude Code
+ * monitor's, which claude-agent-acp 0.98.0 publishes as unstoppable).
  *
  * One row is not a job: since claude-agent-acp 0.97.0 a turn Claude Code starts
  * on its own after the prompt ended (to answer a finished background task, or

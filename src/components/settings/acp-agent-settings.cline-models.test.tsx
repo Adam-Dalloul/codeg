@@ -55,7 +55,6 @@ function clineAgent(config: Record<string, unknown>): AcpAgentInfo {
     env: {},
     config_json: JSON.stringify(config),
     config_file_path: null,
-    opencode_auth_json: null,
     codex_auth_json: null,
     cline_secrets_json: null,
     codex_config_toml: null,
@@ -122,7 +121,7 @@ describe("AcpAgentSettings — Cline's OpenAI-compatible model table", () => {
     )
     const dialog = await screen.findByRole("dialog")
     for (const id of ["kimi-k3", "old"]) {
-      const row = within(dialog).getByText(id).closest("label")!
+      const row = (await within(dialog).findByText(id)).closest("label")!
       await user.click(within(row).getByRole("checkbox"))
     }
     await user.click(

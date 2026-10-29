@@ -429,6 +429,9 @@ pub enum ModelsKeySource {
     /// The key pi keeps for one of its providers (its `auth.json`), which the
     /// Pi panel never shows.
     PiAuth { provider: String },
+    /// The key OpenCode 2 keeps for one of its integrations (its credential
+    /// store), read through OpenCode itself; the OpenCode panel never shows it.
+    OpencodeCredential { integration_id: String },
 }
 
 impl std::fmt::Debug for ModelsKeySource {
@@ -442,6 +445,10 @@ impl std::fmt::Debug for ModelsKeySource {
             ModelsKeySource::PiAuth { provider } => f
                 .debug_struct("PiAuth")
                 .field("provider", provider)
+                .finish(),
+            ModelsKeySource::OpencodeCredential { integration_id } => f
+                .debug_struct("OpencodeCredential")
+                .field("integration_id", integration_id)
                 .finish(),
         }
     }
@@ -465,6 +472,7 @@ const MODELS_ERROR_NAMESPACE: &str = "providerModels";
 /// The models a provider lists, asked the way the agent itself would ask.
 pub async fn list_provider_models_core(
     db: &AppDatabase,
+    data_dir: &std::path::Path,
     params: ListProviderModelsParams,
 ) -> Result<ModelList, AppCommandError> {
     let api_key = match params.key_source {
@@ -490,6 +498,21 @@ pub async fn list_provider_models_core(
         },
         ModelsKeySource::PiAuth { provider } => {
             acp::pi_stored_api_key(db, &provider)
+                .await
+                .map_err(|e| AppCommandError::io_error(e.to_string()))?
+                .unwrap_or_default()
+        }
+        ModelsKeySource::OpencodeCredential { integration_id } => {
+            let env = acp::build_runtime_env_for_agent(
+                db,
+                crate::models::agent::AgentType::OpenCode,
+                None,
+                data_dir,
+                true,
+            )
+            .await
+            .map_err(|e| AppCommandError::io_error(e.to_string()))?;
+            crate::acp::opencode_credentials::stored_key(&env, data_dir, &integration_id)
                 .await
                 .map_err(|e| AppCommandError::io_error(e.to_string()))?
                 .unwrap_or_default()
@@ -582,8 +605,15 @@ pub async fn delete_model_provider(
 pub async fn list_provider_models(
     params: ListProviderModelsParams,
     db: tauri::State<'_, AppDatabase>,
+    app: tauri::AppHandle,
 ) -> Result<ModelList, AppCommandError> {
-    list_provider_models_core(&db, params).await
+    use tauri::Manager;
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map(|p| crate::paths::resolve_effective_data_dir(&p))
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    list_provider_models_core(&db, &data_dir, params).await
 }
 
 #[cfg(test)]
@@ -664,7 +694,7 @@ mod tests {
             provider_id: provider.id,
             api_key: None,
         };
-        let list = list_provider_models_core(&db, list_params(&base, source))
+        let list = list_provider_models_core(&db, std::path::Path::new("."), list_params(&base, source))
             .await
             .unwrap();
         assert_eq!(list.models[0].id, "glm-5.2");
@@ -675,7 +705,7 @@ mod tests {
             provider_id: provider.id,
             api_key: Some(" sk-typed ".to_string()),
         };
-        list_provider_models_core(&db, list_params(&base, source))
+        list_provider_models_core(&db, std::path::Path::new("."), list_params(&base, source))
             .await
             .unwrap();
         assert!(seen.await.unwrap().contains("Bearer sk-typed"));
@@ -684,7 +714,7 @@ mod tests {
             provider_id: provider.id + 1,
             api_key: None,
         };
-        let err = list_provider_models_core(&db, list_params(&base, source))
+        let err = list_provider_models_core(&db, std::path::Path::new("."), list_params(&base, source))
             .await
             .unwrap_err();
         assert_eq!(

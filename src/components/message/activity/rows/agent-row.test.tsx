@@ -983,5 +983,38 @@ describe("sub-agent row: background lifecycle", () => {
     expect(within(header()).getByText("launched")).toBeInTheDocument()
     open()
     expect(screen.getByText("Result not returned yet")).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain(BACKGROUND_TASK_MARKER)
+  })
+
+  // OpenCode settles a background sub-agent from its end, which carries no
+  // reply when the sub-agent wrote none.
+  it("shows no result, never the marker, for a settle that carries none", () => {
+    renderRow(
+      launch({
+        task_id: "ses_child",
+        status: "completed",
+        summary: null,
+        result: null,
+      })
+    )
+    expect(row()).toHaveAttribute("data-status", "succeeded")
+    open()
+    expect(document.body.textContent).not.toContain(BACKGROUND_TASK_MARKER)
+  })
+
+  it("says how a failed settle ended, without a result", () => {
+    renderRow(
+      launch({
+        task_id: "ses_child",
+        status: "failed",
+        summary: "Rate limited",
+        result: null,
+      })
+    )
+    expect(row()).toHaveAttribute("data-status", "failed")
+    expect(within(header()).getByText("failed")).toBeInTheDocument()
+    open()
+    expect(screen.getByText("Rate limited")).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain(BACKGROUND_TASK_MARKER)
   })
 })
