@@ -257,6 +257,13 @@ function renderInput(
   )
 }
 
+/** Runs the next animation frame inside act(), so what the composer defers to
+ *  a frame is committed — effects included — before the test goes on. */
+const nextFrame = () =>
+  act(async () => {
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)))
+  })
+
 describe("MessageInput (RichComposer integration)", () => {
   afterEach(() => cleanup())
 
@@ -397,12 +404,6 @@ describe("MessageInput (RichComposer integration)", () => {
         />
       </NextIntlClientProvider>
     )
-    const nextFrame = () =>
-      act(async () => {
-        await new Promise((resolve) =>
-          requestAnimationFrame(() => resolve(null))
-        )
-      })
     async function mountReady(isActive: boolean, coarse: boolean) {
       setPointer(coarse)
       saveMessageInputDraftV2(draftKey, {
@@ -841,6 +842,10 @@ describe("MessageInput injectContent", () => {
     blob: null,
   }
 
+  // Enter reaches the send through the editor's keymap, which takes the
+  // composer's latest send handler in an effect — so an image on screen is not
+  // in the send until React has run the effects of the render that showed it.
+  // A hand-back that gets sent therefore has its frame run inside act().
   function pressEnter(editor: Editor) {
     act(() => {
       ;(editor.view.dom as HTMLElement).dispatchEvent(
@@ -868,6 +873,7 @@ describe("MessageInput injectContent", () => {
         },
       })
     )
+    await nextFrame() // the hand-back's own frame
     await waitFor(() =>
       expect(serializeDocToText(editor.state.doc)).toBe(prose)
     )
@@ -901,6 +907,7 @@ describe("MessageInput injectContent", () => {
         },
       })
     )
+    await nextFrame() // the hand-back's own frame
     await waitFor(() =>
       expect(serializeDocToText(editor.state.doc).trim()).toBe(
         "and another thing\n\n12"
@@ -960,6 +967,7 @@ describe("MessageInput injectContent", () => {
         },
       })
     )
+    await nextFrame() // the hand-back's own frame
     await waitFor(() =>
       expect(serializeDocToText(editor.state.doc).trim()).toBe("first")
     )
@@ -971,6 +979,7 @@ describe("MessageInput injectContent", () => {
         },
       })
     )
+    await nextFrame() // the hand-back's own frame
     // (The space is the one a restored file badge always gets after it.)
     await waitFor(() =>
       expect(serializeDocToText(editor.state.doc).trim()).toBe(
@@ -3264,7 +3273,7 @@ describe("MessageInput live content for draft tidying", () => {
       })
     )
     expect(await screen.findByAltText("image.png")).toBeInTheDocument()
-    expect(hasLiveComposerContent(draftKey)).toBe(true)
+    await waitFor(() => expect(hasLiveComposerContent(draftKey)).toBe(true))
 
     view.unmount()
     expect(hasLiveComposerContent(draftKey)).toBe(false)

@@ -705,7 +705,7 @@ pub fn is_codeg_ask_tool_name(name: &str) -> bool {
 /// own questions: `server.py::_ask_user_handler` mints
 /// `interaction_<8 hex>` for each question it asks (the model's `ask_question`,
 /// asked one question at a time, and the workspace-trust prompt alike). It is
-/// the only producer of that prefix in 1.4.1.
+/// the only producer of that prefix in 1.4.1 and 1.4.3.
 pub const ANTIGRAVITY_INTERACTION_ID_PREFIX: &str = "interaction_";
 
 /// True when `id` has the shape of an antigravity-acp question's tool call id
@@ -1090,13 +1090,18 @@ pub enum CodexUserInputShape {
 /// generation sent it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ElicitationPeer {
-    /// Anything that is not codex-acp (DeepSeek and Qoder today; any future
-    /// `elicitation.form` speaker). The form is parsed generically.
+    /// Anything that is neither codex-acp nor OpenCode (DeepSeek and Qoder
+    /// today; any future `elicitation.form` speaker). The form is parsed
+    /// generically.
     Other,
     /// codex-acp, carrying the `request_user_input` shape its RUNNING version
     /// implies — `None` when `agentInfo.version` was absent or unparseable, in
     /// which case the form's own markers have to date it.
     Codex(Option<CodexUserInputShape>),
+    /// OpenCode 2, whose question forms pair every select field `<id>` with a
+    /// free-text `<id>_custom` companion (see [`is_opencode_custom_companion`]).
+    /// Otherwise parsed generically.
+    OpenCode,
 }
 
 impl ElicitationPeer {
@@ -1260,6 +1265,67 @@ fn is_codex_synthetic_other_choice(raw: &Value, id: &str, label: &str, value: &s
             && entry.get("description").and_then(Value::as_str)
                 == Some(CODEX_SYNTHETIC_OTHER_DESCRIPTION)
     })
+}
+
+/// True when `id` is the free-text companion OpenCode 2 puts beside a select
+/// field: `<field>_custom`, next to a `<field>` that offers choices. OpenCode
+/// marks it with nothing but the name — `custom: true` on a question field
+/// becomes a select plus a `"<title> (other)"` string property
+/// (`packages/cli/src/acp/elicitation.ts` `other` / `customKey`, 2.2.0) — so,
+/// like codex's `_meta.codex` markers, the rule is trusted only on an OpenCode
+/// connection, where the card's own "Other" input stands in for it.
+///
+/// The typed answer then rides under the select field's own id
+/// ([`build_elicitation_response`] writes every value there), which OpenCode
+/// accepts: its question fields are `custom`, so a value outside the options
+/// is the user's own answer (`core/src/form.ts`).
+fn is_opencode_custom_companion(
+    properties: &BTreeMap<String, ElicitationPropertySchema>,
+    id: &str,
+) -> bool {
+    let Some(field) = id.strip_suffix("_custom") else {
+        return false;
+    };
+    match properties.get(field) {
+        Some(ElicitationPropertySchema::String(s)) => !string_prop_choices(s).is_empty(),
+        Some(ElicitationPropertySchema::Array(_)) => true,
+        _ => false,
+    }
+}
+
+/// Whether an OpenCode 2 `elicitation/create` is its `question` tool's form:
+/// one `q<n>` field per question, each optionally beside its `q<n>_custom`
+/// companion (`core/src/tool/plugin/question.ts` `toField`, 2.2.0). OpenCode
+/// elicits one other form, the web-search provider choice
+/// (`core/src/tool/plugin/websearch.ts`, a `choice` field), which codeg does not
+/// ask the user: it is declined, and the search fails over to the model.
+pub fn is_opencode_question_form(raw: &Value) -> bool {
+    let Some(properties) = raw
+        .get("requestedSchema")
+        .and_then(|schema| schema.get("properties"))
+        .and_then(Value::as_object)
+    else {
+        return false;
+    };
+    let is_question_key = |key: &str| {
+        key.strip_prefix('q')
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    };
+    !properties.is_empty()
+        && properties.keys().any(|key| is_question_key(key))
+        && properties.keys().all(|key| {
+            is_question_key(key) || key.strip_suffix("_custom").is_some_and(is_question_key)
+        })
+}
+
+/// The elicitation reply that ANSWERS an OpenCode question with nothing:
+/// `accept` with no content. OpenCode then hands the model "Unanswered" for
+/// each question and the turn goes on (`core/src/tool/plugin/question.ts`
+/// `toModelContent`). Used where codeg cannot ask the user (the ask feature is
+/// off, another question is already open): a `decline` there would read to
+/// OpenCode as the user DISMISSING the question, which ends the turn.
+pub fn elicitation_unanswered_response() -> CreateElicitationResponse {
+    CreateElicitationResponse::new(ElicitationAction::Accept(ElicitationAcceptAction::new()))
 }
 
 /// True when the raw schema property carries the shared custom-answer marker
@@ -1537,6 +1603,8 @@ fn parse_form_questions(
         if is_other_companion(id)
             || (peer_is_codex && codex_companion_role(raw, id).is_some())
             || is_custom_answer_property(raw, id)
+            || (peer == ElicitationPeer::OpenCode
+                && is_opencode_custom_companion(&form.requested_schema.properties, id))
         {
             continue;
         }
@@ -1948,6 +2016,149 @@ mod tests {
             ElicitationPlan::Approval(a) => a,
             ElicitationPlan::Questions(_) => panic!("expected an approval plan"),
         }
+    }
+
+    /// OpenCode 2.2.0's `question` tool, as its bridge elicits it (live
+    /// capture): a `q<n>` select per question beside a `q<n>_custom` text
+    /// companion, scoped to the streamed tool call.
+    fn opencode_question_raw() -> Value {
+        json!({
+            "mode": "form",
+            "sessionId": "ses_e826307d6ffepX5ltg2opas3fw",
+            "toolCallId": "call_main_11_15",
+            "message": "Questions",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "q0": {
+                        "type": "string",
+                        "title": "Color",
+                        "description": "Which color do you prefer?",
+                        "oneOf": [
+                            {"const": "Red", "title": "Red", "description": "Warm"},
+                            {"const": "Blue", "title": "Blue", "description": "Cool"},
+                        ],
+                    },
+                    "q0_custom": {
+                        "type": "string",
+                        "title": "Color (other)",
+                        "description": "Type your own answer",
+                    },
+                },
+                "required": [],
+            },
+        })
+    }
+
+    #[test]
+    fn classify_elicitation_reads_opencode_question_form() {
+        let raw = opencode_question_raw();
+        assert!(is_opencode_question_form(&raw));
+        let q = expect_questions(classify_elicitation(&raw, ElicitationPeer::OpenCode).unwrap());
+        // The companion is the card's own "Other" input, not a question.
+        assert_eq!(q.specs.len(), 1, "{:?}", q.specs);
+        let spec = &q.specs[0];
+        assert_eq!(spec.id, "q0");
+        assert_eq!(spec.header, "Color");
+        assert_eq!(spec.question, "Which color do you prefer?");
+        assert!(!spec.multi_select);
+        let labels: Vec<_> = spec.options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(labels, ["Red", "Blue"]);
+        assert_eq!(q.tool_call_id.as_deref(), Some("call_main_11_15"));
+
+        // A typed answer rides under the select field itself, which OpenCode
+        // takes as the user's own answer (its question fields are `custom`).
+        let outcome = QuestionOutcome {
+            answers: vec![QuestionAnsweredItem {
+                question: "Which color do you prefer?".to_string(),
+                header: "Color".to_string(),
+                multi_select: false,
+                selected: vec!["Teal".to_string()],
+            }],
+            declined: false,
+        };
+        assert_eq!(
+            serde_json::to_value(build_elicitation_response(&q, &outcome)).unwrap(),
+            json!({"action": "accept", "content": {"q0": "Teal"}})
+        );
+
+        // The name alone is no companion on another connection.
+        let generic = expect_questions(classify_elicitation(&raw, ElicitationPeer::Other).unwrap());
+        assert_eq!(generic.specs.len(), 2);
+    }
+
+    #[test]
+    fn opencode_multi_select_question_keeps_its_companion_hidden() {
+        let raw = json!({
+            "mode": "form",
+            "sessionId": "ses_1",
+            "toolCallId": "call_1",
+            "message": "Questions",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "q0": {
+                        "type": "array",
+                        "title": "Integrations",
+                        "description": "Pick the integrations",
+                        "items": {"anyOf": [
+                            {"const": "GitHub", "title": "GitHub"},
+                            {"const": "Slack", "title": "Slack"},
+                        ]},
+                        "minItems": 1,
+                    },
+                    "q0_custom": {
+                        "type": "string",
+                        "title": "Integrations (other)",
+                        "description": "Add your own answer",
+                    },
+                },
+                "required": ["q0"],
+            },
+        });
+        let q = expect_questions(classify_elicitation(&raw, ElicitationPeer::OpenCode).unwrap());
+        assert_eq!(q.specs.len(), 1);
+        assert!(q.specs[0].multi_select);
+    }
+
+    /// OpenCode's other form, the web-search provider choice, is not a
+    /// question form (`core/src/tool/plugin/websearch.ts`).
+    #[test]
+    fn opencode_websearch_form_is_not_a_question_form() {
+        let raw = json!({
+            "mode": "form",
+            "sessionId": "ses_1",
+            "message": "Web Search",
+            "requestedSchema": {
+                "type": "object",
+                "properties": {
+                    "choice": {
+                        "type": "string",
+                        "description": "Allow OpenCode to search the web for up-to-date information?",
+                        "oneOf": [
+                            {"const": "allow", "title": "Allow search via Exa"},
+                            {"const": "disable", "title": "Disable web search"},
+                        ],
+                    },
+                },
+                "required": ["choice"],
+            },
+        });
+        assert!(!is_opencode_question_form(&raw));
+        assert!(!is_opencode_question_form(&json!({"requestedSchema": {"properties": {}}})));
+        assert!(!is_opencode_question_form(&json!({
+            "requestedSchema": {"properties": {"q0_custom": {"type": "string"}}}
+        })));
+    }
+
+    /// An answer with nothing in it: OpenCode tells the model "Unanswered" and
+    /// goes on, where a decline would end the turn as a dismissal.
+    #[test]
+    fn unanswered_response_accepts_with_no_content() {
+        assert_eq!(
+            serde_json::to_value(elicitation_unanswered_response()).unwrap(),
+            json!({"action": "accept"})
+        );
     }
 
     #[test]

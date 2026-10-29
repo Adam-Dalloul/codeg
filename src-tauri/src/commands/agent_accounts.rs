@@ -232,6 +232,9 @@ pub(crate) async fn isolated_login_command(
 ) -> Result<String, AcpError> {
     let spec = agent_accounts::layout(agent)
         .ok_or_else(|| AcpError::protocol("This agent does not support isolated sign-in"))?;
+    if agent == AgentType::OpenCode {
+        refuse_pre_v2_opencode().await?;
+    }
     // Credentials inherited from the terminal would sign in, or be used,
     // instead of the isolated home's own login. A value `env` sets itself is
     // the caller's choice and stays.
@@ -249,6 +252,43 @@ pub(crate) async fn isolated_login_command(
     let mut argv = vec![executable.as_str()];
     argv.extend_from_slice(&spec.login[1..]);
     crate::acp::family_isolator::shell_command_with_env(&env, &argv).map_err(AcpError::protocol)
+}
+
+/// Refuse an OpenCode 1.x sign-in with the message a session gives for that
+/// build (`acp::opencode_launch`): codeg runs OpenCode 2, which keeps its
+/// credentials in its own database and no longer reads what 1.x signs in to.
+async fn refuse_pre_v2_opencode() -> Result<(), AcpError> {
+    use crate::acp::{binary_cache, registry};
+    let meta = registry::get_agent_meta(AgentType::OpenCode);
+    let registry::AgentDistribution::Binary {
+        cmd,
+        version: pinned,
+        ..
+    } = meta.distribution
+    else {
+        return Ok(());
+    };
+    let (bin, label) = match binary_cache::find_best_cached_binary_for_agent(AgentType::OpenCode, cmd)
+        .ok()
+        .flatten()
+    {
+        Some((path, version)) => (path, Some(version)),
+        None => match crate::commands::acp::resolve_system_agent_binary_for(AgentType::OpenCode, cmd) {
+            Some(path) => (path, None),
+            None => return Ok(()),
+        },
+    };
+    match crate::acp::opencode_launch::pre_v2_runtime(&bin, label.as_deref()).await {
+        Some(version) => Err(AcpError::AgentRuntimeOutdated(
+            crate::acp::opencode_launch::runtime_outdated_message(
+                &version,
+                &bin,
+                label.is_some(),
+                pinned,
+            ),
+        )),
+        None => Ok(()),
+    }
 }
 
 pub(crate) async fn login_executable(agent: AgentType) -> Option<std::path::PathBuf> {

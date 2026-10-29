@@ -68,7 +68,6 @@ function grokAgent(settings: Partial<GrokSettings> = {}): AcpAgentInfo {
     env: { GROK_AUTH_MODE: "custom" },
     config_json: null,
     config_file_path: null,
-    opencode_auth_json: null,
     codex_auth_json: null,
     cline_secrets_json: null,
     codex_config_toml: null,
@@ -140,7 +139,7 @@ describe("AcpAgentSettings — Grok's other models from the endpoint", () => {
       })
     )
     const dialog = await screen.findByRole("dialog")
-    const row = within(dialog).getByText("extra-b").closest("label")!
+    const row = (await within(dialog).findByText("extra-b")).closest("label")!
     await user.click(within(row).getByRole("checkbox"))
     await user.click(
       within(dialog).getByRole("button", { name: "Use 2 models" })
