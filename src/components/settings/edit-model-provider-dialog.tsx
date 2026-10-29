@@ -41,11 +41,7 @@ import {
 } from "@/lib/types"
 import { getAgentLabel } from "@/lib/custom-agents"
 import { ClaudeProviderModelFields } from "@/components/settings/claude-model-fields"
-import {
-  ModelIdInputWithFetch,
-  ProviderModelsFetchButton,
-  ProviderModelsStatus,
-} from "@/components/settings/provider-models"
+import { ModelIdInputWithFetch } from "@/components/settings/provider-models"
 import { useProviderModels } from "@/hooks/use-provider-models"
 
 interface EditModelProviderDialogProps {
@@ -300,22 +296,14 @@ export function EditModelProviderDialog({
             </div>
           ) : (
             <div className="space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <label className="text-xs font-medium">{t("model")}</label>
-                {agentType === "gemini" && (
-                  <ProviderModelsFetchButton state={providerModels} />
-                )}
-              </div>
+              <label className="text-xs font-medium">{t("model")}</label>
               <ModelIdInputWithFetch
                 aria-label={t("model")}
                 value={singleModel}
                 onChange={setSingleModel}
-                models={providerModels.models}
+                state={providerModels}
                 placeholder={modelPlaceholder}
               />
-              {agentType === "gemini" && (
-                <ProviderModelsStatus state={providerModels} />
-              )}
             </div>
           )}
 

@@ -139,6 +139,14 @@ fn enum_spec_for(key: &str) -> Option<EnumSpec> {
 /// field. Re-probed against the 0.160.1 binary: every field here and every
 /// enum set above behaves as on 0.159.3. Its one new key is nested — see
 /// [`model_messages_override_is_safe`].
+///
+/// 0.164.0 (codex-acp 2.3.0 moves `@openai/codex` ^0.160.1 → ^0.164.0) ships
+/// the same eleven models in the same order and priorities. Its bundled
+/// catalog is 0.160.1's with the eleven `"instructions_variables": null`
+/// members of `model_messages` gone: 0.164 no longer reads that member at
+/// all, so a value of any type there now loads. No `ModelInfo` field was
+/// added. Re-probed against the 0.164.0 binary: every field here and every
+/// enum set above behaves as on 0.160.1.
 const BOOL_FIELDS: &[&str] = &[
     "use_responses_lite",
     "supported_in_api",
@@ -226,6 +234,15 @@ const MODEL_MESSAGES_TEXT_FIELDS: &[&str] = &[
 /// offers no control for any of this, so only an imported or hand-edited
 /// override can carry one, which is the input these checks exist for. The
 /// nested message tables beyond those members pass through as before.
+///
+/// 0.164 adds more strict members, all inside those nested tables
+/// (`tools.incremental_tools`,
+/// `tools.functions_namespace_functions_description_prefixes`,
+/// `permissions.approved_prefixes`, two under `guardian_v2`); a mistyped one
+/// rejects the whole catalog there, and 0.160.1 ignores them. They pass
+/// through as well: none is in the bundled catalog or the editor, and the
+/// codex that will load a catalog judges it before codeg publishes it
+/// ([`crate::acp::codex_runtime`]).
 fn model_messages_override_is_safe(value: &Value) -> bool {
     match value {
         Value::Null => true,
@@ -808,7 +825,7 @@ mod tests {
         assert_eq!(
             models.len(),
             11,
-            "snapshot should carry the catalog codex 0.159.2–0.160.1 ships"
+            "snapshot should carry the catalog codex 0.159.2–0.164.0 ships"
         );
         // 0.158.0 deleted gpt-5.4 outright (it had shipped hidden, as a
         // retirement stub) rather than hiding it any further.

@@ -12,7 +12,7 @@ use crate::acp::custom_registry;
 use crate::acp::error::AcpError;
 use crate::acp::latest_release;
 use crate::acp::manager::ConnectionManager;
-use crate::acp::opencode_plugins::{self, PluginCheckSummary};
+use crate::acp::opencode_plugins::{self, PluginList};
 use crate::acp::preflight::{self, PreflightResult};
 use crate::acp::registry;
 use crate::acp::types::{
@@ -2376,6 +2376,29 @@ const NPM_FOREGROUND_SCRIPTS: &str = "--foreground-scripts";
 /// user's global script policy.
 const NPM_RUN_SCRIPTS_OVERRIDE: &str = "--ignore-scripts=false";
 
+/// The flags that let `package`'s own install scripts run, for the packages
+/// whose install is those scripts ([`npm_package_requires_scripts`]); none for
+/// any other package.
+///
+/// [`NPM_RUN_SCRIPTS_OVERRIDE`] stopped being enough with npm 12, which runs no
+/// install script it was not told to: npm 12.2.1 skipped hermes-agent's
+/// postinstall under `--ignore-scripts=false` ("install scripts blocked
+/// because they are not covered by allowScripts"). A global install or an
+/// `npx` run has no project `package.json` to hold an `allowScripts` policy,
+/// so npm takes `--allow-scripts=<name>` for those, matched against the
+/// package's resolved registry identity: it covers the package being
+/// installed and none of its dependencies. npm 9.6.7, 10.2.4, 10.8.2 and
+/// 11.17.0 accept the flag without a warning and run the script as before.
+fn npm_run_scripts_args(package: &str) -> Vec<String> {
+    if !npm_package_requires_scripts(package) {
+        return Vec::new();
+    }
+    vec![
+        NPM_RUN_SCRIPTS_OVERRIDE.to_string(),
+        format!("--allow-scripts={}", package_name_from_spec(package)),
+    ]
+}
+
 /// Env var that makes Node's own `fetch` read `HTTP_PROXY`/`HTTPS_PROXY`/
 /// `NO_PROXY` (Node ≥24; earlier runtimes ignore an unknown variable).
 ///
@@ -2549,7 +2572,7 @@ async fn install_npm_global_package_streaming_inner(
     emitter: &EventEmitter,
 ) -> Result<(), AcpError> {
     let registry_arg = format!("--registry={NPM_OFFICIAL_REGISTRY}");
-    let run_scripts = npm_package_requires_scripts(package);
+    let script_args = npm_run_scripts_args(package);
 
     emit_agent_install_event(
         emitter,
@@ -2559,9 +2582,7 @@ async fn install_npm_global_package_streaming_inner(
     );
 
     let mut args = vec!["install", "-g", NPM_INCLUDE_OPTIONAL, NPM_FOREGROUND_SCRIPTS];
-    if run_scripts {
-        args.push(NPM_RUN_SCRIPTS_OVERRIDE);
-    }
+    args.extend(script_args.iter().map(String::as_str));
     args.push(&registry_arg);
     args.push(package);
     let (success, stderr) = run_npm_streaming(&args, task_id, emitter).await?;
@@ -2595,9 +2616,7 @@ async fn install_npm_global_package_streaming_inner(
                 NPM_INCLUDE_OPTIONAL,
                 NPM_FOREGROUND_SCRIPTS,
             ];
-            if run_scripts {
-                retry_args.push(NPM_RUN_SCRIPTS_OVERRIDE);
-            }
+            retry_args.extend(script_args.iter().map(String::as_str));
             retry_args.push(&registry_arg);
             retry_args.push(package);
             let (retry_success, retry_stderr) =
@@ -2665,7 +2684,7 @@ async fn install_npm_to_user_prefix_streaming(
     })?;
 
     let prefix_arg = format!("--prefix={}", prefix.display());
-    let run_scripts = npm_package_requires_scripts(package);
+    let script_args = npm_run_scripts_args(package);
 
     emit_agent_install_event(
         emitter,
@@ -2678,9 +2697,7 @@ async fn install_npm_to_user_prefix_streaming(
     );
 
     let mut args = vec!["install", "-g", NPM_INCLUDE_OPTIONAL, NPM_FOREGROUND_SCRIPTS];
-    if run_scripts {
-        args.push(NPM_RUN_SCRIPTS_OVERRIDE);
-    }
+    args.extend(script_args.iter().map(String::as_str));
     args.push(&prefix_arg);
     args.push(registry_arg);
     args.push(package);
@@ -2703,9 +2720,7 @@ async fn install_npm_to_user_prefix_streaming(
                 NPM_INCLUDE_OPTIONAL,
                 NPM_FOREGROUND_SCRIPTS,
             ];
-            if run_scripts {
-                force_args.push(NPM_RUN_SCRIPTS_OVERRIDE);
-            }
+            force_args.extend(script_args.iter().map(String::as_str));
             force_args.push(&prefix_arg);
             force_args.push(registry_arg);
             force_args.push(package);
@@ -2900,47 +2915,44 @@ fn codex_auth_json_path() -> PathBuf {
     codex_home_dir().join("auth.json")
 }
 
-/// OpenCode reads config from `$XDG_CONFIG_HOME/opencode` (falling back to
-/// `~/.config/opencode`) and credentials from `$XDG_DATA_HOME/opencode`
-/// (falling back to `~/.local/share/opencode`) on every platform. codeg must
-/// write where OpenCode reads, so these reuse the same XDG resolution as
-/// `opencode_plugins` (config) and `parsers::opencode` (data) — otherwise a
-/// user with XDG dirs set would get credentials written where OpenCode never
-/// looks, and codeg's own plugin/connect paths would diverge.
-fn opencode_config_dir() -> PathBuf {
-    crate::acp::opencode_plugins::xdg_config_home()
-        .unwrap_or_else(|| home_dir_or_default().join(".config"))
-        .join("opencode")
-}
-
-fn opencode_primary_config_path() -> PathBuf {
-    opencode_config_dir().join("opencode.json")
-}
-
-fn opencode_legacy_config_path() -> PathBuf {
-    opencode_config_dir().join("config.json")
-}
-
+/// OpenCode 2's global config file: the `opencode.jsonc` or `opencode.json`
+/// that wins in its config directory (`OPENCODE_CONFIG_DIR`, else
+/// `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`; see
+/// `acp::opencode_config`). 1.x's `config.json` is not read by OpenCode 2, so it
+/// is no fallback.
 fn resolve_opencode_config_path() -> PathBuf {
-    let primary = opencode_primary_config_path();
-    if primary.exists() {
-        return primary;
-    }
-
-    let legacy = opencode_legacy_config_path();
-    if legacy.exists() {
-        return legacy;
-    }
-
-    primary
+    crate::acp::opencode_config::config_file().unwrap_or_else(|| {
+        home_dir_or_default()
+            .join(".config")
+            .join("opencode")
+            .join(crate::acp::opencode_config::CONFIG_FILE_NAMES[0])
+    })
 }
 
-fn opencode_auth_json_path() -> PathBuf {
-    crate::parsers::opencode::resolve_opencode_base_dir().join("auth.json")
+/// OpenCode's config as the user wrote it — comments, trailing commas and
+/// formatting included — so the panel's raw editor round-trips it and its
+/// structured editors change single keys in place. Text that does not parse is
+/// handed over as well: the panel shows it and refuses structured edits, where
+/// an empty config would invite a save that replaces the user's file.
+fn load_opencode_config_text() -> Option<String> {
+    let raw = fs::read_to_string(resolve_opencode_config_path()).ok()?;
+    let raw = raw.strip_prefix('\u{feff}').unwrap_or(&raw);
+    (!raw.trim().is_empty()).then(|| raw.to_string())
 }
 
-fn load_opencode_auth_json_raw() -> Option<String> {
-    fs::read_to_string(opencode_auth_json_path()).ok()
+/// Write the panel's OpenCode config text as is, once it parses as OpenCode
+/// would parse it (JSON with comments and trailing commas, an object at the
+/// root). Written atomically, so OpenCode never reads a half-written file.
+fn persist_opencode_config_text(text: &str) -> Result<(), AcpError> {
+    crate::acp::opencode_config::parse_object(text)
+        .map_err(|e| AcpError::protocol(format!("invalid OpenCode config: {e}")))?;
+    let text = if text.ends_with('\n') {
+        text.to_string()
+    } else {
+        format!("{text}\n")
+    };
+    crate::acp::opencode_config::write_atomic(&resolve_opencode_config_path(), &text)
+        .map_err(|e| AcpError::protocol(format!("write OpenCode config failed: {e}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -3837,10 +3849,18 @@ fn load_codex_local_config_json() -> Option<String> {
     serde_json::to_string_pretty(&serde_json::Value::Object(merged)).ok()
 }
 
-/// The plain-string `approval_policy` values codex 0.145 accepts.
+/// The plain-string `approval_policy` values codex accepts.
 /// `AskForApproval` also has a `Granular(GranularApprovalConfig)` variant, which
 /// is a TOML *table* rather than a string and is handled separately.
-const CODEX_APPROVAL_POLICIES: &[&str] = &["untrusted", "on-request", "never"];
+const CODEX_APPROVAL_POLICIES: &[&str] = &["on-request", "never"];
+
+/// The string `approval_policy` codex retired: from 0.160 at the latest, a
+/// config.toml carrying it makes codex refuse to load the config at all
+/// ("approval_policy = \"untrusted\" is no longer supported; remove this
+/// setting"), so no Codex session starts — in codeg or in the Codex CLI.
+/// Still READ, so the panel can show the value it found and say it has to go;
+/// never written.
+const CODEX_RETIRED_APPROVAL_POLICY: &str = "untrusted";
 
 /// `SandboxMode` — the complete upstream vocabulary.
 const CODEX_SANDBOX_MODES: &[&str] = &["read-only", "workspace-write", "danger-full-access"];
@@ -3867,7 +3887,9 @@ fn parse_codex_sandbox_settings(raw_toml: &str) -> CodexSandboxSettings {
             "on-failure" => "on-request",
             other => other,
         })
-        .filter(|value| CODEX_APPROVAL_POLICIES.contains(value))
+        .filter(|value| {
+            CODEX_APPROVAL_POLICIES.contains(value) || *value == CODEX_RETIRED_APPROVAL_POLICY
+        })
         .map(str::to_string);
     let granular = approval_item
         .and_then(toml::Value::as_table)
@@ -3992,9 +4014,15 @@ pub(crate) fn apply_codex_sandbox_config(
             (Some(policy), _) => {
                 let policy = policy.trim();
                 if !CODEX_APPROVAL_POLICIES.contains(&policy) {
-                    return Err(AcpError::protocol(format!(
-                        "unsupported codex approval_policy: {policy}"
-                    )));
+                    return Err(AcpError::protocol(
+                        if policy == CODEX_RETIRED_APPROVAL_POLICY {
+                            "codex no longer accepts approval_policy = \"untrusted\": \
+                             it refuses to start with it"
+                                .to_string()
+                        } else {
+                            format!("unsupported codex approval_policy: {policy}")
+                        },
+                    ));
                 }
                 // Assigning a value over an existing `[approval_policy.granular]`
                 // table replaces the whole item, which is what switching away
@@ -4295,8 +4323,9 @@ fn parse_grok_settings(raw_toml: &str) -> GrokSettings {
 /// (Grok's config reference: "Allowed reasoning-effort values for this model.
 /// When omitted, the menu comes from the endpoint's `/v1/models` row"). That
 /// endpoint is Grok's model catalog (xAI's, or `[endpoints].models_base_url`),
-/// matched by model id: grok 1.0.62 never fetches the list of a model's own
-/// `base_url`, so a custom model the catalog lacks has levels only from here.
+/// matched by model id: grok 1.0.62 and 1.0.70 never fetch the list of a
+/// model's own `base_url`, so a custom model the catalog lacks has levels only
+/// from here.
 const GROK_REASONING_EFFORTS_KEY: &str = "reasoning_efforts";
 
 /// One `reasoning_efforts` level as the panel compares it: trimmed and
@@ -4450,8 +4479,10 @@ pub(crate) fn grok_launch_permission_mode() -> Option<String> {
 /// The loss is inherent to the three presets and is NOT introduced here —
 /// injecting nothing (the previous behavior) yields `agent`, i.e. the same
 /// `on-request` PLUS a widened sandbox. Mapping is therefore strictly better on
-/// the sandbox axis and neutral on the approval axis; the panel discloses the
-/// approval loss to the user rather than pretending it away.
+/// the sandbox axis and neutral on the approval axis. It is also moot on the
+/// codex codeg pins: codex retired `untrusted` and refuses a config carrying it
+/// ([`CODEX_RETIRED_APPROVAL_POLICY`]), so no session starts with it at all,
+/// and the panel says the value has to go rather than describing a fallback.
 ///
 /// **The read-only sandbox, on codex-acp 1.7.0–1.13.x.** No preset carries one
 /// there, and the adapter re-sends the selected preset's `sandboxPolicy` on
@@ -4483,7 +4514,8 @@ fn codex_initial_agent_mode(settings: &CodexSandboxSettings) -> Option<&'static 
         return None;
     }
     // `parse_codex_sandbox_settings` has already folded `on-failure` into
-    // `on-request` and dropped anything outside `CODEX_APPROVAL_POLICIES`.
+    // `on-request` and dropped anything outside `CODEX_APPROVAL_POLICIES` and
+    // the retired `untrusted`.
     let never = settings.approval_policy.as_deref() == Some("never");
     match settings.sandbox_mode.as_deref() {
         // The tightest preset on EVERY adapter generation: a real read-only
@@ -5051,23 +5083,6 @@ fn set_or_remove_grok_number(
     Ok(())
 }
 
-fn persist_opencode_auth_json(raw_auth: &str) -> Result<(), AcpError> {
-    let parsed = serde_json::from_str::<serde_json::Value>(raw_auth)
-        .map_err(|e| AcpError::protocol(format!("invalid opencode auth.json: {e}")))?;
-    if !parsed.is_object() {
-        return Err(AcpError::protocol(
-            "invalid opencode auth.json: root must be a JSON object",
-        ));
-    }
-    let path = opencode_auth_json_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| AcpError::protocol(format!("create opencode directory failed: {e}")))?;
-    }
-    fs::write(&path, format!("{raw_auth}\n"))
-        .map_err(|e| AcpError::protocol(format!("write opencode auth.json failed: {e}")))?;
-    Ok(())
-}
 
 // ---------------------------------------------------------------------------
 // Kimi Code config helpers
@@ -8530,22 +8545,28 @@ async fn hermes_setup_argvs() -> (Vec<String>, Vec<String>) {
         // change can't resurrect a stale recipe.
         _ => "hermes-agent@0.22.2",
     };
-    let build = |tail: &[&str]| -> Vec<String> {
-        let mut argv = vec![
-            "npx".to_string(),
-            "-y".to_string(),
-            // The wrapper's postinstall bootstrap IS the install; without this
-            // a user-level ignore-scripts=true yields a shim that exits
-            // "runtime is not ready" (npx accepts npm config flags).
-            NPM_RUN_SCRIPTS_OVERRIDE.to_string(),
-            "--package".to_string(),
-            package.to_string(),
-            "hermes".to_string(),
-        ];
-        argv.extend(tail.iter().map(|s| s.to_string()));
-        argv
-    };
-    (build(&["acp", "--setup"]), build(&["model"]))
+    (
+        hermes_npx_argv(package, &["acp", "--setup"]),
+        hermes_npx_argv(package, &["model"]),
+    )
+}
+
+/// `npx -y <script flags> --package <spec> hermes <tail…>`: a Hermes command
+/// for a machine where no `hermes` resolves. The wrapper's postinstall
+/// bootstrap IS the install, so the npx run gets the same script flags as an
+/// install ([`npm_run_scripts_args`]); without them a user-level
+/// `ignore-scripts=true`, or npm 12's default block on install scripts, skips
+/// the bootstrap (npx accepts npm config flags).
+fn hermes_npx_argv(package: &str, tail: &[&str]) -> Vec<String> {
+    let mut argv = vec!["npx".to_string(), "-y".to_string()];
+    argv.extend(npm_run_scripts_args(package));
+    argv.extend([
+        "--package".to_string(),
+        package.to_string(),
+        "hermes".to_string(),
+    ]);
+    argv.extend(tail.iter().map(|s| s.to_string()));
+    argv
 }
 
 /// Build the displayed/runnable `(setup, model)` shell commands for the Hermes
@@ -9212,6 +9233,9 @@ pub(crate) fn load_agent_local_config_json(agent_type: AgentType) -> Option<Stri
     if agent_type == AgentType::KimiCode {
         return load_kimi_code_config_json();
     }
+    if agent_type == AgentType::OpenCode {
+        return load_opencode_config_text();
+    }
 
     let path = agent_local_config_path(agent_type)?;
     if !path.exists() {
@@ -9322,24 +9346,18 @@ fn persist_agent_local_config_json(
         return Ok(());
     };
 
+    // The panel sends OpenCode's whole file, possibly with comments: it is
+    // validated as OpenCode parses it and written as sent, never re-serialized.
+    if agent_type == AgentType::OpenCode {
+        return persist_opencode_config_text(raw_patch);
+    }
+
     let patch = serde_json::from_str::<serde_json::Value>(raw_patch)
         .map_err(|e| AcpError::protocol(format!("invalid config_json: {e}")))?;
     if !patch.is_object() {
         return Err(AcpError::protocol(
             "invalid config_json: root must be a JSON object",
         ));
-    }
-
-    if agent_type == AgentType::OpenCode {
-        let serialized = serde_json::to_string_pretty(&patch)
-            .map_err(|e| AcpError::protocol(format!("serialize config_json failed: {e}")))?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| AcpError::protocol(format!("create config directory failed: {e}")))?;
-        }
-        fs::write(&path, format!("{serialized}\n"))
-            .map_err(|e| AcpError::protocol(format!("write local config failed: {e}")))?;
-        return Ok(());
     }
 
     let mut base = if path.exists() {
@@ -9390,23 +9408,34 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
             ],
             project_rel_dirs: vec![".codex/skills", ".agents/skills"],
         }),
-        AgentType::OpenCode => Some(SkillStorageSpec {
-            kind: SkillStorageKind::SkillDirectoryOnly,
-            // OpenCode is a "universal" agent for the `skills` CLI (its
-            // skillsDir is `.agents/skills`): a global `skills add` writes the
-            // real skill into the shared `~/.agents/skills` store and does NOT
-            // create a `~/.config/opencode/skills` symlink. OpenCode reads both
-            // locations, so probe both — otherwise CLI-installed skills are
-            // invisible here and in Settings → Skills.
-            global_dirs: vec![
-                home_dir_or_default()
-                    .join(".config")
-                    .join("opencode")
-                    .join("skills"),
-                home_dir_or_default().join(".agents").join("skills"),
-            ],
-            project_rel_dirs: vec![".agents/skills", ".opencode/skills"],
-        }),
+        // OpenCode 2 reads skills from `skills/` and `skill/` under its config
+        // directory — `$OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`,
+        // else `~/.config/opencode` (`acp::opencode_config`) — from the shared
+        // `~/.agents/skills`, and in a project from `.opencode/skills`,
+        // `.opencode/skill` and `.agents/skills` (`core/src/config/plugin/
+        // skill.ts`, `compatibility.ts`). A skill is an `<id>/SKILL.md` bundle
+        // or, at the top of one of those directories, a flat `<id>.md`
+        // (`skill-scan.ts`, `skill-file.ts`). New skills go to the first of
+        // each list, the layout OpenCode documents. It also reads
+        // `.claude/skills`, which codeg lists under Claude Code.
+        //
+        // `~/.agents/skills` matters beyond OpenCode: OpenCode is a
+        // "universal" agent for the `skills` CLI, whose global `skills add`
+        // writes the real skill there and links nothing into OpenCode's own
+        // directory, so without it CLI-installed skills would be invisible.
+        AgentType::OpenCode => {
+            let config_dir = crate::acp::opencode_config::config_dir()
+                .unwrap_or_else(|| home_dir_or_default().join(".config").join("opencode"));
+            Some(SkillStorageSpec {
+                kind: SkillStorageKind::SkillDirectoryOrMarkdownFile,
+                global_dirs: vec![
+                    config_dir.join("skills"),
+                    config_dir.join("skill"),
+                    home_dir_or_default().join(".agents").join("skills"),
+                ],
+                project_rel_dirs: vec![".opencode/skills", ".opencode/skill", ".agents/skills"],
+            })
+        }
         AgentType::Gemini => Some(SkillStorageSpec {
             kind: SkillStorageKind::SkillDirectoryOnly,
             global_dirs: vec![
@@ -9622,12 +9651,13 @@ pub(crate) fn skill_storage_spec(agent_type: AgentType) -> Option<SkillStorageSp
         // Command Code loads `<id>/SKILL.md` bundles — found recursively, never
         // a flat `<id>.md` — from `~/.commandcode/skills` and the shared
         // `~/.agents/skills` store, plus `.commandcode/skills` and
-        // `.agents/skills` in the project. Verified against 1.84.0 and 1.86.3
-        // by planting one skill in each candidate directory: exactly those four
-        // reached the session's commands, while `.claude/skills` (project and
-        // user) and the flat file were ignored. The Command Code directory
-        // leads so linking targets it without touching the shared store (the
-        // TRAE CLI ordering); on a name clash Command Code prefers it too.
+        // `.agents/skills` in the project. Verified against 1.84.0, 1.86.3 and
+        // 1.88.0 by planting one skill in each candidate directory: exactly
+        // those four reached the session's commands, while `.claude/skills`
+        // (project and user) and the flat file were ignored. The Command Code
+        // directory leads so linking targets it without touching the shared
+        // store (the TRAE CLI ordering); on a name clash Command Code prefers
+        // it too.
         AgentType::CommandCode => Some(SkillStorageSpec {
             kind: SkillStorageKind::SkillDirectoryOnly,
             global_dirs: vec![
@@ -11055,6 +11085,13 @@ pub(crate) fn build_runtime_env_from_setting(
     let Some(raw_config_json) = local_config_json else {
         return merged;
     };
+    // OpenCode's local config is its own `opencode.json(c)`, not codeg's
+    // runtime config: its top-level `model` is OpenCode's default model, which
+    // the generic projection below would export as `OPENAI_MODEL` into every
+    // command the agent runs.
+    if agent_type == AgentType::OpenCode {
+        return merged;
+    }
     let Ok(config) = serde_json::from_str::<AgentRuntimeConfig>(raw_config_json) else {
         return merged;
     };
@@ -11096,6 +11133,16 @@ pub(crate) fn build_runtime_env_from_setting(
     merged
 }
 
+/// Agents that keep their own provider configuration and take no codeg model
+/// provider: MiniMax Code (its own login and providers), and OpenCode, whose
+/// providers live in its config and credential store and whose `openai`
+/// integration would otherwise pick up the bound provider's key from the
+/// `OPENAI_*` env the generic binding writes. Binding one is refused, and a
+/// binding stored earlier is ignored at launch.
+fn keeps_own_providers(agent_type: AgentType) -> bool {
+    matches!(agent_type, AgentType::MiniMaxCode | AgentType::OpenCode)
+}
+
 /// Resolve model provider credentials into runtime env vars if `model_provider_id` is set.
 pub(crate) async fn apply_model_provider_env(
     agent_type: AgentType,
@@ -11103,7 +11150,7 @@ pub(crate) async fn apply_model_provider_env(
     runtime_env: &mut BTreeMap<String, String>,
     conn: &sea_orm::DatabaseConnection,
 ) {
-    if agent_type == AgentType::MiniMaxCode {
+    if keeps_own_providers(agent_type) {
         return;
     }
     let provider_id = match setting.and_then(|s| s.model_provider_id) {
@@ -11294,7 +11341,7 @@ fn cascade_update_agent_config(
     api_key: &str,
     model_env: &BTreeMap<String, Option<String>>,
 ) -> Result<(), AcpError> {
-    if agent_type == AgentType::MiniMaxCode {
+    if keeps_own_providers(agent_type) {
         return Ok(());
     }
     let (url_key, key_key, _) = agent_env_keys(agent_type);
@@ -11342,27 +11389,7 @@ fn cascade_update_agent_config(
             // (`codex_catalog::commit_user_change`).
         }
         AgentType::OpenCode => {
-            let auth_path = opencode_auth_json_path();
-            let mut auth_obj = if auth_path.exists() {
-                fs::read_to_string(&auth_path)
-                    .ok()
-                    .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-                    .filter(|v| v.is_object())
-                    .unwrap_or_else(|| serde_json::json!({}))
-            } else {
-                serde_json::json!({})
-            };
-            if !api_key.trim().is_empty() {
-                auth_obj["api_key"] = serde_json::Value::String(api_key.to_string());
-            }
-            let auth_str = serde_json::to_string_pretty(&auth_obj)
-                .map_err(|e| AcpError::protocol(e.to_string()))?;
-            persist_opencode_auth_json(&auth_str)?;
-
-            let patch = serde_json::json!({ "apiBaseUrl": api_url });
-            let patch_str =
-                serde_json::to_string(&patch).map_err(|e| AcpError::protocol(e.to_string()))?;
-            persist_agent_local_config_json(agent_type, Some(&patch_str))?;
+            // Unreachable: OpenCode keeps its own providers (`keeps_own_providers`).
         }
         AgentType::Cline => {}
         AgentType::CodeBuddy => {
@@ -11472,7 +11499,7 @@ pub(crate) async fn cascade_update_model_provider(
             Err(_) => continue,
         };
 
-        if agent_type == AgentType::MiniMaxCode {
+        if keeps_own_providers(agent_type) {
             continue;
         }
 
@@ -11602,7 +11629,7 @@ pub(crate) async fn build_session_runtime_env(
 /// Settings may inspect Pi's local model catalog while the agent is disabled.
 /// Reuse the exact launch environment, bypassing only the connection permission
 /// gate; this path starts no ACP session and sends no prompt.
-async fn build_runtime_env_for_agent(
+pub(crate) async fn build_runtime_env_for_agent(
     db: &AppDatabase,
     agent_type: AgentType,
     session_id: Option<&str>,
@@ -11698,6 +11725,17 @@ pub(crate) fn fingerprint_config(
     hasher.update(b"\x01native\x01");
     if let Some(native) = load_agent_local_config_json(agent_type) {
         hasher.update(native.as_bytes());
+    }
+    // OpenCode 2 reads provider credentials from its database when a process
+    // starts, and a running `opencode acp` never sees one changed after that.
+    // codeg changes them only through its settings (see
+    // `commands::opencode_credentials`), which bumps this counter, so a
+    // session started before a change reads as restart-required.
+    if agent_type == AgentType::OpenCode {
+        hasher.update(b"\x01opencode_credentials\x01");
+        hasher.update(
+            crate::commands::opencode_credentials::credential_epoch().to_le_bytes(),
+        );
     }
     // Grok's native config (~/.grok/config.toml) is not exposed via
     // `agent_local_config_path` — it's edited through the Grok settings panel
@@ -11796,7 +11834,6 @@ pub(crate) async fn acp_update_agent_preferences_and_refresh(
     enabled: bool,
     env: BTreeMap<String, String>,
     config_json: Option<String>,
-    opencode_auth_json: Option<String>,
     codex_auth_json: Option<String>,
     codex_config_toml: Option<String>,
     db: &AppDatabase,
@@ -11809,7 +11846,6 @@ pub(crate) async fn acp_update_agent_preferences_and_refresh(
         enabled,
         env,
         config_json,
-        opencode_auth_json,
         codex_auth_json,
         codex_config_toml,
         db,
@@ -12412,7 +12448,12 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
             .and_then(|s| serde_json::from_str::<BTreeMap<String, String>>(s).ok())
             .unwrap_or_default();
         let local_config_json = load_agent_local_config_json(agent_type);
-        if let Some(raw_local_config) = local_config_json.as_deref() {
+        // Not for OpenCode, whose local config is its own file (see
+        // `build_runtime_env_from_setting`).
+        if let Some(raw_local_config) = local_config_json
+            .as_deref()
+            .filter(|_| agent_type != AgentType::OpenCode)
+        {
             if let Ok(local_cfg) = serde_json::from_str::<AgentRuntimeConfig>(raw_local_config) {
                 for (key, value) in local_cfg.env {
                     let trimmed = value.trim();
@@ -12451,11 +12492,6 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
         }
         let codex_auth_json = if agent_type == AgentType::Codex {
             load_codex_auth_json_raw()
-        } else {
-            None
-        };
-        let opencode_auth_json = if agent_type == AgentType::OpenCode {
-            load_opencode_auth_json_raw()
         } else {
             None
         };
@@ -12572,7 +12608,6 @@ pub(crate) async fn acp_list_agents_core(db: &AppDatabase) -> Result<Vec<AcpAgen
             config_json,
             config_file_path: agent_local_config_path(agent_type)
                 .map(|path| path.display().to_string()),
-            opencode_auth_json,
             codex_auth_json,
             codex_config_toml,
             codex_sandbox_settings,
@@ -12653,7 +12688,6 @@ pub(crate) async fn acp_update_agent_preferences_core(
     enabled: bool,
     env: BTreeMap<String, String>,
     config_json: Option<String>,
-    opencode_auth_json: Option<String>,
     codex_auth_json: Option<String>,
     codex_config_toml: Option<String>,
     db: &AppDatabase,
@@ -12678,7 +12712,12 @@ pub(crate) async fn acp_update_agent_preferences_core(
             Some(trimmed.to_string())
         }
     });
-    if let Some(raw) = config_json.as_deref() {
+    // OpenCode's file may carry comments and trailing commas; its own branch
+    // below validates it the way OpenCode parses it.
+    if let Some(raw) = config_json
+        .as_deref()
+        .filter(|_| agent_type != AgentType::OpenCode)
+    {
         let parsed = serde_json::from_str::<serde_json::Value>(raw)
             .map_err(|e| AcpError::protocol(format!("invalid config_json: {e}")))?;
         if !parsed.is_object() {
@@ -12715,10 +12754,9 @@ pub(crate) async fn acp_update_agent_preferences_core(
     }
 
     if agent_type == AgentType::OpenCode {
-        persist_opencode_native_config(
-            opencode_auth_json.as_deref(),
-            config_json.as_deref(),
-        )?;
+        if let Some(raw) = config_json.as_deref() {
+            persist_opencode_config_text(raw)?;
+        }
         emit_acp_agents_updated(emitter, "preferences_updated", Some(agent_type));
         return Ok(());
     }
@@ -12758,7 +12796,6 @@ pub async fn acp_update_agent_preferences(
     enabled: bool,
     env: BTreeMap<String, String>,
     config_json: Option<String>,
-    opencode_auth_json: Option<String>,
     codex_auth_json: Option<String>,
     codex_config_toml: Option<String>,
     manager: State<'_, ConnectionManager>,
@@ -12776,7 +12813,6 @@ pub async fn acp_update_agent_preferences(
         enabled,
         env,
         config_json,
-        opencode_auth_json,
         codex_auth_json,
         codex_config_toml,
         &db,
@@ -12821,8 +12857,9 @@ pub(crate) async fn acp_update_agent_env_core(
         // MiniMax Code keeps its own login and providers, and launches with
         // nothing but its explicit env (see `build_runtime_env_from_setting`).
         // A bound provider's model would reach it anyway, as the OPENAI_MODEL
-        // that `parse_provider_model` falls back to.
-        if agent_type == AgentType::MiniMaxCode {
+        // that `parse_provider_model` falls back to. OpenCode keeps its
+        // providers in its own config and credential store.
+        if keeps_own_providers(agent_type) {
             return Err(AcpError::protocol(format!(
                 "{agent_type} uses its own provider configuration; model provider {pid} cannot be bound to it"
             )));
@@ -12935,43 +12972,10 @@ pub async fn acp_update_agent_env(
     .await
 }
 
-/// Decide what to write to OpenCode's `auth.json`. `None` (caller passed no
-/// auth payload) leaves the file untouched. An explicitly empty payload becomes
-/// `{}` so clearing the last credential truncates the file instead of being
-/// skipped — otherwise a stale key would survive on disk and the disconnected
-/// provider would reappear after reload.
-fn opencode_auth_payload_to_write(raw: Option<&str>) -> Option<String> {
-    let trimmed = raw?.trim();
-    Some(if trimmed.is_empty() {
-        "{}".to_string()
-    } else {
-        trimmed.to_string()
-    })
-}
-
-/// Persist OpenCode's native files (`auth.json` + `opencode.json`) for a
-/// config/preferences save. Shared by both the config and preferences commands
-/// so the empty-auth handling can't drift between the two exposed paths. An
-/// explicitly empty auth payload truncates `auth.json` to `{}`; `None` leaves
-/// each file untouched.
-fn persist_opencode_native_config(
-    opencode_auth_json: Option<&str>,
-    config_json: Option<&str>,
-) -> Result<(), AcpError> {
-    if let Some(auth) = opencode_auth_payload_to_write(opencode_auth_json) {
-        persist_opencode_auth_json(&auth)?;
-    }
-    if let Some(raw) = config_json {
-        persist_agent_local_config_json(AgentType::OpenCode, Some(raw))?;
-    }
-    Ok(())
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn acp_update_agent_config_core(
     agent_type: AgentType,
     config_json: Option<String>,
-    opencode_auth_json: Option<String>,
     codex_auth_json: Option<String>,
     codex_config_toml: Option<String>,
     codex_config_toml_baseline: Option<String>,
@@ -12992,7 +12996,12 @@ pub(crate) async fn acp_update_agent_config_core(
             Some(trimmed.to_string())
         }
     });
-    if let Some(raw) = config_json.as_deref() {
+    // OpenCode's file may carry comments and trailing commas; its own branch
+    // below validates it the way OpenCode parses it.
+    if let Some(raw) = config_json
+        .as_deref()
+        .filter(|_| agent_type != AgentType::OpenCode)
+    {
         let parsed = serde_json::from_str::<serde_json::Value>(raw)
             .map_err(|e| AcpError::protocol(format!("invalid config_json: {e}")))?;
         if !parsed.is_object() {
@@ -13093,10 +13102,9 @@ pub(crate) async fn acp_update_agent_config_core(
     }
 
     if agent_type == AgentType::OpenCode {
-        persist_opencode_native_config(
-            opencode_auth_json.as_deref(),
-            config_json.as_deref(),
-        )?;
+        if let Some(raw) = config_json.as_deref() {
+            persist_opencode_config_text(raw)?;
+        }
         emit_acp_agents_updated(emitter, "config_updated", Some(agent_type));
         return Ok(());
     }
@@ -13129,7 +13137,6 @@ pub(crate) async fn acp_update_agent_config_core(
 pub(crate) async fn acp_update_agent_config_and_refresh(
     agent_type: AgentType,
     config_json: Option<String>,
-    opencode_auth_json: Option<String>,
     codex_auth_json: Option<String>,
     codex_config_toml: Option<String>,
     codex_config_toml_baseline: Option<String>,
@@ -13147,7 +13154,6 @@ pub(crate) async fn acp_update_agent_config_and_refresh(
     acp_update_agent_config_core(
         agent_type,
         config_json,
-        opencode_auth_json,
         codex_auth_json,
         codex_config_toml,
         codex_config_toml_baseline,
@@ -13170,7 +13176,6 @@ pub(crate) async fn acp_update_agent_config_and_refresh(
 pub async fn acp_update_agent_config(
     agent_type: AgentType,
     config_json: Option<String>,
-    opencode_auth_json: Option<String>,
     codex_auth_json: Option<String>,
     codex_config_toml: Option<String>,
     codex_config_toml_baseline: Option<String>,
@@ -13193,7 +13198,6 @@ pub async fn acp_update_agent_config(
     acp_update_agent_config_and_refresh(
         agent_type,
         config_json,
-        opencode_auth_json,
         codex_auth_json,
         codex_config_toml,
         codex_config_toml_baseline,
@@ -14742,12 +14746,15 @@ pub async fn acp_delete_agent_skill(
     Ok(())
 }
 
-pub(crate) async fn opencode_list_plugins_core() -> Result<PluginCheckSummary, AcpError> {
-    opencode_plugins::check_opencode_plugins(None).map_err(AcpError::Protocol)
+/// The plugins OpenCode's global config declares (`plugins`, plus 1.x
+/// `plugin` entries). OpenCode 2 installs package plugins itself when a
+/// session starts, so this lists declarations; it checks no cache.
+pub(crate) async fn opencode_list_plugins_core() -> Result<PluginList, AcpError> {
+    opencode_plugins::list_plugins().map_err(AcpError::Protocol)
 }
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn opencode_list_plugins() -> Result<PluginCheckSummary, AcpError> {
+pub async fn opencode_list_plugins() -> Result<PluginList, AcpError> {
     opencode_list_plugins_core().await
 }
 
@@ -14788,38 +14795,25 @@ pub async fn codex_bundled_catalog(
     Ok(codex_bundled_catalog_core(force_refresh.unwrap_or(false)).await)
 }
 
-pub(crate) async fn opencode_install_plugins_core(
-    names: Option<Vec<String>>,
-    task_id: String,
-    emitter: &EventEmitter,
-) -> Result<(), AcpError> {
-    opencode_plugins::install_missing_plugins(names, task_id, emitter)
-        .await
-        .map_err(AcpError::Protocol)
-}
-
-#[cfg(feature = "tauri-runtime")]
-#[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn opencode_install_plugins(
-    names: Option<Vec<String>>,
-    task_id: String,
-    app: tauri::AppHandle,
-) -> Result<(), AcpError> {
-    let emitter = EventEmitter::Tauri(app);
-    opencode_install_plugins_core(names, task_id, &emitter).await
-}
-
-pub(crate) async fn opencode_uninstall_plugin_core(
-    name: String,
-) -> Result<PluginCheckSummary, AcpError> {
-    opencode_plugins::uninstall_plugin(name)
-        .await
-        .map_err(AcpError::Protocol)
+/// Declare `spec` in OpenCode's `plugins`; OpenCode installs a package plugin
+/// the next time a session starts.
+pub(crate) async fn opencode_add_plugin_core(spec: String) -> Result<PluginList, AcpError> {
+    opencode_plugins::add_plugin(&spec).map_err(AcpError::Protocol)
 }
 
 #[cfg_attr(feature = "tauri-runtime", tauri::command)]
-pub async fn opencode_uninstall_plugin(name: String) -> Result<PluginCheckSummary, AcpError> {
-    opencode_uninstall_plugin_core(name).await
+pub async fn opencode_add_plugin(spec: String) -> Result<PluginList, AcpError> {
+    opencode_add_plugin_core(spec).await
+}
+
+/// Remove every declaration of `spec` from OpenCode's plugin lists.
+pub(crate) async fn opencode_remove_plugin_core(spec: String) -> Result<PluginList, AcpError> {
+    opencode_plugins::remove_plugin(&spec).map_err(AcpError::Protocol)
+}
+
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
+pub async fn opencode_remove_plugin(spec: String) -> Result<PluginList, AcpError> {
+    opencode_remove_plugin_core(spec).await
 }
 
 // ─── Codex Device Code OAuth ───
@@ -15037,6 +15031,144 @@ pub(crate) async fn codex_poll_device_code_core(
         refresh_token: Some(tokens.refresh_token),
         account_id: Some(account_id),
     })
+}
+
+#[cfg(test)]
+mod opencode_skills_tests {
+    use super::*;
+
+    fn write_skill(root: &Path, id: &str, body: &str) {
+        fs::create_dir_all(root.join(id)).unwrap();
+        fs::write(root.join(id).join("SKILL.md"), body).unwrap();
+    }
+
+    /// OpenCode 2 reads skills under its own config directory — which follows
+    /// `OPENCODE_CONFIG_DIR`, then `XDG_CONFIG_HOME` — from both `skills/` and
+    /// `skill/`, besides the shared `~/.agents/skills`; in a project from
+    /// `.opencode/skills`, `.opencode/skill` and `.agents/skills`.
+    #[test]
+    fn opencode_skill_roots_follow_its_config_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (xdg, own) = (tmp.path().join("xdg"), tmp.path().join("own"));
+        let shared = home_dir_or_default().join(".agents").join("skills");
+        temp_env::with_vars(
+            [
+                ("OPENCODE_CONFIG_DIR", None::<&Path>),
+                ("XDG_CONFIG_HOME", Some(xdg.as_path())),
+            ],
+            || {
+                let spec = skill_storage_spec(AgentType::OpenCode).expect("OpenCode has a store");
+                assert_eq!(spec.kind, SkillStorageKind::SkillDirectoryOrMarkdownFile);
+                assert_eq!(
+                    spec.global_dirs,
+                    vec![
+                        xdg.join("opencode").join("skills"),
+                        xdg.join("opencode").join("skill"),
+                        shared.clone(),
+                    ]
+                );
+                assert_eq!(
+                    spec.project_rel_dirs,
+                    vec![".opencode/skills", ".opencode/skill", ".agents/skills"]
+                );
+            },
+        );
+        temp_env::with_vars(
+            [
+                ("OPENCODE_CONFIG_DIR", Some(own.as_path())),
+                ("XDG_CONFIG_HOME", Some(xdg.as_path())),
+            ],
+            || {
+                let spec = skill_storage_spec(AgentType::OpenCode).expect("OpenCode has a store");
+                assert_eq!(
+                    spec.global_dirs,
+                    vec![own.join("skills"), own.join("skill"), shared.clone()]
+                );
+            },
+        );
+    }
+
+    /// Project skills: bundles and flat `<id>.md` files from every directory
+    /// OpenCode reads, and new skills as bundles in `.opencode/skills`.
+    #[tokio::test]
+    async fn opencode_project_skills_take_bundles_and_flat_files_from_each_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("repo");
+        let config = tmp.path().join("config");
+        temp_env::async_with_vars([("OPENCODE_CONFIG_DIR", Some(config.as_path()))], async {
+            write_skill(&workspace.join(".opencode/skills"), "bundle", "a bundle");
+            fs::create_dir_all(workspace.join(".opencode/skill")).unwrap();
+            fs::write(workspace.join(".opencode/skill/flat.md"), "a flat file").unwrap();
+            write_skill(&workspace.join(".agents/skills"), "shared", "shared");
+            let ws = workspace.to_string_lossy().into_owned();
+
+            let dirs = scoped_skill_dirs(AgentType::OpenCode, AgentSkillScope::Project, Some(&ws))
+                .unwrap();
+            assert_eq!(
+                dirs,
+                vec![
+                    workspace.join(".opencode/skills"),
+                    workspace.join(".opencode/skill"),
+                    workspace.join(".agents/skills"),
+                ]
+            );
+            let kind = SkillStorageKind::SkillDirectoryOrMarkdownFile;
+            let mut found: Vec<(String, AgentSkillLayout)> = dirs
+                .iter()
+                .flat_map(|dir| list_skills_from_dir(AgentSkillScope::Project, dir, kind).unwrap())
+                .map(|skill| (skill.id, skill.layout))
+                .collect();
+            found.sort_by(|a, b| a.0.cmp(&b.0));
+            assert_eq!(
+                found,
+                vec![
+                    ("bundle".to_string(), AgentSkillLayout::SkillDirectory),
+                    ("flat".to_string(), AgentSkillLayout::MarkdownFile),
+                    ("shared".to_string(), AgentSkillLayout::SkillDirectory),
+                ]
+            );
+
+            let saved = acp_save_agent_skill(
+                AgentType::OpenCode,
+                AgentSkillScope::Project,
+                "new-skill".into(),
+                "---\nname: new-skill\ndescription: Test\n---\nbody".into(),
+                Some(ws.clone()),
+                Some(AgentSkillLayout::SkillDirectory),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                Path::new(&saved.path),
+                workspace.join(".opencode/skills/new-skill")
+            );
+            assert!(workspace
+                .join(".opencode/skills/new-skill/SKILL.md")
+                .is_file());
+
+            // A flat skill is found where it lives and edited in place.
+            let edited = acp_save_agent_skill(
+                AgentType::OpenCode,
+                AgentSkillScope::Project,
+                "flat".into(),
+                "edited".into(),
+                Some(ws),
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(edited.layout, AgentSkillLayout::MarkdownFile);
+            assert_eq!(
+                fs::read_to_string(workspace.join(".opencode/skill/flat.md")).unwrap(),
+                "edited"
+            );
+            assert!(
+                !config.exists(),
+                "project skills never touch the config dir"
+            );
+        })
+        .await;
+    }
 }
 
 #[cfg(test)]
@@ -16175,6 +16307,57 @@ mod tests {
         Some(Some(value))
     }
 
+    /// codex refuses to load a config.toml holding `approval_policy =
+    /// "untrusted"` (0.160.1 and 0.164.0, measured: "is no longer supported;
+    /// remove this setting"), so no Codex session starts with it. The panel
+    /// still reads it, to show what is there and that it has to go, but codeg
+    /// never writes it; replacing or clearing it works as for any value.
+    #[test]
+    fn the_retired_untrusted_policy_is_read_but_never_written() {
+        let base = "approval_policy = \"untrusted\"\nmodel = \"gpt-5\"\n";
+        assert_eq!(
+            parse_codex_sandbox_settings(base)
+                .approval_policy
+                .as_deref(),
+            Some("untrusted")
+        );
+
+        let refused = apply_codex_sandbox_config(
+            "model = \"gpt-5\"\n",
+            &CodexSandboxStructuredConfig {
+                approval_policy: set("untrusted".into()),
+                ..Default::default()
+            },
+        )
+        .expect_err("codeg must not write a policy codex refuses");
+        assert!(
+            refused.to_string().contains("no longer accepts"),
+            "{refused}"
+        );
+
+        for (patch, want) in [
+            (set("on-request".to_string()), Some("on-request")),
+            (Some(None), None),
+        ] {
+            let merged = apply_codex_sandbox_config(
+                base,
+                &CodexSandboxStructuredConfig {
+                    approval_policy: patch,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!(!merged.contains("untrusted"), "{merged}");
+            assert_eq!(
+                parse_codex_sandbox_settings(&merged)
+                    .approval_policy
+                    .as_deref(),
+                want
+            );
+            assert!(merged.contains("model = \"gpt-5\""));
+        }
+    }
+
     #[test]
     fn apply_codex_sandbox_config_writes_and_preserves_unmanaged_keys() {
         let base = "# keep me\nmodel = \"gpt-5\"\n\n[features]\nskills = true\n";
@@ -16844,8 +17027,9 @@ mod tests {
             },
         )
         .unwrap();
-        // The shape verified against grok 1.0.62: bare levels make it advertise
-        // `supportsReasoningEffort` with exactly these `reasoningEfforts`.
+        // The shape verified against grok 1.0.62 and 1.0.70: bare levels make
+        // it advertise `supportsReasoningEffort` with exactly these
+        // `reasoningEfforts`.
         assert_eq!(
             grok_efforts_text(&merged, "grok-4.7").as_deref(),
             Some("[\"low\", \"medium\", \"high\", \"xhigh\"]")
@@ -18542,115 +18726,110 @@ echo {"id":"codeg-models","type":"response","command":"get_available_models","su
     }
 
     #[test]
-    fn opencode_auth_empty_payload_truncates_to_empty_object() {
-        // Clearing the last credential sends "" — it must persist `{}` (clearing
-        // the file), not be skipped (which would strand a stale key on disk).
-        assert_eq!(
-            opencode_auth_payload_to_write(Some("")),
-            Some("{}".to_string())
-        );
-        assert_eq!(
-            opencode_auth_payload_to_write(Some("   \n")),
-            Some("{}".to_string())
-        );
-    }
-
-    #[test]
-    fn opencode_auth_payload_preserves_non_empty_and_skips_none() {
-        let json = r#"{"openai":{"type":"api","key":"k"}}"#;
-        assert_eq!(
-            opencode_auth_payload_to_write(Some(json)),
-            Some(json.to_string())
-        );
-        // No payload supplied → leave auth.json untouched.
-        assert_eq!(opencode_auth_payload_to_write(None), None);
-    }
-
-    // Call-site guard: both acp_update_agent_config_core and
-    // acp_update_agent_preferences_core route OpenCode persistence through
-    // persist_opencode_native_config, so testing it covers both exposed paths.
-    #[test]
-    fn persist_opencode_native_config_empty_auth_clears_file() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        // Pin HOME and clear XDG_DATA_HOME so the auth path resolves under the
-        // temp dir regardless of the developer's environment.
-        temp_env::with_vars(
-            [
-                ("HOME", Some(tmp.path())),
-                ("XDG_DATA_HOME", None::<&std::path::Path>),
-            ],
-            || {
-                let auth_path = opencode_auth_json_path();
-                fs::create_dir_all(auth_path.parent().unwrap()).expect("mkdir");
-                fs::write(&auth_path, r#"{"openai":{"type":"api","key":"k"}}"#).expect("seed");
-
-                // Disconnecting the last provider sends an empty auth payload: it
-                // must truncate auth.json to {}, not strand the stale credential.
-                persist_opencode_native_config(Some(""), None).expect("persist");
-
-                assert_eq!(fs::read_to_string(&auth_path).unwrap().trim(), "{}");
-            },
-        );
-    }
-
-    #[test]
-    fn persist_opencode_native_config_none_auth_leaves_file() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        temp_env::with_vars(
-            [
-                ("HOME", Some(tmp.path())),
-                ("XDG_DATA_HOME", None::<&std::path::Path>),
-            ],
-            || {
-                let auth_path = opencode_auth_json_path();
-                fs::create_dir_all(auth_path.parent().unwrap()).expect("mkdir");
-                let original = "{\"openai\":{\"type\":\"api\",\"key\":\"k\"}}\n";
-                fs::write(&auth_path, original).expect("seed");
-
-                // No auth payload supplied → file untouched.
-                persist_opencode_native_config(None, None).expect("persist");
-
-                assert_eq!(fs::read_to_string(&auth_path).unwrap(), original);
-            },
-        );
-    }
-
-    #[test]
-    fn opencode_config_path_falls_back_when_xdg_config_home_empty() {
+    fn opencode_config_dir_falls_back_when_xdg_config_home_empty() {
         // An empty XDG_CONFIG_HOME must fall back to <home>/.config, not resolve
-        // to a relative "opencode/opencode.json". `dirs::home_dir()` ignores the
-        // HOME env var on Windows, so derive the expected base from the same
+        // to a relative "opencode/…" path. `dirs::home_dir()` ignores the HOME
+        // env var on Windows, so derive the expected base from the same
         // resolution production uses instead of pinning HOME.
-        temp_env::with_var("XDG_CONFIG_HOME", Some(""), || {
-            assert_eq!(
-                opencode_primary_config_path(),
-                home_dir_or_default()
-                    .join(".config")
-                    .join("opencode")
-                    .join("opencode.json")
-            );
-        });
+        temp_env::with_vars(
+            [
+                ("XDG_CONFIG_HOME", Some("")),
+                ("OPENCODE_CONFIG_DIR", None::<&str>),
+            ],
+            || {
+                assert_eq!(
+                    crate::acp::opencode_config::config_dir(),
+                    Some(home_dir_or_default().join(".config").join("opencode"))
+                );
+            },
+        );
     }
 
     #[test]
-    fn opencode_paths_follow_xdg_when_set() {
+    fn opencode_paths_follow_xdg_and_opencode_config_dir() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let cfg = tmp.path().join("xdg-config");
-        let data = tmp.path().join("xdg-data");
+        let own = tmp.path().join("own-config");
         temp_env::with_vars(
             [
                 ("HOME", Some(tmp.path())),
                 ("XDG_CONFIG_HOME", Some(cfg.as_path())),
-                ("XDG_DATA_HOME", Some(data.as_path())),
+                ("OPENCODE_CONFIG_DIR", None::<&std::path::Path>),
             ],
             || {
                 assert_eq!(
-                    opencode_primary_config_path(),
+                    resolve_opencode_config_path(),
                     cfg.join("opencode").join("opencode.json")
                 );
+                // OpenCode 2 loads opencode.jsonc after opencode.json, so the
+                // .jsonc file is the one whose keys take effect.
+                fs::create_dir_all(cfg.join("opencode")).expect("mkdir");
+                fs::write(cfg.join("opencode").join("opencode.json"), "{}").expect("json");
+                fs::write(cfg.join("opencode").join("opencode.jsonc"), "{}").expect("jsonc");
                 assert_eq!(
-                    opencode_auth_json_path(),
-                    data.join("opencode").join("auth.json")
+                    resolve_opencode_config_path(),
+                    cfg.join("opencode").join("opencode.jsonc")
+                );
+            },
+        );
+        // OPENCODE_CONFIG_DIR replaces the XDG directory in OpenCode 2.
+        temp_env::with_vars(
+            [
+                ("XDG_CONFIG_HOME", Some(cfg.as_path())),
+                ("OPENCODE_CONFIG_DIR", Some(own.as_path())),
+            ],
+            || {
+                assert_eq!(resolve_opencode_config_path(), own.join("opencode.json"));
+            },
+        );
+    }
+
+    #[test]
+    fn opencode_config_text_round_trips_with_comments() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cfg = tmp.path().join("xdg-config");
+        temp_env::with_vars(
+            [
+                ("XDG_CONFIG_HOME", Some(cfg.as_path())),
+                ("OPENCODE_CONFIG_DIR", None::<&std::path::Path>),
+            ],
+            || {
+                let dir = cfg.join("opencode");
+                fs::create_dir_all(&dir).expect("mkdir");
+                let text = "{\n  // my model\n  \"model\": \"a/b\",\n}\n";
+                fs::write(dir.join("opencode.jsonc"), format!("\u{feff}{text}")).expect("seed");
+                // Loaded as written (BOM aside): comments and trailing commas
+                // reach the panel instead of a re-serialized copy.
+                assert_eq!(
+                    load_agent_local_config_json(AgentType::OpenCode).as_deref(),
+                    Some(text)
+                );
+
+                let edited = "{\n  // my model\n  \"model\": \"c/d\",\n}";
+                persist_agent_local_config_json(AgentType::OpenCode, Some(edited))
+                    .expect("persist");
+                assert_eq!(
+                    fs::read_to_string(dir.join("opencode.jsonc")).expect("read"),
+                    format!("{edited}\n")
+                );
+                // No stray opencode.json next to it.
+                assert!(!dir.join("opencode.json").exists());
+
+                // Text OpenCode could not load is refused, and the file kept.
+                let err = persist_agent_local_config_json(AgentType::OpenCode, Some("{'a': 1}"))
+                    .expect_err("single quotes are not JSONC");
+                assert!(err.to_string().contains("invalid OpenCode config"), "{err}");
+                assert_eq!(
+                    fs::read_to_string(dir.join("opencode.jsonc")).expect("read"),
+                    format!("{edited}\n")
+                );
+
+                // Invalid text on disk still reaches the panel, so a save
+                // cannot silently replace it with an empty config.
+                fs::write(dir.join("opencode.jsonc"), "{ \"model\": ").expect("broken");
+                assert_eq!(
+                    load_agent_local_config_json(AgentType::OpenCode).as_deref(),
+                    Some("{ \"model\": ")
                 );
             },
         );
@@ -21566,6 +21745,42 @@ wire_api = "chat"
         }
     }
 
+    /// The script flags reach exactly the packages whose install is their
+    /// scripts, and name the package, which npm 12 needs before it runs a
+    /// script of a global install or an `npx` run.
+    #[test]
+    fn hermes_installs_name_the_package_whose_scripts_npm_must_run() {
+        for spec in ["hermes-agent@0.22.2", "hermes-agent@0.23.0", "hermes-agent"] {
+            assert_eq!(
+                npm_run_scripts_args(spec),
+                ["--ignore-scripts=false", "--allow-scripts=hermes-agent"],
+                "{spec}"
+            );
+        }
+        // Every other agent keeps the user's own script policy.
+        for spec in [
+            "cline@3.0.74",
+            "@xai-official/grok@1.0.70",
+            "hermes-agent-npm@1.0.0",
+        ] {
+            assert!(npm_run_scripts_args(spec).is_empty(), "{spec}");
+        }
+        assert_eq!(
+            hermes_npx_argv("hermes-agent@0.22.2", &["acp", "--setup"]),
+            [
+                "npx",
+                "-y",
+                "--ignore-scripts=false",
+                "--allow-scripts=hermes-agent",
+                "--package",
+                "hermes-agent@0.22.2",
+                "hermes",
+                "acp",
+                "--setup",
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn hermes_setup_argvs_address_the_hermes_bin() {
         // Every recipe form must drive the wrapper's `hermes` bin (the ACP
@@ -22914,6 +23129,16 @@ model = "gpt"
         );
         assert_eq!(env.get("EXPLICIT").map(String::as_str), Some("value"));
         assert!(skill_storage_spec(AgentType::MiniMaxCode).is_none());
+    }
+
+    // OpenCode's local config is its own opencode.json: its `model` is
+    // OpenCode's default model and must not turn into `OPENAI_MODEL` (nor
+    // anything else) in the launch env.
+    #[test]
+    fn opencode_config_never_reaches_the_launch_env() {
+        let config = "{\n  // comment\n  \"model\": \"anthropic/claude-x\",\n  \"env\": {\"X\": \"y\"},\n}";
+        let env = build_runtime_env_from_setting(AgentType::OpenCode, None, Some(config));
+        assert!(env.is_empty(), "{env:?}");
     }
 
     // Model providers are not offered for MiniMax Code, but the API accepts one

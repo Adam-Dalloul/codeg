@@ -3694,7 +3694,8 @@ export interface AsyncTaskRecord {
    *  unmapped future value rendered as itself. NOT the SDK's raw type.
    *  codex publishes `shell` for every background terminal. claude 0.97.0+
    *  publishes `turn` for a turn Claude Code started on its own
-   *  (`AUTONOMOUS_TURN_TASK_TYPE`). */
+   *  (`AUTONOMOUS_TURN_TASK_TYPE`), and 0.98.0+ `monitor` for the task of a
+   *  `Monitor` call. */
   task_type: string
   description: string
   /** Whether the task earns its own transcript card upstream. The strip renders
@@ -3702,7 +3703,8 @@ export interface AsyncTaskRecord {
    *  as an ordinary tool call (a background `Bash` is). */
   show_in_transcript: boolean
   /** Whether `_session/async_task/stop` is offered for this task. Always
-   *  `false` for Grok, which has no such request. */
+   *  `false` for Grok, which has no such request, and for a Claude Code
+   *  monitor (claude-agent-acp 0.98.0+), which the adapter will not stop. */
   can_stop: boolean
   /** `running` | `paused` | `completed` | `failed` | `stopped`. Anything
    *  outside the terminal three is treated as still live. */
@@ -3915,7 +3917,6 @@ export interface AcpAgentInfo {
   host_tools_agent_mode: boolean
   config_json: string | null
   config_file_path: string | null
-  opencode_auth_json: string | null
   codex_auth_json: string | null
   codex_config_toml: string | null
   /** Compact structured codex model-catalog source (the custom-model list),
@@ -3957,9 +3958,11 @@ export interface AcpAgentInfo {
  * turn from the composer's mode preset. Without them a user on
  * "Agent (full access)" still gets a workspace-write sandbox inside /goal. */
 export interface CodexSandboxSettings {
-  /** untrusted | on-request | never. The legacy `on-failure` spelling is a
-   * serde alias of on-request upstream and is normalized on read. Null when
-   * absent or when the granular table form is in use. */
+  /** on-request | never, or the retired `untrusted` (read so the panel can say
+   * it has to go: codex refuses to load a config carrying it; never written).
+   * The legacy `on-failure` spelling is a serde alias of on-request upstream
+   * and is normalized on read. Null when absent or when the granular table
+   * form is in use. */
   approval_policy: string | null
   /** approval_policy = { granular = { … } } — mutually exclusive with the
    * string form (the upstream enum is externally tagged). */
@@ -4242,7 +4245,7 @@ export interface AgentSkillContent {
 }
 
 /**
- * Built-in expert skills, sourced from obra/superpowers and bundled into
+ * Built-in expert skills, sourced from obra/superpowers v7.0.1 and bundled into
  * the codeg binary. Experts live in a central store at `~/.codeg/skills/`
  * and are linked into agent skill directories on demand.
  */
@@ -5143,7 +5146,7 @@ export type FixActionKind =
   | "redownload_binary"
   | "retry_connection"
   | "open_agents_settings"
-  | "install_opencode_plugins"
+  | "manage_opencode_plugins"
   | "install_uv"
 
 export interface FixAction {
@@ -5221,31 +5224,33 @@ export interface LeakedTempReclaim {
   failed: string[]
 }
 
-/// `needs_migration` = present only under the pre-1.18 flat `node_modules/`,
-/// which current opencode never reads. Not installed, from opencode's side.
-export type PluginStatus =
-  | "installed"
-  | "needs_migration"
-  | "missing"
-  /** Loaded off disk by opencode itself — nothing to install. */
-  | "path"
-  /** Declared as a path plugin, but nothing exists at the resolved path. */
-  | "path_missing"
+/**
+ * What an OpenCode plugin entry names: an npm or git package (OpenCode
+ * installs it itself when a session starts), a local plugin directory, or a
+ * directive (`-name` turns a plugin off; `*`, `name.*` and `opencode.*` select
+ * built-in plugins).
+ */
+export type OpencodePluginKind = "package" | "path" | "directive"
 
-export interface PluginInfo {
-  name: string
-  declared_spec: string
-  installed_version: string | null
-  status: PluginStatus
-  /** Where opencode will look for a path plugin; null for package plugins. */
+/** What is at the directory a local plugin entry resolves to. */
+export type OpencodePluginPathState = "directory" | "missing" | "not_directory"
+
+export interface OpencodePluginEntry {
+  /** As declared: the string, or the `package` of an object or 1.x pair. */
+  spec: string
+  kind: OpencodePluginKind
+  /** Declared under OpenCode 1's `plugin` key rather than `plugins`. */
+  legacy: boolean
+  has_options: boolean
+  /** For a local plugin: the directory OpenCode 2 loads. */
   resolved_path: string | null
+  path_state: OpencodePluginPathState | null
 }
 
-export interface PluginCheckSummary {
+export interface OpencodePluginList {
   config_path: string
-  cache_dir: string
-  plugins: PluginInfo[]
-  has_project_config_hint: boolean
+  /** In the order OpenCode applies them: 1.x `plugin` entries first. */
+  plugins: OpencodePluginEntry[]
 }
 
 // ─── OpenCode Provider Catalog (models.dev) ───
@@ -5276,14 +5281,6 @@ export interface OpenCodeCatalogProvider {
   doc: string | null
   auth_kind: "api" | "oauth"
   models: OpenCodeCatalogModel[]
-}
-
-export type PluginInstallEventKind = "started" | "log" | "completed" | "failed"
-
-export interface PluginInstallEvent {
-  task_id: string
-  kind: PluginInstallEventKind
-  payload: string
 }
 
 export type AgentInstallEventKind = "started" | "log" | "completed" | "failed"
@@ -5720,6 +5717,75 @@ export interface CodexCatalogError {
 
 /** Where the key for a fetch comes from. A bound provider's list is always
  *  fetched with the provider's key (the backend refuses `codexAuth` then). */
+// ─── OpenCode 2 integrations and credentials ───
+// Mirrors `acp::opencode_credentials` (src-tauri). OpenCode lists every
+// integration it knows (models.dev providers, providers declared in its
+// config, OpenCode Console/Go, …) with the methods that connect it and the
+// connections it has. Nothing here ever carries a secret.
+
+/** One field an integration's connect method asks for besides the key
+ *  (Azure's resource name, a Cloudflare account id, …): OpenCode's form
+ *  schema, passed through. */
+export interface OpenCodeFormField {
+  key: string
+  type: string
+  title?: string
+  description?: string
+  required?: boolean
+  /** Not asked interactively: OpenCode uses `default` unless answered. */
+  hidden?: boolean
+  placeholder?: string
+  default?: unknown
+  options?: Array<{ value: string; label?: string; description?: string }>
+}
+
+export interface OpenCodeIntegrationMethod {
+  /** "key", "env", "oauth", "external" or "command". */
+  type: string
+  id?: string
+  label?: string
+  form?: OpenCodeFormField[]
+  /** The environment variables an "env" method reads. */
+  names?: string[]
+}
+
+export interface OpenCodeConnection {
+  /** "credential" (stored by OpenCode) or "env" (a variable it found). */
+  type: string
+  /** The credential id, for a stored credential. */
+  id?: string
+  label?: string
+  /** "key", "oauth" or "external", for a stored credential. */
+  method?: string
+  /** The variable's name, for an environment connection. */
+  name?: string
+  status?: { status: string; message: string; url?: string }
+  /** Whether OpenCode uses this connection (the first one it lists). */
+  active: boolean
+}
+
+export interface OpenCodeIntegration {
+  id: string
+  name: string
+  methods: OpenCodeIntegrationMethod[]
+  connections: OpenCodeConnection[]
+}
+
+export interface OpenCodeConnectKeyRequest {
+  integrationId: string
+  key: string
+  /** Answers to the key method's extra form fields. */
+  answer?: Record<string, unknown> | null
+  /** Replace the integration's stored credentials instead of adding one. */
+  replace?: boolean
+}
+
+export interface OpenCodeCredentialChange {
+  integrations: OpenCodeIntegration[]
+  /** Running OpenCode sessions that need a restart to see the change. */
+  stale_sessions: number
+}
+
 /** A provider's wire protocol, for listing its models. Mirrors
  *  `ModelsProtocol` in src-tauri/src/acp/provider_models.rs. */
 export type ProviderModelsProtocol = "openai" | "anthropic" | "gemini"
@@ -5732,6 +5798,9 @@ export type ProviderModelsKeySource =
   | { kind: "provider"; providerId: number; apiKey?: string | null }
   /** The key pi keeps for one of its providers (its auth.json). */
   | { kind: "piAuth"; provider: string }
+  /** The key OpenCode 2 stores for one of its integrations, read by the
+   *  backend through OpenCode; the panel never sees it. */
+  | { kind: "opencodeCredential"; integrationId: string }
 
 export interface ProviderModelsRequest {
   protocol: ProviderModelsProtocol

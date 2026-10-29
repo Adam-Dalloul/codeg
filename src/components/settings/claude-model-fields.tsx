@@ -6,8 +6,6 @@ import { Input } from "@/components/ui/input"
 import {
   ModelIdInputWithFetch,
   ModelIdListField,
-  ProviderModelsFetchButton,
-  ProviderModelsStatus,
 } from "@/components/settings/provider-models"
 import type { ProviderModelsState } from "@/hooks/use-provider-models"
 import type { ClaudeProviderModel } from "@/lib/types"
@@ -99,8 +97,8 @@ const CLAUDE_MODEL_FIELDS: ReadonlyArray<{
 ]
 
 /** A Claude provider's model JSON, edited in a provider dialog: the model
- *  fields (each offering the provider's listed models once fetched), the
- *  custom option's name and description, and the extra picker rows. */
+ *  fields (each listing the provider's models from its chevron), the custom
+ *  option's name and description, and the extra picker rows. */
 export function ClaudeProviderModelFields({
   value,
   onChange,
@@ -115,10 +113,6 @@ export function ClaudeProviderModelFields({
     onChange({ ...value, ...patch })
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between gap-2">
-        <ProviderModelsStatus state={state} />
-        <ProviderModelsFetchButton state={state} className="ml-auto" />
-      </div>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         {CLAUDE_MODEL_FIELDS.map((field) => (
           <div
@@ -130,7 +124,7 @@ export function ClaudeProviderModelFields({
               aria-label={t(field.label)}
               value={value[field.key] ?? ""}
               onChange={(next) => set({ [field.key]: next })}
-              models={state.models}
+              state={state}
               placeholder={field.placeholder}
             />
           </div>

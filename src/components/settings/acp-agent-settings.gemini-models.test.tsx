@@ -53,7 +53,6 @@ function geminiAgent(): AcpAgentInfo {
     env: { GEMINI_API_KEY: "gk-test" },
     config_json: null,
     config_file_path: null,
-    opencode_auth_json: null,
     codex_auth_json: null,
     cline_secrets_json: null,
     codex_config_toml: null,
@@ -87,8 +86,11 @@ describe("AcpAgentSettings — the Gemini API's models", () => {
         <AcpAgentSettings />
       </NextIntlClientProvider>
     )
+    // Opening the model field's list asks the endpoint.
     await user.click(
-      await screen.findByRole("button", { name: "Fetch models" })
+      await screen.findByRole("button", {
+        name: "Choose from the provider's models",
+      })
     )
     await waitFor(() =>
       expect(listProviderModels).toHaveBeenCalledWith({
@@ -96,11 +98,6 @@ describe("AcpAgentSettings — the Gemini API's models", () => {
         baseUrl: "https://generativelanguage.googleapis.com",
         keySource: { kind: "inline", apiKey: "gk-test" },
         keyHeader: null,
-      })
-    )
-    await user.click(
-      await screen.findByRole("button", {
-        name: "Choose from the provider's models",
       })
     )
     await user.click(

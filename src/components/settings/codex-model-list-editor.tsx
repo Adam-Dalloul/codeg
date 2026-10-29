@@ -7,8 +7,8 @@ import {
   ChevronRight,
   Info,
   ListChecks,
+  Loader2,
   Plus,
-  RefreshCw,
   Star,
   Trash2,
 } from "lucide-react"
@@ -33,13 +33,18 @@ import {
 } from "@/components/ui/select"
 import {
   CodexCatalogPickerDialog,
-  CodexCatalogSourceSection,
   CodexCatalogStatusLine,
+  CodexListNotices,
+  CodexListUrlField,
+  CodexProviderListSummary,
+  CodexSourceSwitch,
+  deriveCatalogUrl,
   templateHint,
   useCodexProviderList,
   type CodexCatalogEndpoint,
   type CodexPickerItem,
 } from "@/components/settings/codex-catalog-source"
+import { ProviderModelsRefreshButton } from "@/components/settings/provider-models"
 import { codexBundledCatalog } from "@/lib/api"
 import type { CodexCatalogTranslator } from "@/lib/codex-catalog-error"
 import {
@@ -522,233 +527,224 @@ export function CodexModelListEditor({
   }
 
   const providerRowsMissing = !!source && !provider.rows
-  const officialsTitle = source
-    ? ts("providerModelsTitle")
-    : t("officialsTitle")
+  const managed = !!endpoint?.managedBy
+  const editable = !readOnly && !managed
   const officialsHint = !source
     ? t("officialsHint")
     : format === "openai_list"
       ? ts("providerModelsHintOpenai")
       : ts("providerModelsHintNative")
+  const listUrl = source
+    ? source.url?.trim() || deriveCatalogUrl(endpoint?.baseUrl ?? "") || ""
+    : ""
+
+  const emptyText =
+    format === "openai_list"
+      ? providerRowsMissing
+        ? ts("fetchFirst")
+        : ts("nothingPicked")
+      : providerRowsMissing
+        ? ts("fetchFirst")
+        : t("officialsEmpty")
+  const rows =
+    format === "openai_list"
+      ? selected.map((id) => (
+          <CodexModelRow
+            key={id}
+            name={id}
+            mono
+            detail={templateHint(idViews.get(id), tl)}
+            badge={
+              provider.rows && !returned.has(id) ? ts("badgeGone") : undefined
+            }
+            isDefault={id === effectiveDefault}
+            readOnly={readOnly}
+            onMakeDefault={() => onChange({ ...value, default: id })}
+            onRemove={() => unselect(id)}
+          />
+        ))
+      : shownOfficials.map((m) => (
+          <CodexModelRow
+            key={m.slug}
+            name={m.display_name || m.slug}
+            mono={!m.display_name || m.display_name === m.slug}
+            detail={m.display_name && m.display_name !== m.slug ? m.slug : ""}
+            detailMono
+            isDefault={m.slug === effectiveDefault}
+            readOnly={readOnly}
+            onMakeDefault={() => setDefault(m.slug)}
+            onRemove={() => excludeOfficial(m.slug)}
+          />
+        ))
 
   return (
     <div className="space-y-4">
-      {endpoint && (
-        <CodexCatalogSourceSection
-          endpoint={endpoint}
-          source={source}
-          list={provider}
-          readOnly={readOnly}
-          onSourceChange={setSource}
-          onFetch={() => void fetchList()}
-          onRepick={() =>
-            provider.formatChanged &&
-            setPicker({ mode: "repick", view: provider.formatChanged })
-          }
-        />
-      )}
-      {(endpoint?.showStatus || endpoint?.statusBinding) && (
-        <CodexCatalogStatusLine
-          onPublished={endpoint.onPublished}
-          binding={endpoint.statusBinding}
-        />
-      )}
-
-      {hasCustomization && (
-        <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-2xs text-amber-500">
-          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>{t("customizedNotice")}</span>
-        </div>
-      )}
-
-      {/* Officials: auto-included from the live catalog (or the provider's
-          list), deletable. */}
+      {/* The models Codex offers: where they come from, how that list
+          stands, and the rows themselves — one section. */}
       <section className="space-y-2">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-xs font-semibold">{officialsTitle}</p>
-            <p className="text-2xs text-muted-foreground">{officialsHint}</p>
-          </div>
-          {!source ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 shrink-0 text-muted-foreground"
-              onClick={refresh}
-              disabled={refreshing}
-              title={t("refresh")}
-              aria-label={t("refresh")}
-            >
-              <RefreshCw
-                className={cn("h-3.5 w-3.5", refreshing && "animate-spin")}
-              />
-            </Button>
-          ) : (
-            format === "openai_list" &&
-            !readOnly &&
-            !endpoint?.managedBy && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-7 shrink-0 text-xs"
-                disabled={!provider.rows}
-                onClick={() =>
-                  provider.rows &&
-                  setPicker({ mode: "manage", view: provider.rows })
-                }
-              >
-                <ListChecks className="mr-1 h-3.5 w-3.5" />
-                {ts("manage")}
-              </Button>
-            )
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+          <p className="text-xs font-semibold">{t("modelsTitle")}</p>
+          {endpoint && (
+            <CodexSourceSwitch
+              value={source ? "provider" : "builtin"}
+              disabled={readOnly || managed}
+              onChange={(next) =>
+                setSource(next === "provider" ? (source ?? {}) : undefined)
+              }
+            />
           )}
         </div>
-
-        {format === "openai_list" ? (
-          selected.length === 0 ? (
-            <p className="rounded-md border border-dashed px-3 py-3 text-center text-2xs text-muted-foreground">
-              {providerRowsMissing ? ts("fetchFirst") : ts("nothingPicked")}
-            </p>
-          ) : (
-            <div className="space-y-1.5">
-              {selected.map((id) => (
-                <div
-                  key={id}
-                  className="flex items-center gap-2 rounded-md border px-2 py-1.5"
-                >
-                  <button
-                    type="button"
-                    title={
-                      id === effectiveDefault
-                        ? t("defaultHint")
-                        : t("makeDefault")
-                    }
-                    onClick={() => onChange({ ...value, default: id })}
-                    disabled={readOnly}
-                    className={cn(
-                      "shrink-0 text-muted-foreground transition-colors hover:text-amber-500 disabled:opacity-40",
-                      id === effectiveDefault && "text-amber-500"
-                    )}
-                  >
-                    <Star
-                      className={cn(
-                        "h-4 w-4",
-                        id === effectiveDefault && "fill-current"
-                      )}
-                    />
-                  </button>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-xs">{id}</p>
-                    <p className="truncate text-2xs text-muted-foreground">
-                      {templateHint(idViews.get(id), tl) ?? ""}
-                    </p>
-                  </div>
-                  {provider.rows && !returned.has(id) && (
-                    <span className="shrink-0 rounded bg-amber-500/10 px-1.5 text-2xs text-amber-500">
-                      {ts("badgeGone")}
-                    </span>
-                  )}
-                  {!readOnly && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 shrink-0 text-muted-foreground hover:text-red-500"
-                      onClick={() => unselect(id)}
-                      aria-label={t("remove")}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  )}
-                </div>
-              ))}
-            </div>
-          )
-        ) : providerRowsMissing ? (
-          <p className="rounded-md border border-dashed px-3 py-3 text-center text-2xs text-muted-foreground">
-            {ts("fetchFirst")}
+        {managed && (
+          <p className="text-2xs font-medium text-muted-foreground">
+            {ts("managedBy", { name: endpoint?.managedBy ?? "" })}
           </p>
-        ) : shownOfficials.length === 0 ? (
-          <p className="rounded-md border border-dashed px-3 py-3 text-center text-2xs text-muted-foreground">
-            {t("officialsEmpty")}
+        )}
+        <p className="text-2xs text-muted-foreground">{officialsHint}</p>
+        {source && endpoint && editable && (
+          <CodexListUrlField
+            endpoint={endpoint}
+            source={source}
+            onSourceChange={setSource}
+          />
+        )}
+        {source && managed && listUrl && (
+          <p className="truncate font-mono text-2xs text-muted-foreground">
+            {listUrl}
           </p>
-        ) : (
-          <div className="space-y-1.5">
-            {shownOfficials.map((m) => (
-              <div
-                key={m.slug}
-                className="flex items-center gap-2 rounded-md border px-2 py-1.5"
-              >
-                <button
-                  type="button"
-                  title={
-                    m.slug === effectiveDefault
-                      ? t("defaultHint")
-                      : t("makeDefault")
-                  }
-                  onClick={() => setDefault(m.slug)}
-                  disabled={readOnly}
-                  className={cn(
-                    "shrink-0 text-muted-foreground transition-colors hover:text-amber-500 disabled:opacity-40",
-                    m.slug === effectiveDefault && "text-amber-500"
-                  )}
-                >
-                  <Star
-                    className={cn(
-                      "h-4 w-4",
-                      m.slug === effectiveDefault && "fill-current"
-                    )}
-                  />
-                </button>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs">{m.display_name || m.slug}</p>
-                  <p className="truncate text-2xs text-muted-foreground">
-                    {m.slug}
-                  </p>
-                </div>
-                {!readOnly && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 shrink-0 text-muted-foreground hover:text-red-500"
-                    onClick={() => excludeOfficial(m.slug)}
-                    aria-label={t("remove")}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                )}
-              </div>
-            ))}
+        )}
+        {source && (
+          <CodexListNotices
+            list={provider}
+            editable={editable}
+            onRepick={() =>
+              provider.formatChanged &&
+              setPicker({ mode: "repick", view: provider.formatChanged })
+            }
+          />
+        )}
+        {hasCustomization && (
+          <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-2xs text-amber-600 dark:text-amber-400">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>{t("customizedNotice")}</span>
           </div>
         )}
 
-        {!readOnly &&
-          format !== "openai_list" &&
-          excludedOfficials.length > 0 && (
-            <Select value="" onValueChange={readdOfficial}>
-              <SelectTrigger className="h-7 w-auto gap-1 text-xs">
-                <Plus className="h-3.5 w-3.5" />
-                <SelectValue placeholder={t("readdOfficial")} />
-              </SelectTrigger>
-              <SelectContent>
-                {excludedOfficials.map((m) => (
-                  <SelectItem key={m.slug} value={m.slug} className="text-xs">
-                    {m.display_name || m.slug}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+        <div className="overflow-hidden rounded-xl border">
+          <div className="flex min-h-9 items-center gap-2 border-b bg-muted/30 ps-3 pe-1.5 py-1 text-2xs">
+            <div className="flex min-w-0 flex-1 items-center">
+              {source && endpoint ? (
+                <CodexProviderListSummary
+                  endpoint={endpoint}
+                  list={provider}
+                  tally={
+                    format === "openai_list"
+                      ? {
+                          kind: "picked",
+                          // Picks the provider no longer returns are rows
+                          // of their own, marked; they are not of these.
+                          picked: selected.filter((id) => returned.has(id))
+                            .length,
+                          offered: returned.size,
+                        }
+                      : {
+                          kind: "models",
+                          shown: shownOfficials.length,
+                          removed: excludedOfficials.length,
+                        }
+                  }
+                />
+              ) : (
+                <span className="truncate text-muted-foreground">
+                  {[
+                    t("builtinSummary", { count: shownOfficials.length }),
+                    excludedOfficials.length > 0
+                      ? ts("summaryRemoved", {
+                          count: excludedOfficials.length,
+                        })
+                      : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </span>
+              )}
+            </div>
+            {!source ? (
+              <ProviderModelsRefreshButton
+                fetching={refreshing}
+                onRefresh={refresh}
+                label={t("refresh")}
+              />
+            ) : (
+              editable && (
+                <>
+                  {format === "openai_list" && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      disabled={!provider.rows}
+                      onClick={() =>
+                        provider.rows &&
+                        setPicker({ mode: "manage", view: provider.rows })
+                      }
+                    >
+                      <ListChecks />
+                      {ts("manage")}
+                    </Button>
+                  )}
+                  <ProviderModelsRefreshButton
+                    fetching={provider.fetching}
+                    onRefresh={() => void fetchList()}
+                    disabled={!provider.request}
+                    label={ts("fetch")}
+                  />
+                </>
+              )
+            )}
+          </div>
+          {rows.length > 0 ? (
+            <div>{rows}</div>
+          ) : providerRowsMissing && provider.fetching ? (
+            // The line above says it is on its way.
+            <div className="flex justify-center px-3 py-4 text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" />
+            </div>
+          ) : (
+            <p className="px-3 py-4 text-center text-2xs text-muted-foreground">
+              {emptyText}
+            </p>
           )}
+          {!readOnly &&
+            format !== "openai_list" &&
+            excludedOfficials.length > 0 && (
+              <div className="border-t px-1.5 py-1">
+                <Select value="" onValueChange={readdOfficial}>
+                  <SelectTrigger className="h-7 w-auto gap-1 border-transparent bg-transparent px-2 text-xs text-muted-foreground shadow-none hover:text-foreground">
+                    <Plus className="h-3.5 w-3.5" />
+                    <SelectValue placeholder={t("readdOfficial")} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {excludedOfficials.map((m) => (
+                      <SelectItem
+                        key={m.slug}
+                        value={m.slug}
+                        className="text-xs"
+                      >
+                        {m.display_name || m.slug}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+        </div>
       </section>
 
       {/* Customs: user-defined models cloning an official base. */}
       <section className="space-y-2">
         <p className="text-xs font-semibold">{t("customsTitle")}</p>
         {customs.length === 0 ? (
-          <p className="rounded-md border border-dashed px-3 py-3 text-center text-2xs text-muted-foreground">
+          <p className="rounded-xl border border-dashed px-3 py-3 text-center text-2xs text-muted-foreground">
             {t("customsEmpty")}
           </p>
         ) : (
@@ -771,15 +767,10 @@ export function CodexModelListEditor({
         {!readOnly && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-7 text-xs"
-              >
-                <Plus className="mr-1 h-3.5 w-3.5" />
+              <Button type="button" variant="outline" size="xs" className="h-7">
+                <Plus />
                 {t("addCustom")}
-                <ChevronDown className="ml-1 h-3.5 w-3.5" />
+                <ChevronDown />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start">
@@ -800,12 +791,102 @@ export function CodexModelListEditor({
         )}
       </section>
 
+      {/* What Codex runs now, once a list is published. */}
+      {(endpoint?.showStatus || endpoint?.statusBinding) && (
+        <CodexCatalogStatusLine
+          onPublished={endpoint.onPublished}
+          binding={endpoint.statusBinding}
+        />
+      )}
+
       {pickerProps && (
         <CodexCatalogPickerDialog
           open={!!picker}
           onOpenChange={(open) => !open && setPicker(null)}
           {...pickerProps}
         />
+      )}
+    </div>
+  )
+}
+
+/** One model Codex offers: its name, a note in a lighter ink (the slug, or
+ *  what an OpenAI-list id is built from), the star that makes it the
+ *  default, and the bin. */
+function CodexModelRow({
+  name,
+  detail,
+  mono = false,
+  detailMono = false,
+  badge,
+  isDefault,
+  readOnly,
+  onMakeDefault,
+  onRemove,
+}: {
+  name: string
+  detail?: string
+  /** The name is an id. */
+  mono?: boolean
+  /** The note is one (a slug). */
+  detailMono?: boolean
+  badge?: string
+  isDefault: boolean
+  readOnly: boolean
+  onMakeDefault: () => void
+  onRemove: () => void
+}) {
+  const t = useTranslations("CodexModelEditor")
+  return (
+    <div
+      data-model-row
+      className="flex min-h-9 items-center gap-2 ps-2 pe-1.5 py-1 text-xs [&+&]:border-t"
+    >
+      <button
+        type="button"
+        title={isDefault ? t("defaultHint") : t("makeDefault")}
+        aria-label={isDefault ? t("defaultHint") : t("makeDefault")}
+        aria-pressed={isDefault}
+        onClick={onMakeDefault}
+        disabled={readOnly}
+        className={cn(
+          "flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground outline-none transition-colors hover:text-amber-500 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40",
+          isDefault && "text-amber-500"
+        )}
+      >
+        <Star className={cn("h-3.5 w-3.5", isDefault && "fill-current")} />
+      </button>
+      <span className={cn("min-w-0 truncate", mono && "font-mono")}>
+        {name}
+      </span>
+      {detail ? (
+        <span
+          className={cn(
+            "min-w-0 truncate text-2xs text-muted-foreground",
+            detailMono && "font-mono"
+          )}
+        >
+          {detail}
+        </span>
+      ) : null}
+      <span className="flex-1" />
+      {badge ? (
+        <span className="shrink-0 rounded-full bg-amber-500/10 px-1.5 text-2xs text-amber-600 dark:text-amber-400">
+          {badge}
+        </span>
+      ) : null}
+      {!readOnly && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          className="text-muted-foreground hover:text-red-500"
+          onClick={onRemove}
+          aria-label={t("remove")}
+          title={t("remove")}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </Button>
       )}
     </div>
   )

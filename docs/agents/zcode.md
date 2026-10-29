@@ -1,6 +1,6 @@
 # ZCode
 
-Codeg connects to [official ZCode](https://github.com/zai-org/ZCode) through the community [zcode-acp-server](https://github.com/william0wang/zcode-acp) bridge. The bundled registry pins the bridge to `0.76.2`.
+Codeg connects to [official ZCode](https://github.com/zai-org/ZCode) through the community [zcode-acp-server](https://github.com/william0wang/zcode-acp) bridge. The bundled registry pins the bridge to `0.76.3`.
 
 ## Setup
 
@@ -68,6 +68,8 @@ publishes its current commands.
 A new session explicitly confirms Build mode before sending its first prompt. A valid saved mode, including Yolo, takes precedence. Confirming the mode makes the bridge create the ZCode backend session when the conversation connects rather than at its first prompt. Existing sessions use the normal restore and preference flow. Model and thought selectors follow ACP configuration updates rather than a hardcoded model list.
 
 The bridge writes a disabled sandbox template to `.zcode/acp/sandbox.json` in a workspace only while its sandbox is enabled globally, through `sandbox.enabled` in the bridge's user configuration or `ZCODE_ACP_SANDBOX=1`. Codeg sets neither, so unless you enable the sandbox yourself, the bridge does not create that file.
+
+From bridge 0.76.3 the scheduling tools `CronCreate`, `CronList`, `CronUpdate` and `CronDelete` are removed from every session the bridge creates or restores, on a ZCode backend that accepts its tool denylist. Codeg sets neither `ZCODE_ENABLE_AUTOMATION_TOOLS` nor `ZCODE_DISALLOWED_TOOLS`. To give the model those tools again, add `ZCODE_ENABLE_AUTOMATION_TOOLS=1` to ZCode's environment variables in Codeg's agent settings.
 
 Codeg records its own ACP transcripts for ZCode, including messages, thoughts, tools and usage. These transcripts support history and reconnecting to sessions created in Codeg. Existing custom ZCode entries keep their registration, launch configuration and history; the built-in option records its history separately. This integration does not scan ZCode's native SQLite sessions.
 

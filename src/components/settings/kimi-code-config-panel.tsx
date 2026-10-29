@@ -12,7 +12,6 @@ import {
   FolderOpen,
   Loader2,
   Plus,
-  RefreshCw,
   Save,
   XCircle,
 } from "lucide-react"
@@ -499,8 +498,6 @@ export function KimiCodeConfigPanel({
    * model, so a deliberate value is never silently replaced. */
   const [maxContextTouched, setMaxContextTouched] = useState(false)
 
-  /** "Test & list models" was pressed before there was a key to test. */
-  const [askedWithoutKey, setAskedWithoutKey] = useState(false)
   /** Free-text box for an effort level outside the common set. */
   const [customEffort, setCustomEffort] = useState("")
 
@@ -708,15 +705,6 @@ export function KimiCodeConfigPanel({
     void runSave({ mode: "raw", rawConfigToml: rawConfig })
   }, [rawConfig, runSave])
 
-  const handleFetchModels = useCallback(() => {
-    if (!providerModels.request) {
-      setAskedWithoutKey(true)
-      return
-    }
-    setAskedWithoutKey(false)
-    void providerModels.fetchNow()
-  }, [providerModels])
-
   const fetchedModels = providerModels.models
   /** The exact "Not found the model …" trap: a key that works, listing models
    * that don't include the one about to be written. */
@@ -861,15 +849,12 @@ export function KimiCodeConfigPanel({
             </span>
           </p>
         )}
-        {(providerModels.error ||
-          (askedWithoutKey && !providerModels.request)) && (
+        {providerModels.error && (
           <p className="flex items-start gap-1.5 text-2xs text-destructive">
             <XCircle className="mt-0.5 h-3 w-3 shrink-0" />
             <span className="break-all">
               {t("kimiCode.fetchModelsFailed")}:{" "}
-              {providerModels.error
-                ? modelsErrorText(providerModels.error)
-                : t("kimiCode.fetchModelsNeedsKey")}
+              {modelsErrorText(providerModels.error)}
             </span>
           </p>
         )}
@@ -1071,28 +1056,9 @@ export function KimiCodeConfigPanel({
 
           {/* ---- Model card ---- */}
           <div className="space-y-2 rounded-md border bg-background/60 p-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-2xs font-medium">
-                {t("kimiCode.modelTitle")}
-              </span>
-              {meta.usesApiKey && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleFetchModels}
-                  disabled={saving || providerModels.fetching}
-                  className="h-6 shrink-0 gap-1 px-2 text-2xs"
-                >
-                  {providerModels.fetching ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <RefreshCw className="h-3 w-3" />
-                  )}
-                  {t("kimiCode.fetchModels")}
-                </Button>
-              )}
-            </div>
+            <span className="text-2xs font-medium">
+              {t("kimiCode.modelTitle")}
+            </span>
 
             <div className="grid gap-2 md:grid-cols-2">
               <div className="space-y-1">
@@ -1108,7 +1074,7 @@ export function KimiCodeConfigPanel({
                   id="kimi-model-input"
                   value={draft.model}
                   onChange={handleModelChange}
-                  models={fetchedModels}
+                  state={providerModels}
                   placeholder={KIMI_MODEL_PLACEHOLDER}
                   disabled={saving}
                   aria-invalid={errors.model != null}

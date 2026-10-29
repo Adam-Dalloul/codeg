@@ -517,6 +517,97 @@ describe("approval chips", () => {
   })
 })
 
+describe("Claude Code's monitors and sandbox network requests", () => {
+  const record = (toolCallId: string, optionKind: string) => ({
+    tool_call_id: toolCallId,
+    option_kind: optionKind,
+    option_name: optionKind.startsWith("reject") ? "No" : "Yes",
+    origin: "user",
+    decided_at: "2026-10-28T09:41:12Z",
+  })
+  // Claude Code 2.1.310's result for a started Monitor, verbatim.
+  const STARTED =
+    "Monitor started (task bttyx34fg, expires in 5m unless the source ends first; you get one notice at expiry — re-arm if you still need the watch). You will be notified on each event. Keep working — do not poll or sleep. Events may arrive while you are waiting for the user — an event is not their reply."
+
+  it("draws a monitor as one, by its task, apart from the commands", () => {
+    const RUN = turn([
+      toolUse("c1", "Bash", { command: "pnpm build" }),
+      toolResult("c1", "built"),
+      toolUse("m1", "Monitor", {
+        command: "tail -f build.log | grep --line-buffered ERROR",
+        description: "Build errors",
+      }),
+      toolResult("m1", STARTED),
+      toolUse("c2", "Bash", { command: "pnpm test" }),
+      toolResult("c2", "ok"),
+    ])
+    renderUi(<Round parts={parts(RUN)} />)
+    // Not one of the commands around it.
+    expect(screen.queryByRole("button", { name: /Ran 2 commands/ })).toBeNull()
+    expect(screen.queryByRole("button", { name: /Ran 3 commands/ })).toBeNull()
+    const row = rowOf("Build errors")
+    expect(within(row).getByText("Monitor")).toBeTruthy()
+    expect(within(row).getByText("background · #bttyx34fg")).toBeTruthy()
+    fireEvent.click(within(row).getAllByRole("button")[0]!)
+    expect(
+      within(row).getByText("tail -f build.log | grep --line-buffered ERROR")
+    ).toBeTruthy()
+    expect(within(row).getByText("$")).toBeTruthy()
+    expect(
+      within(row).getByText("Watching in background · bttyx34fg")
+    ).toBeTruthy()
+    // The CLI's instructions to the model are not the reader's output.
+    expect(within(row).queryByText(/do not poll or sleep/)).toBeNull()
+  })
+
+  it("shows a WebSocket monitor's socket, not a command line", () => {
+    const RUN = turn([
+      toolUse("m1", "Monitor", {
+        ws: { url: "wss://ci.example.com/events" },
+        description: "CI events",
+      }),
+      toolResult("m1", STARTED),
+    ])
+    renderUi(<Round parts={parts(RUN)} />)
+    const row = rowOf("CI events")
+    expect(within(row).getByText("background · #bttyx34fg")).toBeTruthy()
+    fireEvent.click(within(row).getAllByRole("button")[0]!)
+    expect(within(row).getByText("wss://ci.example.com/events")).toBeTruthy()
+    expect(within(row).queryByText("$")).toBeNull()
+  })
+
+  it("names a declined network request's host, and opens to nothing", () => {
+    const DECLINED = turn([
+      toolUse("n1", "SandboxNetworkAccess", { host: "example.com" }),
+      toolResult("n1", "", true),
+    ])
+    renderUi(<Round parts={parts(DECLINED)} />, null, {
+      n1: record("n1", "reject_once"),
+    })
+    const row = rowOf("Network access")
+    expect(row.getAttribute("data-status")).toBe("rejected")
+    expect(within(row).getByText("example.com")).toBeTruthy()
+    expect(within(row).getAllByText("declined")).toHaveLength(1)
+    // Its one argument is on its line already: no panel of arguments.
+    expect(within(row).queryByText(/"host"/)).toBeNull()
+    expect(row.querySelector("[aria-expanded]")).toBeNull()
+  })
+
+  it("names an allowed network request's host", () => {
+    const ALLOWED = turn([
+      toolUse("n1", "SandboxNetworkAccess", { host: "registry.npmjs.org" }),
+      toolResult("n1", ""),
+    ])
+    renderUi(<Round parts={parts(ALLOWED)} />, null, {
+      n1: record("n1", "allow_once"),
+    })
+    const row = rowOf("Network access")
+    expect(row.getAttribute("data-status")).toBe("succeeded")
+    expect(within(row).getByText("registry.npmjs.org")).toBeTruthy()
+    expect(within(row).getByText("approved once")).toBeTruthy()
+  })
+})
+
 describe("a command group in a reply being written", () => {
   const LIVE = turn([
     toolUse("c1", "Bash", { command: "pnpm lint" }),
@@ -1006,7 +1097,7 @@ describe("file rows", () => {
 })
 
 describe("command row", () => {
-  it("draws its command line a step lighter than its label, like a description", () => {
+  it("draws its label and its command line in one ink, like a description", () => {
     renderUi(
       <Round
         parts={parts(
@@ -1029,7 +1120,33 @@ describe("command row", () => {
       "text-activity-secondary"
     )
     for (const label of screen.getAllByText("Command")) {
-      expect(label).toHaveClass("text-muted-foreground")
+      expect(label).toHaveClass("text-activity-secondary", "font-medium")
+    }
+  })
+})
+
+describe("skill and to-do rows", () => {
+  it("set the label and what follows it in one ink", () => {
+    renderUi(
+      <Round
+        parts={parts(
+          turn([
+            toolUse("s1", "Skill", { skill: "brainstorming" }),
+            toolResult("s1", "ok"),
+            { type: "text", text: "Now the plan." },
+            toolUse("k1", "TaskCreate", { subject: "Fix the login form" }),
+            toolResult("k1", "ok"),
+          ])
+        )}
+      />
+    )
+    for (const text of [
+      "Skill",
+      "brainstorming",
+      "Updated todos",
+      "Fix the login form",
+    ]) {
+      expect(screen.getByText(text)).toHaveClass("text-activity-secondary")
     }
   })
 })
